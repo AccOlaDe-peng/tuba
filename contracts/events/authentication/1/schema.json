@@ -1,0 +1,158 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tuba.local/contracts/events/authentication/1/schema.json",
+  "title": "TUBA Authentication Event v1",
+  "type": "object",
+  "additionalProperties": true,
+  "required": [
+    "@timestamp",
+    "event",
+    "organization",
+    "vendor",
+    "ueba"
+  ],
+  "properties": {
+    "@timestamp": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "event": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id",
+        "kind",
+        "category",
+        "action",
+        "outcome",
+        "dataset"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        },
+        "category": {
+          "type": "array",
+          "contains": {
+            "const": "authentication"
+          },
+          "minItems": 1
+        },
+        "outcome": {
+          "type": "string",
+          "enum": [
+            "success",
+            "failure",
+            "unknown"
+          ]
+        },
+        "kind": {
+          "type": "string",
+          "const": "event"
+        },
+        "action": {
+          "type": "string",
+          "minLength": 1
+        },
+        "dataset": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "organization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z0-9_-]{1,64}$"
+        }
+      }
+    },
+    "user": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "id"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256
+        }
+      }
+    },
+    "ueba": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": [
+        "schema",
+        "quality",
+        "route"
+      ],
+      "properties": {
+        "schema": {
+          "type": "object",
+          "required": [
+            "version"
+          ],
+          "properties": {
+            "version": {
+              "type": "string",
+              "const": "1.0.0"
+            }
+          }
+        },
+        "quality": {
+          "type": "object",
+          "required": [
+            "status"
+          ],
+          "properties": {
+            "status": {
+              "type": "string",
+              "enum": [
+                "qualified",
+                "partial",
+                "invalid",
+                "unsupported"
+              ]
+            }
+          }
+        },
+        "route": {
+          "type": "object",
+          "required": [
+            "domain"
+          ],
+          "properties": {
+            "domain": {
+              "type": "string",
+              "const": "authentication"
+            }
+          }
+        }
+      }
+    },
+    "vendor": {
+      "type": "object",
+      "required": [
+        "dataset"
+      ],
+      "properties": {
+        "dataset": {
+          "type": "string",
+          "minLength": 1
+        }
+      },
+      "additionalProperties": true
+    }
+  }
+}

@@ -1,0 +1,17 @@
+{
+  "@timestamp": "2026-09-27T03:15:00Z",
+  "agent": {
+    "type": "filebeat",
+    "version": "8.19.0",
+    "id": "beat-zeek-21"
+  },
+  "event": {
+    "dataset": "zeek.conn",
+    "original": "{\"ts\":1790478900.0,\"uid\":\"Cabc\",\"id.orig_h\":\"192.0.2.10\",\"id.resp_h\":\"192.0.2.80\",\"proto\":\"tcp\"}"
+  },
+  "message": "{\"ts\":1790478900.0,\"uid\":\"Cabc\",\"id.orig_h\":\"192.0.2.10\",\"id.resp_h\":\"192.0.2.80\",\"proto\":\"tcp\"}",
+  "host": {"id": "zeek-21"},
+  "log": {"file": {"path": "/opt/zeek/logs/current/conn.log"}, "offset": 17342},
+  "organization": {"id": "attacker-controlled-source-claim-is-ignored"},
+  "ueba": {"route": {"domain": "authentication"}, "quality": {"status": "qualified"}}
+}

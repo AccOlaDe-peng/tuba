@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "defaults_are_capacity_targets_not_legal_retention": true,
+  "indices": {
+    "raw": {
+      "days": 30,
+      "date_field": "received_at"
+    },
+    "standard_events": {
+      "days": 90,
+      "date_field": "@timestamp"
+    },
+    "quarantine": {
+      "days": 30,
+      "date_field": "occurred_at"
+    },
+    "attributions_relations": {
+      "days": 90,
+      "date_field": "event_time_or_valid_from"
+    },
+    "features": {
+      "days": 180,
+      "date_field": "window_start"
+    },
+    "anomalies_risk_events": {
+      "days": 365,
+      "date_field": "window_start_or_event_time"
+    },
+    "current_state_and_baselines": {
+      "days": null,
+      "delete": "lifecycle_or_reference_checked_job_only"
+    }
+  },
+  "delete_guards": [
+    "partition_is_closed",
+    "no_active_job_lease",
+    "backup_policy_allows_delete",
+    "audit_delete",
+    "never_recreate_expired_partition_on_retry"
+  ]
+}

@@ -1,0 +1,12 @@
+TUBA {{ .Chart.AppVersion }} has been installed as {{ .Release.Name }}.
+
+Gateway: {{ if .Values.gateway.enabled }}https://{{ .Values.gateway.hostname }}{{ else }}disabled{{ end }}
+API service: {{ include "tuba.fullname" . }}-api:{{ (index .Values.services "api").service.port }}
+Metrics: {{ if .Values.observability.serviceMonitor.enabled }}ServiceMonitor enabled{{ else }}ServiceMonitor disabled{{ end }}
+Vault: {{ if .Values.vault.enabled }}{{ .Values.vault.secretProviderClassName }}{{ else }}external Secret only{{ end }}
+
+Verify:
+  kubectl rollout status deployment/{{ include "tuba.fullname" . }}-api
+  kubectl get poddisruptionbudget,hpa,networkpolicy
+
+Use `helm upgrade --atomic --wait` for rollouts and `helm rollback` for recovery.

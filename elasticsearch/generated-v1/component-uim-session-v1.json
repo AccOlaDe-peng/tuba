@@ -1,0 +1,83 @@
+{
+  "template": {
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "user": {
+          "dynamic": "strict",
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword"
+            },
+            "domain": {
+              "type": "keyword"
+            },
+            "target": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                },
+                "domain": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "host": {
+          "dynamic": "strict",
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword"
+            }
+          }
+        },
+        "source": {
+          "dynamic": "strict",
+          "properties": {
+            "ip": {
+              "type": "ip"
+            },
+            "address": {
+              "type": "keyword"
+            },
+            "port": {
+              "type": "integer"
+            }
+          }
+        },
+        "destination": {
+          "dynamic": "strict",
+          "properties": {
+            "ip": {
+              "type": "ip"
+            },
+            "address": {
+              "type": "keyword"
+            },
+            "port": {
+              "type": "integer"
+            },
+            "domain": {
+              "type": "keyword"
+            }
+          }
+        }
+      }
+    }
+  },
+  "_meta": {
+    "managed_by": "tuba",
+    "version": "1"
+  }
+}

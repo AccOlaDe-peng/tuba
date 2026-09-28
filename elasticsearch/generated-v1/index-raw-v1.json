@@ -1,0 +1,20 @@
+{
+  "index_patterns": [
+    "tuba-v1-raw-*-g1-*"
+  ],
+  "priority": 300,
+  "composed_of": [
+    "tuba-raw-v1"
+  ],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0
+    }
+  },
+  "_meta": {
+    "managed_by": "tuba",
+    "schema": "raw/1",
+    "version": 1
+  }
+}

@@ -1,0 +1,187 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "TUBA 采集数据流",
+    "output": "docs/diagrams/collector-v4.html",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [
+      1080,
+      520
+    ]
+  },
+  "stages": [
+    {
+      "label": "日志来源"
+    },
+    {
+      "label": "统一采集"
+    },
+    {
+      "label": "来源 Kafka"
+    },
+    {
+      "label": "可信接入"
+    },
+    {
+      "label": "标准化与索引"
+    }
+  ],
+  "nodes": [
+    {
+      "id": "sources",
+      "type": "external",
+      "label": "日志来源",
+      "sublabel": "Linux / Win",
+      "stage": 0,
+      "row": 1
+    },
+    {
+      "id": "collectors",
+      "type": "backend",
+      "label": "受管采集组件",
+      "sublabel": "Beats / 网关 / 连接器",
+      "stage": 1,
+      "row": 1
+    },
+    {
+      "id": "sourceTopic",
+      "type": "messagebus",
+      "label": "来源 Kafka Topic",
+      "sublabel": "按来源绑定 / ACL",
+      "stage": 2,
+      "row": 1
+    },
+    {
+      "id": "adapter",
+      "type": "backend",
+      "label": "source-adapter",
+      "sublabel": "校验来源绑定",
+      "stage": 3,
+      "row": 0
+    },
+    {
+      "id": "ingest",
+      "type": "backend",
+      "label": "tuba-ingest",
+      "sublabel": "Raw 持久写入回执",
+      "stage": 3,
+      "row": 1
+    },
+    {
+      "id": "raw",
+      "type": "messagebus",
+      "label": "可信 Raw Topic",
+      "sublabel": "原始证据分支",
+      "stage": 3,
+      "row": 2
+    },
+    {
+      "id": "normalizer",
+      "type": "backend",
+      "label": "DIP → UIM",
+      "sublabel": "映射 / 校验 / 路由",
+      "stage": 4,
+      "row": 0
+    },
+    {
+      "id": "standard",
+      "type": "messagebus",
+      "label": "标准 / 隔离 Topic",
+      "sublabel": "领域输出 / quarantine",
+      "stage": 4,
+      "row": 1
+    },
+    {
+      "id": "indexing",
+      "type": "database",
+      "label": "Indexers → ES",
+      "sublabel": "Raw / 标准 / DLQ",
+      "stage": 4,
+      "row": 2
+    }
+  ],
+  "flows": [
+    {
+      "from": "sources",
+      "to": "collectors",
+      "label": "读取"
+    },
+    {
+      "from": "collectors",
+      "to": "sourceTopic",
+      "label": "写入"
+    },
+    {
+      "from": "sourceTopic",
+      "to": "adapter",
+      "label": "消费"
+    },
+    {
+      "from": "adapter",
+      "to": "ingest",
+      "label": "可信绑定",
+      "labelDy": 24
+    },
+    {
+      "from": "ingest",
+      "to": "raw",
+      "label": "持久化",
+      "labelDy": 24
+    },
+    {
+      "from": "raw",
+      "to": "normalizer",
+      "label": "DIP"
+    },
+    {
+      "from": "normalizer",
+      "to": "standard",
+      "label": "标准化",
+      "labelDy": 24
+    },
+    {
+      "from": "raw",
+      "to": "indexing",
+      "label": "Raw 索引",
+      "labelDy": 40,
+      "route": "straight"
+    },
+    {
+      "from": "standard",
+      "to": "indexing",
+      "label": "索引",
+      "labelDy": 24
+    }
+  ],
+  "cards": [
+    {
+      "dot": "cyan",
+      "title": "TUBA 统一管理",
+      "items": [
+        "Management Agent 管理组件版本、配置、进程与健康",
+        "Agent 经 API / PostgreSQL 获取租户绑定配置；不依赖 Fleet",
+        "采集凭据只写登记的来源 Topic"
+      ]
+    },
+    {
+      "dot": "amber",
+      "title": "三段确认",
+      "items": [
+        "Beat ACK 只确认来源 Kafka",
+        "source-adapter 收到 ingest receipt 后提交来源 offset",
+        "索引器在 ES 成功或 DLQ 持久确认后提交 offset"
+      ]
+    },
+    {
+      "dot": "rose",
+      "title": "去重边界",
+      "items": [
+        "同 topic / partition / offset 重读可保持 delivery ID",
+        "Beat 跨 offset 重发可能成为重复来源事件",
+        "没有稳定源位置前不宣称端到端去重"
+      ]
+    }
+  ]
+}

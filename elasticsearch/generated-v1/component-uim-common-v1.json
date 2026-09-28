@@ -1,0 +1,130 @@
+{
+  "template": {
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "event": {
+          "dynamic": "strict",
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "kind": {
+              "type": "keyword"
+            },
+            "category": {
+              "type": "keyword"
+            },
+            "dataset": {
+              "type": "keyword"
+            },
+            "action": {
+              "type": "keyword"
+            },
+            "outcome": {
+              "type": "keyword"
+            },
+            "duration": {
+              "type": "long"
+            }
+          }
+        },
+        "organization": {
+          "dynamic": "strict",
+          "properties": {
+            "id": {
+              "type": "keyword"
+            }
+          }
+        },
+        "ueba": {
+          "dynamic": "strict",
+          "properties": {
+            "schema": {
+              "dynamic": "strict",
+              "properties": {
+                "version": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "quality": {
+              "dynamic": "strict",
+              "properties": {
+                "status": {
+                  "type": "keyword"
+                },
+                "reasons": {
+                  "type": "keyword"
+                },
+                "usable_for": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "route": {
+              "dynamic": "strict",
+              "properties": {
+                "domain": {
+                  "type": "keyword"
+                },
+                "generation": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "event": {
+              "dynamic": "strict",
+              "properties": {
+                "type": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "provenance": {
+              "dynamic": "strict",
+              "properties": {
+                "raw_event_id": {
+                  "type": "keyword"
+                },
+                "release_id": {
+                  "type": "keyword"
+                },
+                "dip_version": {
+                  "type": "keyword"
+                },
+                "uim_version": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        },
+        "vendor": {
+          "dynamic": "strict",
+          "properties": {
+            "name": {
+              "type": "keyword"
+            },
+            "product": {
+              "type": "keyword"
+            },
+            "dataset": {
+              "type": "keyword"
+            },
+            "payload": {
+              "type": "flattened"
+            }
+          }
+        }
+      }
+    }
+  },
+  "_meta": {
+    "managed_by": "tuba",
+    "version": "1"
+  }
+}

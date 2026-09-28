@@ -1,0 +1,20 @@
+{
+  "endpoint": "https://tuba.example.internal/api/v1/ingest/events",
+  "spool_path": "../data/spool.sqlite",
+  "poll_interval": "1s",
+  "sources": [
+    {
+      "source_instance_id": "src_0123456789abcdef0123456789abcdef",
+      "source_context_id": "ctx_0123456789abcdef0123456789abcdef",
+      "stream_id": "zeek.conn",
+      "path_glob": "/opt/zeek/logs/current/conn.log*",
+      "api_key_env": "TUBA_SOURCE_KEY_ZEEK_CONN",
+      "allow_drop": false,
+      "filter": {
+        "version": "1",
+        "mode": "shadow",
+        "drop_equals": {}
+      }
+    }
+  ]
+}

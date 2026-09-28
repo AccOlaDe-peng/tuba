@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tuba.local/contracts/events/raw/1/schema.json",
+  "title": "TUBA Trusted Raw Event Envelope v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "raw_event_id", "organization", "namespace", "source_instance_id", "source_context_id", "source_position", "source_epoch", "vendor", "received_at", "release_id", "payload_hash", "payload", "encoding"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0.0"},
+    "raw_event_id": {"type": "string", "pattern": "^raw:[a-f0-9]{64}$"},
+    "organization": {"type": "object", "additionalProperties": false, "required": ["id"], "properties": {"id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}}},
+    "namespace": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+    "source_instance_id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "source_context_id": {"type": "string", "pattern": "^ctx_[a-f0-9]{32}$"},
+    "source_position": {"type": "string", "minLength": 1, "maxLength": 512},
+    "source_epoch": {"type": "string", "minLength": 1, "maxLength": 128},
+    "vendor": {"type": "object", "additionalProperties": false, "required": ["name", "product", "dataset"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "product": {"type": "string", "minLength": 1, "maxLength": 128}, "dataset": {"type": "string", "minLength": 1, "maxLength": 128}}},
+    "received_at": {"type": "string", "format": "date-time"},
+    "release_id": {"type": "string", "maxLength": 128},
+    "payload_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "payload": {"type": "object"},
+    "encoding": {"type": "string", "const": "json"}
+  }
+}

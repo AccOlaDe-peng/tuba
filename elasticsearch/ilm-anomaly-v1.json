@@ -1,0 +1,24 @@
+{
+  "policy": {
+    "phases": {
+      "hot": {
+        "actions": {}
+      },
+      "warm": {
+        "min_age": "7d",
+        "actions": {
+          "readonly": {},
+          "forcemerge": {
+            "max_num_segments": 1
+          }
+        }
+      },
+      "delete": {
+        "min_age": "90d",
+        "actions": {
+          "delete": {}
+        }
+      }
+    }
+  }
+}

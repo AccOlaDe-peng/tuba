@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tuba.local/contracts/events/analysis-result/1/schema.json",
+  "title": "TUBA Analysis Result v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["contract_version", "result_type", "result_id", "organization_id", "namespace", "rule_id", "rule_version", "run_id", "document"],
+  "properties": {
+    "contract_version": {"type": "string", "const": "1.0.0"},
+    "result_type": {"type": "string", "enum": ["feature", "anomaly", "risk"]},
+    "result_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "organization_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+    "namespace": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+    "rule_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "rule_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "run_id": {"type": "string", "minLength": 1, "maxLength": 256},
+    "document": {"type": "object"}
+  }
+}

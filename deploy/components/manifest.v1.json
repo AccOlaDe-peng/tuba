@@ -1,0 +1,50 @@
+{
+  "schema_version": "1.0.0",
+  "manifest_version": 1,
+  "status": "development-pinned",
+  "verified_at_utc": "2026-09-27",
+  "publisher": "Elastic",
+  "version_policy": "exact-version-per-managed-release",
+  "artifacts": [
+    {
+      "component": "filebeat",
+      "version": "8.19.0",
+      "os": "linux",
+      "architecture": "amd64",
+      "format": "tar.gz",
+      "url": "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.19.0-linux-x86_64.tar.gz",
+      "sha512": "3c795b14051077d8b5bae0c0f3210698452fb791bae4ea7ad37637cb783f3d2022524e58798f7d1e5ab00283bba02ada9b13afddb2482e63197023f385ab08a8",
+      "checksum_source": "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.19.0-linux-x86_64.tar.gz.sha512"
+    },
+    {
+      "component": "filebeat",
+      "version": "8.19.0",
+      "os": "windows",
+      "architecture": "amd64",
+      "format": "zip",
+      "url": "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.19.0-windows-x86_64.zip",
+      "sha512": "1701c79ce6f0d6603de586c57199df998da7b0e68f3cbfe75a1c62888dc0c044b0bd08237e94ff1520b296ef1312a8df91aee7aa41321d68bf088c4c4f6aee39",
+      "checksum_source": "https://artifacts.elastic.co/downloads/beats/filebeat/filebeat-8.19.0-windows-x86_64.zip.sha512"
+    },
+    {
+      "component": "winlogbeat",
+      "version": "8.19.0",
+      "os": "windows",
+      "architecture": "amd64",
+      "format": "zip",
+      "url": "https://artifacts.elastic.co/downloads/beats/winlogbeat/winlogbeat-8.19.0-windows-x86_64.zip",
+      "sha512": "e1681a707ff809124402c6042a07ea18c90e38237cd708411d2864ce3b75491f42e4a8e923fec0baf58e7698054eb002ebcbfd2f5d39aa3bae3d860336531a58",
+      "checksum_source": "https://artifacts.elastic.co/downloads/beats/winlogbeat/winlogbeat-8.19.0-windows-x86_64.zip.sha512"
+    }
+  ],
+  "distribution": {
+    "license_review": "required-before-customer-redistribution",
+    "include_upstream_license_and_notice_files": true,
+    "public_bundle_redistribution_approved": false
+  },
+  "compatibility": {
+    "elasticsearch_target": "8.19.x",
+    "kafka_target": "single-broker-kraft",
+    "kafka_output_requires_network_reachability": true
+  }
+}

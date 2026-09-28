@@ -1,0 +1,161 @@
+{
+  "version": 1,
+  "state_dir": "/var/lib/tuba/launcher",
+  "log_dir": "/var/log/tuba",
+  "environment_file": "/etc/tuba/tuba.env",
+  "services": [
+    {
+      "name": "ingest",
+      "command": "/opt/tuba/current/bin/tuba-ingest",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "KAFKA_BROKERS": "${KAFKA_BROKERS}",
+        "TUBA_ORGANIZATION_ID": "${TUBA_ORGANIZATION_ID}",
+        "TUBA_NAMESPACE": "${TUBA_NAMESPACE}",
+        "DATABASE_URL": "${DATABASE_URL}",
+        "PG_STATEMENT_TIMEOUT": "${PG_STATEMENT_TIMEOUT}",
+        "HTTP_REQUEST_TIMEOUT": "${HTTP_REQUEST_TIMEOUT}",
+        "HTTP_LISTEN": "127.0.0.1:8080",
+        "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
+        "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
+        "KAFKA_SASL_USERNAME": "${TUBA_INGEST_KAFKA_USER}",
+        "KAFKA_SASL_PASSWORD": "${TUBA_INGEST_KAFKA_PASSWORD}"
+      }
+    },
+    {
+      "name": "normalizer",
+      "command": "/opt/tuba/current/bin/tuba-normalizer",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "KAFKA_BROKERS": "${KAFKA_BROKERS}",
+        "TUBA_ORGANIZATION_ID": "${TUBA_ORGANIZATION_ID}",
+        "TUBA_NAMESPACE": "${TUBA_NAMESPACE}",
+        "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
+        "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
+        "KAFKA_SASL_USERNAME": "${TUBA_NORMALIZER_KAFKA_USER}",
+        "KAFKA_SASL_PASSWORD": "${TUBA_NORMALIZER_KAFKA_PASSWORD}"
+      }
+    },
+    {
+      "name": "raw-indexer",
+      "command": "/opt/tuba/current/bin/tuba-raw-indexer",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "KAFKA_BROKERS": "${KAFKA_BROKERS}",
+        "TUBA_ORGANIZATION_ID": "${TUBA_ORGANIZATION_ID}",
+        "TUBA_NAMESPACE": "${TUBA_NAMESPACE}",
+        "ES_URL": "${ES_URL}",
+        "ES_API_KEY": "${TUBA_RAW_INDEXER_ES_API_KEY}",
+        "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
+        "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
+        "KAFKA_SASL_USERNAME": "${TUBA_RAW_INDEXER_KAFKA_USER}",
+        "KAFKA_SASL_PASSWORD": "${TUBA_RAW_INDEXER_KAFKA_PASSWORD}"
+      }
+    },
+    {
+      "name": "quarantine-indexer",
+      "command": "/opt/tuba/current/bin/tuba-quarantine-indexer",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "KAFKA_BROKERS": "${KAFKA_BROKERS}",
+        "TUBA_ORGANIZATION_ID": "${TUBA_ORGANIZATION_ID}",
+        "TUBA_NAMESPACE": "${TUBA_NAMESPACE}",
+        "ES_URL": "${ES_URL}",
+        "ES_API_KEY": "${TUBA_QUARANTINE_INDEXER_ES_API_KEY}",
+        "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
+        "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
+        "KAFKA_SASL_USERNAME": "${TUBA_QUARANTINE_INDEXER_KAFKA_USER}",
+        "KAFKA_SASL_PASSWORD": "${TUBA_QUARANTINE_INDEXER_KAFKA_PASSWORD}"
+      }
+    },
+    {
+      "name": "standard-indexer",
+      "command": "/opt/tuba/current/bin/tuba-standard-indexer",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "KAFKA_BROKERS": "${KAFKA_BROKERS}",
+        "TUBA_ORGANIZATION_ID": "${TUBA_ORGANIZATION_ID}",
+        "TUBA_NAMESPACE": "${TUBA_NAMESPACE}",
+        "ES_URL": "${ES_URL}",
+        "ES_API_KEY": "${TUBA_STANDARD_INDEXER_ES_API_KEY}",
+        "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
+        "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
+        "KAFKA_SASL_USERNAME": "${TUBA_STANDARD_INDEXER_KAFKA_USER}",
+        "KAFKA_SASL_PASSWORD": "${TUBA_STANDARD_INDEXER_KAFKA_PASSWORD}"
+      }
+    },
+    {
+      "name": "control-worker",
+      "command": "/opt/tuba/current/bin/tuba-control-worker",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "KAFKA_BROKERS": "${KAFKA_BROKERS}",
+        "TUBA_ORGANIZATION_ID": "${TUBA_ORGANIZATION_ID}",
+        "TUBA_NAMESPACE": "${TUBA_NAMESPACE}",
+        "DATABASE_URL": "${DATABASE_URL}",
+        "PG_STATEMENT_TIMEOUT": "${PG_STATEMENT_TIMEOUT}",
+        "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
+        "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
+        "KAFKA_SASL_USERNAME": "${TUBA_CONTROL_WORKER_KAFKA_USER}",
+        "KAFKA_SASL_PASSWORD": "${TUBA_CONTROL_WORKER_KAFKA_PASSWORD}"
+      }
+    },
+    {
+      "name": "analysis-sink",
+      "command": "/opt/tuba/current/bin/tuba-analysis-sink",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "KAFKA_BROKERS": "${KAFKA_BROKERS}",
+        "TUBA_ORGANIZATION_ID": "${TUBA_ORGANIZATION_ID}",
+        "TUBA_NAMESPACE": "${TUBA_NAMESPACE}",
+        "ES_URL": "${ES_URL}",
+        "ES_API_KEY": "${TUBA_ANALYSIS_SINK_ES_API_KEY}",
+        "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
+        "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
+        "KAFKA_SASL_USERNAME": "${TUBA_ANALYSIS_SINK_KAFKA_USER}",
+        "KAFKA_SASL_PASSWORD": "${TUBA_ANALYSIS_SINK_KAFKA_PASSWORD}"
+      }
+    },
+    {
+      "name": "api",
+      "command": "/opt/tuba/current/bin/tuba-api",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "OIDC_ISSUER": "${OIDC_ISSUER}",
+        "OIDC_AUDIENCE": "${OIDC_AUDIENCE}",
+        "OIDC_JWKS_URL": "${OIDC_JWKS_URL}",
+        "DATABASE_URL": "${DATABASE_URL}",
+        "PG_STATEMENT_TIMEOUT": "${PG_STATEMENT_TIMEOUT}",
+        "ES_URL": "${ES_URL}",
+        "ES_API_KEY": "${TUBA_API_ES_API_KEY}",
+        "HTTP_REQUEST_TIMEOUT": "${HTTP_REQUEST_TIMEOUT}",
+        "API_LISTEN": "127.0.0.1:8788"
+      }
+    },
+    {
+      "name": "web",
+      "command": "/opt/tuba/current/bin/tuba-web",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "OIDC_ISSUER": "${OIDC_ISSUER}",
+        "OIDC_CLIENT_ID": "${OIDC_CLIENT_ID}",
+        "WEB_LISTEN": "127.0.0.1:8088"
+      }
+    },
+    {
+      "name": "source-adapter",
+      "command": "/opt/tuba/current/bin/tuba-source-adapter",
+      "working_dir": "/opt/tuba/current",
+      "environment": {
+        "KAFKA_BROKERS": "${KAFKA_BROKERS}",
+        "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
+        "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
+        "KAFKA_SASL_USERNAME": "${TUBA_SOURCE_ADAPTER_KAFKA_USER}",
+        "KAFKA_SASL_PASSWORD": "${TUBA_SOURCE_ADAPTER_KAFKA_PASSWORD}",
+        "SOURCE_ADAPTER_CONFIG": "/etc/tuba/source-adapter.json",
+        "SOURCE_ADAPTER_TOKEN": "${SOURCE_ADAPTER_TOKEN}",
+        "SOURCE_ADAPTER_METRICS_LISTEN": "127.0.0.1:9185"
+      }
+    }
+  ]
+}

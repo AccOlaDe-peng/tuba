@@ -1,0 +1,247 @@
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+{{- $component := lower $name }}
+{{- $sharedMetricsPort := and $svc.metricsPort (eq (int $svc.metricsPort) (int (default 0 $svc.appPort))) }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "tuba.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "tuba.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  replicas: {{ $svc.replicas }}
+  revisionHistoryLimit: 5
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0
+      maxSurge: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+      app.kubernetes.io/component: {{ $component }}
+  template:
+    metadata:
+      labels:
+        {{- include "tuba.labels" $ | nindent 8 }}
+        app.kubernetes.io/component: {{ $component }}
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") $ | sha256sum }}
+        {{- if $svc.metricsPort }}
+        prometheus.io/scrape: "true"
+        prometheus.io/port: {{ $svc.metricsPort | quote }}
+        prometheus.io/path: "/metrics"
+        {{- end }}
+    spec:
+      serviceAccountName: {{ include "tuba.serviceAccountName" $ }}
+      automountServiceAccountToken: {{ $.Values.serviceAccount.automount }}
+      terminationGracePeriodSeconds: 30
+      securityContext:
+        {{- toYaml $.Values.podSecurityContext | nindent 8 }}
+      {{- with $.Values.image.pullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ $component }}
+          image: "{{ $.Values.image.registry }}/{{ $svc.image }}:{{ $.Values.image.tag }}"
+          imagePullPolicy: {{ $.Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml $.Values.containerSecurityContext | nindent 12 }}
+          ports:
+            {{- if $svc.appPort }}
+            - name: http
+              containerPort: {{ $svc.appPort }}
+              protocol: TCP
+            {{- end }}
+            {{- if and $svc.metricsPort (ne (int $svc.metricsPort) (int (default 0 $svc.appPort))) }}
+            - name: metrics
+              containerPort: {{ $svc.metricsPort }}
+              protocol: TCP
+            {{- end }}
+          envFrom:
+            - configMapRef:
+                name: {{ default (printf "%s-runtime" (include "tuba.fullname" $)) $.Values.config.existingConfigMap }}
+            - secretRef:
+                name: {{ include "tuba.secretName" $ }}
+                optional: {{ $.Values.secrets.optional }}
+          env:
+            {{- range $key, $value := $svc.env }}
+            - name: {{ $key }}
+              value: {{ $value | quote }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: {{ $svc.probes.live }}
+              port: {{ default $svc.metricsPort $svc.appPort }}
+            initialDelaySeconds: 10
+            periodSeconds: 15
+            timeoutSeconds: 3
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: {{ $svc.probes.ready }}
+              port: {{ default $svc.metricsPort $svc.appPort }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            failureThreshold: 3
+          resources:
+            {{- toYaml $svc.resources | nindent 12 }}
+          {{- if or $.Values.vault.enabled $.Values.common.kafka.tls.existingSecret $svc.writablePaths }}
+          volumeMounts:
+            {{- if $.Values.vault.enabled }}
+            - name: vault-runtime
+              mountPath: {{ $.Values.vault.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- range $index, $path := $svc.writablePaths }}
+            - name: writable-{{ $index }}
+              mountPath: {{ $path }}
+            {{- end }}
+            {{- if $.Values.common.kafka.tls.existingSecret }}
+            - name: kafka-tls
+              mountPath: {{ $.Values.common.kafka.tls.mountPath }}
+              readOnly: true
+            {{- end }}
+          {{- end }}
+      {{- if or $.Values.vault.enabled $.Values.common.kafka.tls.existingSecret $svc.writablePaths }}
+      volumes:
+        {{- if $.Values.vault.enabled }}
+        - name: vault-runtime
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: {{ $.Values.vault.secretProviderClassName }}
+        {{- end }}
+        {{- range $index, $path := $svc.writablePaths }}
+        - name: writable-{{ $index }}
+          emptyDir: {}
+        {{- end }}
+        {{- if $.Values.common.kafka.tls.existingSecret }}
+        - name: kafka-tls
+          secret:
+            secretName: {{ $.Values.common.kafka.tls.existingSecret }}
+        {{- end }}
+      {{- end }}
+      {{- with $svc.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svc.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- if $svc.affinity }}
+      affinity:
+        {{- toYaml $svc.affinity | nindent 8 }}
+      {{- else }}
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+            - weight: 100
+              podAffinityTerm:
+                topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+                    app.kubernetes.io/component: {{ $component }}
+      {{- end }}
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+              app.kubernetes.io/component: {{ $component }}
+{{- if and $svc.service $svc.service.enabled }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tuba.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "tuba.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+    tuba.io/service-role: {{ if $sharedMetricsPort }}metrics{{ else }}app{{ end }}
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+    app.kubernetes.io/component: {{ $component }}
+  ports:
+    - name: http
+      port: {{ $svc.service.port }}
+      targetPort: {{ default $svc.metricsPort $svc.appPort }}
+      protocol: TCP
+{{- end }}
+{{- if and $svc.metricsPort (not $sharedMetricsPort) }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "tuba.fullname" $ }}-{{ $component }}-metrics
+  labels:
+    {{- include "tuba.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+    tuba.io/service-role: metrics
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+    app.kubernetes.io/component: {{ $component }}
+  ports:
+    - name: metrics
+      port: {{ $svc.metricsPort }}
+      targetPort: metrics
+      protocol: TCP
+{{- end }}
+{{- if and $svc.pdb.enabled (gt (int $svc.replicas) 1) }}
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "tuba.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "tuba.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  minAvailable: {{ $svc.pdb.minAvailable }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+      app.kubernetes.io/component: {{ $component }}
+{{- end }}
+{{- if $svc.autoscaling.enabled }}
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "tuba.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "tuba.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "tuba.fullname" $ }}-{{ $component }}
+  minReplicas: {{ $svc.autoscaling.minReplicas }}
+  maxReplicas: {{ $svc.autoscaling.maxReplicas }}
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: {{ $svc.autoscaling.targetCPUUtilizationPercentage }}
+{{- end }}
+{{- end }}
+{{- end }}

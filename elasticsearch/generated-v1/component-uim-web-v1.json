@@ -1,0 +1,102 @@
+{
+  "template": {
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "source": {
+          "dynamic": "strict",
+          "properties": {
+            "ip": {
+              "type": "ip"
+            },
+            "address": {
+              "type": "keyword"
+            },
+            "port": {
+              "type": "integer"
+            }
+          }
+        },
+        "destination": {
+          "dynamic": "strict",
+          "properties": {
+            "ip": {
+              "type": "ip"
+            },
+            "address": {
+              "type": "keyword"
+            },
+            "port": {
+              "type": "integer"
+            },
+            "domain": {
+              "type": "keyword"
+            }
+          }
+        },
+        "network": {
+          "dynamic": "strict",
+          "properties": {
+            "transport": {
+              "type": "keyword"
+            },
+            "protocol": {
+              "type": "keyword"
+            },
+            "direction": {
+              "type": "keyword"
+            },
+            "community_id": {
+              "type": "keyword"
+            },
+            "bytes": {
+              "type": "long"
+            },
+            "packets": {
+              "type": "long"
+            }
+          }
+        },
+        "url": {
+          "dynamic": "strict",
+          "properties": {
+            "domain": {
+              "type": "keyword"
+            },
+            "path": {
+              "type": "keyword"
+            },
+            "scheme": {
+              "type": "keyword"
+            }
+          }
+        },
+        "http": {
+          "dynamic": "strict",
+          "properties": {
+            "request": {
+              "dynamic": "strict",
+              "properties": {
+                "method": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "response": {
+              "dynamic": "strict",
+              "properties": {
+                "status_code": {
+                  "type": "integer"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "_meta": {
+    "managed_by": "tuba",
+    "version": "1"
+  }
+}

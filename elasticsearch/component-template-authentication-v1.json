@@ -1,0 +1,94 @@
+{
+  "_meta": {
+    "managed_by": "tuba",
+    "version": 1
+  },
+  "template": {
+    "settings": {
+      "index.lifecycle.name": "tuba-authentication-v1",
+      "index.number_of_shards": 3,
+      "index.number_of_replicas": 1,
+      "index.mapping.total_fields.limit": 2000
+    },
+    "mappings": {
+      "dynamic": false,
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "organization": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            }
+          }
+        },
+        "event": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "kind": {
+              "type": "keyword"
+            },
+            "category": {
+              "type": "keyword"
+            },
+            "action": {
+              "type": "keyword"
+            },
+            "outcome": {
+              "type": "keyword"
+            },
+            "dataset": {
+              "type": "keyword"
+            }
+          }
+        },
+        "vendor": {
+          "properties": {
+            "dataset": {
+              "type": "keyword"
+            }
+          }
+        },
+        "user": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "name": {
+              "type": "keyword",
+              "ignore_above": 256
+            }
+          }
+        },
+        "ueba": {
+          "properties": {
+            "schema": {
+              "properties": {
+                "version": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "quality": {
+              "properties": {
+                "status": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "route": {
+              "properties": {
+                "domain": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

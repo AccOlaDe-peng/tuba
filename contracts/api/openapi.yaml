@@ -1,0 +1,1106 @@
+openapi: 3.1.0
+info:
+  title: TUBA Product API
+  version: 0.1.0
+  description: Current API contract. Operations marked planned are design contracts and are not implemented endpoints.
+servers:
+  - url: /api/v1
+security:
+  - oidc: []
+paths:
+  /ingest/events:
+    post:
+      operationId: ingestRawEvent
+      summary: Accept one source event into the durable raw Kafka stream
+      security:
+        - sourceApiKey: []
+      parameters:
+        - name: X-Source-Position
+          in: header
+          required: true
+          description: Stable source position. source-adapter encodes the immutable ingress stream, topic, partition, and offset; producers cannot supply trusted tenant identity.
+          schema: {type: string, minLength: 1, maxLength: 512}
+        - {name: X-Source-Context, in: header, required: true, schema: {type: string, pattern: '^ctx_[a-f0-9]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              description: One JSON source event, at most 1 MiB. Beat Kafka input follows the BeatIngressEvent schema; identity and routing metadata are resolved from the registered source context.
+              additionalProperties: true
+      responses:
+        "202":
+          description: Raw event durably accepted by Kafka
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipt_id, raw_event_id, source_context_id, source_position, payload_hash, accepted_at, status]
+                properties:
+                  receipt_id: {type: string}
+                  raw_event_id: {type: string}
+                  source_context_id: {type: string, pattern: '^ctx_[a-f0-9]{32}$'}
+                  source_position: {type: string, minLength: 1, maxLength: 512}
+                  payload_hash: {type: string, pattern: '^[a-f0-9]{64}$'}
+                  accepted_at: {type: string, format: date-time}
+                  status: {type: string, const: accepted}
+        "400": {description: Invalid JSON or missing source position}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "409": {description: Source position was previously used for a different payload}
+        "413": {description: Payload exceeds 1 MiB}
+        "415": {description: Content-Type must be application/json}
+        "429": {description: Rate limited; Retry-After is set}
+        "503": {description: Kafka is temporarily unavailable; retry with the same source position}
+  /internal/ingest/beat-events:
+    post:
+      operationId: ingestBeatEventFromBoundTopic
+      summary: Accept a Beat event from a server-bound Kafka source topic
+      description: Internal adapter endpoint. Resolves organization, source instance and immutable context from the registered topic; callers cannot provide source identity in the body.
+      security: []
+      parameters:
+        - {name: X-Source-Adapter-Token, in: header, required: true, schema: {type: string, minLength: 32}}
+        - {name: X-Source-Topic, in: header, required: true, schema: {type: string, pattern: '^tuba\.source\.ctx_[a-f0-9]{32}\.v1$'}}
+        - {name: X-Source-Partition, in: header, required: true, schema: {type: integer, minimum: 0}}
+        - {name: X-Source-Offset, in: header, required: true, schema: {type: integer, minimum: 0}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/BeatIngressEvent"}
+      responses:
+        "202":
+          description: Raw event durably accepted; adapter verifies the returned context, topic position and payload hash before committing Kafka offset.
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [receipt_id, raw_event_id, source_context_id, source_position, payload_hash, accepted_at, status]
+                properties:
+                  receipt_id: {type: string}
+                  raw_event_id: {type: string}
+                  source_context_id: {type: string, pattern: '^ctx_[a-f0-9]{32}$'}
+                  source_position: {type: string, pattern: '^kafka-v1:tuba\.source\.ctx_[a-f0-9]{32}\.v1:[0-9]+:[0-9]+$'}
+                  payload_hash: {type: string, pattern: '^[a-f0-9]{64}$'}
+                  accepted_at: {type: string, format: date-time}
+                  status: {type: string, const: accepted}
+        "400": {description: Invalid source topic position or content type; adapter retains offset}
+        "401": {description: Invalid adapter token; adapter retains offset}
+        "413": {description: Payload exceeds 1 MiB}
+        "429": {description: Rate limited; adapter retains offset and retries}
+        "503": {description: Topic binding or downstream dependency unavailable; adapter retains offset and retries}
+  /sources:
+    get:
+      operationId: listSources
+      x-required-permission: source:manage
+      summary: List source instances in the authenticated tenant
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Source configuration without credentials
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/SourceInstance"}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      operationId: registerSource
+      x-required-permission: source:manage
+      summary: Register a source and issue its API key once
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SourceRegistrationInput"}
+      responses:
+        "201":
+          description: Registered source; api_key is only returned at creation
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RegisteredSource"}
+        "400": {description: Invalid registration or release is not active/staged}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Source registry unavailable}
+  /sources/{id}:
+    delete:
+      operationId: revokeSource
+      x-required-permission: source:manage
+      summary: Disable a source credential
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^src_[a-f0-9]{32}$"}}
+      responses:
+        "204": {description: Source disabled}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Source not found}
+        "503": {description: Source registry unavailable}
+  /sources/{id}/rotate:
+    post:
+      operationId: rotateSourceCredential
+      x-required-permission: source:manage
+      summary: Rotate a source key without changing the source epoch
+      description: The previous key remains valid for 24 hours for queue draining. Store the returned API key; it is shown only once.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^src_[a-f0-9]{32}$"}}
+      responses:
+        "200":
+          description: Updated source and newly issued one-time API key
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/RegisteredSource"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Source not found or disabled}
+        "503": {description: Source registry unavailable}
+  /collectors:
+    get:
+      operationId: listCollectors
+      x-required-permission: source:manage
+      summary: List registered Collectors in the authenticated tenant
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Collector registry and last reported status
+          content: {application/json: {schema: {type: object, required: [items], properties: {items: {type: array, items: {$ref: "#/components/schemas/CollectorSummary"}}}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Collector registry unavailable}
+  /collectors/enrollments:
+    post:
+      operationId: createCollectorEnrollment
+      x-required-permission: source:manage
+      summary: Create a one-time enrollment token for a Collector
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                expires_in_minutes: {type: integer, minimum: 5, maximum: 1440, default: 30}
+      responses:
+        "201":
+          description: Token returned once; response is no-store
+          content: {application/json: {schema: {$ref: "#/components/schemas/CollectorEnrollment"}}}
+        "400": {description: Invalid expiration}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Collector registry unavailable}
+  /collectors/{id}/config:
+    put:
+      operationId: publishCollectorConfig
+      x-required-permission: source:manage
+      summary: Publish a new immutable Collector configuration version
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: '^col_[a-f0-9]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, additionalProperties: true, maxProperties: 128}
+      responses:
+        "201": {description: Configuration version created; inline secrets are rejected}
+        "400": {description: Invalid configuration or inline credentials}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Collector not found}
+        "503": {description: Collector registry unavailable}
+  /collectors/{id}:
+    delete:
+      operationId: disableCollector
+      x-required-permission: source:manage
+      summary: Disable a Collector credential
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: '^col_[a-f0-9]{32}$'}}
+      responses:
+        "204": {description: Collector disabled}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Collector not found or already disabled}
+        "503": {description: Collector registry unavailable}
+  /collector/enroll:
+    post:
+      operationId: enrollCollector
+      summary: Consume a one-time enrollment token and register this Collector
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [enrollment_token, install_id, hostname, os, architecture, version]
+              properties:
+                enrollment_token: {type: string, maxLength: 128}
+                install_id: {type: string, minLength: 1, maxLength: 128}
+                hostname: {type: string, minLength: 1, maxLength: 255}
+                os: {type: string, enum: [linux, windows]}
+                architecture: {type: string, enum: [amd64, arm64]}
+                version: {type: string, minLength: 1, maxLength: 64}
+      responses:
+        "201": {description: Collector ID and bearer credential returned once; response is no-store}
+        "400": {description: Invalid registration}
+        "401": {description: Invalid, expired, or consumed enrollment token}
+        "503": {description: Collector registry unavailable}
+  /collector/heartbeat:
+    post:
+      operationId: reportCollectorHeartbeat
+      summary: Report Collector health and bounded source counters
+      security:
+        - collectorBearer: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CollectorHeartbeat"}
+      responses:
+        "204": {description: Heartbeat accepted}
+        "400": {description: Invalid heartbeat}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "503": {description: Collector registry unavailable}
+  /collector/config:
+    get:
+      operationId: getCollectorConfig
+      summary: Poll the latest immutable configuration using ETag
+      security:
+        - collectorBearer: []
+      parameters:
+        - {name: If-None-Match, in: header, required: false, schema: {type: string}}
+      responses:
+        "200": {description: Latest configuration version and ETag, no-store}
+        "204": {description: No configuration has been published}
+        "304": {description: Configuration is unchanged}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "503": {description: Collector registry unavailable}
+  /me:
+    get:
+      operationId: getCurrentPrincipal
+      summary: Return the authenticated principal and effective permissions
+      responses:
+        "200":
+          description: Current principal
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Principal"
+        "401": {$ref: "#/components/responses/Unauthorized"}
+  /overview:
+    get:
+      operationId: getOverview
+      x-required-permission: anomaly:read
+      summary: Return tenant-scoped investigation metrics
+      responses:
+        "200":
+          description: Investigation overview
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Overview"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /events:
+    get:
+      operationId: listEvents
+      x-required-permission: event:read
+      summary: Search tenant-scoped normalized events in one supported domain
+      description: Returns approved UIM fields only; original source payload is available through separately authorized evidence access.
+      parameters:
+        - {name: domain, in: query, required: true, schema: {type: string, enum: [authentication, session, iam, directory, network, dns, web, tls]}}
+        - {name: from, in: query, schema: {type: string, format: date-time}}
+        - {name: to, in: query, schema: {type: string, format: date-time}}
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: Tenant and domain scoped event page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, next_cursor]
+                properties:
+                  items: {type: array, items: {type: object}}
+                  total: {type: integer}
+                  next_cursor: {type: [string, "null"]}
+        "400": {description: Invalid domain, time range, limit, or cursor}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Event store unavailable}
+  /anomalies:
+    get:
+      operationId: listAnomalies
+      x-required-permission: anomaly:read
+      summary: List tenant-scoped anomalies
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - {name: severity, in: query, schema: {type: string, enum: [low, medium, high, critical]}}
+        - {name: status, in: query, schema: {type: string, enum: [open, investigating, closed, false_positive]}}
+        - {name: entity, in: query, schema: {type: string, maxLength: 128}}
+        - {name: from, in: query, schema: {type: string, format: date-time}}
+        - {name: to, in: query, schema: {type: string, format: date-time}}
+      responses:
+        "200":
+          description: Anomaly page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/AnomalySummary"}}
+                  next_cursor: {type: [string, "null"]}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /anomalies/{id}:
+    get:
+      operationId: getAnomaly
+      x-required-permission: anomaly:read
+      summary: Get a tenant-scoped anomaly
+      parameters: [{name: id, in: path, required: true, schema: {type: string, maxLength: 256}}]
+      responses:
+        "200":
+          description: Anomaly detail
+          content: {application/json: {schema: {$ref: "#/components/schemas/AnomalyDetail"}}}
+        "404": {description: Anomaly not found}
+  /anomalies/{id}/evidence:
+    get:
+      operationId: listAnomalyEvidence
+      x-required-permission: anomaly:read
+      summary: Get the authentication events referenced by an anomaly
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, maxLength: 256}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 200, default: 100}}
+      responses:
+        "200":
+          description: Tenant-scoped event evidence
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, total, truncated]
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/EvidenceEvent"}}
+                  total: {type: integer}
+                  truncated: {type: boolean}
+        "404": {description: Anomaly not found}
+  /cases:
+    get:
+      operationId: listCases
+      x-required-permission: case:read
+      summary: List tenant-scoped cases
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - {name: status, in: query, schema: {type: string, enum: [open, in_progress, closed]}}
+        - {name: severity, in: query, schema: {type: string, enum: [low, medium, high, critical]}}
+        - {name: q, in: query, schema: {type: string, maxLength: 200}}
+      responses:
+        "200": {description: Case page}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      operationId: createCase
+      x-required-permission: case:write
+      summary: Create a tenant-scoped case
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema: {type: string, minLength: 8, maxLength: 128}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateCase"}
+      responses:
+        "201":
+          description: Case created or the stored idempotent response
+          content: {application/json: {schema: {$ref: "#/components/schemas/Case"}}}
+        "409": {description: Idempotency key was reused with a different request}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /cases/{id}:
+    get:
+      operationId: getCase
+      x-required-permission: case:read
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {"200": {description: Case detail}, "404": {description: Case not found}}
+  /cases/{id}/actions:
+    post:
+      operationId: updateCase
+      x-required-permission: case:write
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {"200": {description: Case updated}, "409": {description: Version conflict}}
+  /cases/{id}/activity:
+    get:
+      operationId: listCaseActivity
+      x-required-permission: case:read
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses: {"200": {description: Case activity page}, "404": {description: Case not found}}
+  /audit:
+    get:
+      operationId: listAuditEvents
+      x-required-permission: user:manage
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200": {description: Tenant audit event page}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /members:
+    get:
+      operationId: listMembers
+      x-required-permission: user:manage
+      responses: {"200": {description: Tenant memberships}, "403": {$ref: "#/components/responses/Forbidden"}}
+  /members/{subject}/roles/{role}:
+    parameters:
+      - {name: subject, in: path, required: true, schema: {type: string}}
+      - {name: role, in: path, required: true, schema: {type: string, enum: [viewer, analyst, tenant_admin]}}
+    put:
+      operationId: grantMemberRole
+      x-required-permission: user:manage
+      responses: {"204": {description: Role granted}}
+    delete:
+      operationId: revokeMemberRole
+      x-required-permission: user:manage
+      responses: {"204": {description: Role revoked}}
+  /operations/status:
+    get:
+      operationId: getOperationsStatus
+      x-required-permission: operations:read
+      summary: Return current platform dependency and analysis freshness status
+      responses:
+        "200":
+          description: Operations status
+          content: {application/json: {schema: {$ref: "#/components/schemas/OperationsStatus"}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /releases:
+    get:
+      operationId: listReleases
+      summary: List immutable semantic releases in the authenticated tenant
+      x-required-permission: release:read
+      x-implementation-status: planned
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200": {description: Paginated release summaries, content: {application/json: {schema: {$ref: "#/components/schemas/ReleaseList"}}}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      operationId: createRelease
+      summary: Register an immutable semantic release manifest
+      x-required-permission: release:manage
+      x-implementation-status: planned
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: "../releases/1/manifest.schema.json"}}}
+      responses:
+        "201": {description: Release registered in draft state, content: {application/json: {schema: {$ref: "#/components/schemas/Release"}}}}
+        "400": {description: Invalid manifest or asset dependency graph}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {description: Idempotency key or immutable release ID conflicts with previous content}
+        "413": {description: Manifest exceeds size limit}
+  /releases/{id}:
+    get:
+      operationId: getRelease
+      summary: Read release state and manifest digest
+      x-required-permission: release:read
+      x-implementation-status: planned
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, maxLength: 128}}
+      responses:
+        "200": {description: Release metadata, content: {application/json: {schema: {$ref: "#/components/schemas/Release"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Release not found}
+  /releases/{id}/validate:
+    post:
+      operationId: validateRelease
+      summary: Verify asset hashes, dependencies and service compatibility
+      x-required-permission: release:manage
+      x-implementation-status: planned
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, maxLength: 128}}
+      responses:
+        "202": {description: Validation job queued, headers: {Location: {schema: {type: string}}}, content: {application/json: {schema: {$ref: "#/components/schemas/AsyncJobAccepted"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Release not found}
+        "409": {description: Release is not draft or already immutable-validated}
+  /releases/{id}/activate:
+    post:
+      operationId: activateRelease
+      summary: Stage and activate a validated release for a generation
+      x-required-permission: release:manage
+      x-implementation-status: planned
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, maxLength: 128}}
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: "#/components/schemas/ReleaseActivation"}}}
+      responses:
+        "202": {description: Activation job queued, content: {application/json: {schema: {$ref: "#/components/schemas/AsyncJobAccepted"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Release not found}
+        "409": {description: Release is not validated or generation is already active}
+  /jobs:
+    get:
+      operationId: listJobs
+      summary: List tenant processing jobs
+      x-required-permission: job:read
+      x-implementation-status: planned
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: state, in: query, schema: {type: string, enum: [queued, running, succeeded, failed, cancelled]}}
+      responses:
+        "200": {description: Paginated jobs, content: {application/json: {schema: {$ref: "#/components/schemas/JobList"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    post:
+      operationId: createJob
+      summary: Queue a replay, backfill, baseline, export or retention job
+      x-required-permission: job:manage
+      x-implementation-status: planned
+      parameters:
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: "#/components/schemas/JobCreate"}}}
+      responses:
+        "202": {description: Job accepted, content: {application/json: {schema: {$ref: "#/components/schemas/AsyncJobAccepted"}}}}
+        "400": {description: Invalid range or job request}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "409": {description: Idempotency key reused with a different request}
+        "429": {description: Tenant job concurrency limit reached}
+  /jobs/{id}:
+    get:
+      operationId: getJob
+      summary: Read a tenant processing job and attempt history
+      x-required-permission: job:read
+      x-implementation-status: planned
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200": {description: Job state, progress and attempts, content: {application/json: {schema: {$ref: "#/components/schemas/Job"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Job not found in the caller tenant}
+  /jobs/{id}/cancel:
+    post:
+      operationId: cancelJob
+      summary: Request cancellation at the next committed batch boundary
+      x-required-permission: job:manage
+      x-implementation-status: planned
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
+      responses:
+        "202": {description: Cancellation requested, content: {application/json: {schema: {$ref: "#/components/schemas/AsyncJobAccepted"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Job not found}
+        "409": {description: Job already reached a terminal state}
+  /quality/quarantine:
+    get:
+      operationId: listQuarantine
+      summary: List tenant quarantine references and quality reason counts
+      x-required-permission: quality:read
+      x-implementation-status: planned
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: stage, in: query, schema: {type: string, enum: [DIP, UIM]}}
+        - {name: code, in: query, schema: {type: string, pattern: "^[A-Z0-9_]+$"}}
+      responses:
+        "200": {description: Paginated quarantine metadata without raw payload, content: {application/json: {schema: {$ref: "#/components/schemas/QuarantineList"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /entities:
+    get:
+      operationId: searchEntities
+      summary: Search entities within the authenticated tenant and active generation
+      x-required-permission: entity:read
+      x-implementation-status: planned
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: entity_type, in: query, schema: {type: string, enum: [account, device]}}
+      responses:
+        "200": {description: Paginated entity projection, content: {application/json: {schema: {$ref: "#/components/schemas/EntityList"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /entities/{id}:
+    get:
+      operationId: getEntity
+      summary: Read an entity with attribution and relationship references
+      x-required-permission: entity:read
+      x-implementation-status: planned
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^ent:[a-f0-9]{64}$"}}
+      responses:
+        "200": {description: Tenant-scoped entity projection, content: {application/json: {schema: {$ref: "#/components/schemas/Entity"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Entity not found}
+  /risks:
+    get:
+      operationId: listRisks
+      summary: List active-generation risk objects for the authenticated tenant
+      x-required-permission: risk:read
+      x-implementation-status: planned
+      parameters:
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+        - {name: entity_id, in: query, schema: {type: string, pattern: "^ent:[a-f0-9]{64}$"}}
+        - {name: from, in: query, schema: {type: string, format: date-time}}
+        - {name: to, in: query, schema: {type: string, format: date-time}}
+      responses:
+        "200": {description: Paginated risk objects, content: {application/json: {schema: {$ref: "#/components/schemas/RiskList"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /query:
+    post:
+      operationId: queryDataModel
+      summary: Execute the bounded TUBA query language over approved datasets
+      x-required-permission: query:read
+      x-implementation-status: planned
+      parameters:
+        - {name: Idempotency-Key, in: header, required: false, schema: {type: string, minLength: 16, maxLength: 128}}
+      requestBody:
+        required: true
+        content: {application/json: {schema: {$ref: "#/components/schemas/QueryRequest"}}}
+      responses:
+        "200": {description: Bounded synchronous query result, content: {application/json: {schema: {$ref: "#/components/schemas/QueryResult"}}}}
+        "202": {description: Query export queued, content: {application/json: {schema: {$ref: "#/components/schemas/AsyncJobAccepted"}}}}
+        "400": {description: Unsupported syntax or field}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "422": {description: Query exceeds time, row or aggregation limits}
+  /analysis/feedback:
+    post:
+      operationId: createAnalysisFeedback
+      x-required-permission: analysis:feedback
+      summary: Record true-positive, false-positive, false-negative or inconclusive analyst feedback
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AnalysisFeedbackInput"}
+      responses:
+        "201":
+          description: Feedback recorded
+          content: {application/json: {schema: {$ref: "#/components/schemas/AnalysisFeedback"}}}
+        "400": {description: Invalid feedback}
+        "403": {$ref: "#/components/responses/Forbidden"}
+components:
+  securitySchemes:
+    sourceApiKey:
+      type: apiKey
+      in: header
+      name: X-API-Key
+    collectorBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: TUBA Collector credential
+    oidc:
+      type: openIdConnect
+      openIdConnectUrl: https://identity.example/realms/tuba/.well-known/openid-configuration
+  parameters:
+    Cursor:
+      name: cursor
+      in: query
+      schema: {type: string, maxLength: 2048}
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+  responses:
+    Unauthorized:
+      description: Authentication required or invalid
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+    Forbidden:
+      description: Effective permissions do not allow the operation
+      content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
+  schemas:
+    BeatIngressEvent:
+      $ref: ../events/beat-ingress/1/schema.json
+    Release:
+      type: object
+      required: [id, version, state, sha256, created_at]
+      properties:
+        id: {type: string, maxLength: 128}
+        version: {type: string, pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'}
+        state: {type: string, enum: [draft, validated, staged, active, retired]}
+        sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
+        generation: {type: [string, "null"]}
+        created_at: {type: string, format: date-time}
+        activated_at: {type: [string, "null"], format: date-time}
+    ReleaseList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Release'}}
+        next_cursor: {type: [string, "null"]}
+    ReleaseActivation:
+      type: object
+      additionalProperties: false
+      required: [generation]
+      properties:
+        generation: {type: string, pattern: '^[A-Za-z0-9_-]{1,64}$'}
+    AsyncJobAccepted:
+      type: object
+      required: [job_id, state, status_url]
+      properties:
+        job_id: {type: string, format: uuid}
+        state: {type: string, const: queued}
+        status_url: {type: string}
+    JobCreate:
+      type: object
+      additionalProperties: false
+      required: [job_type, generation, request]
+      properties:
+        job_type: {type: string, enum: [replay, backfill, baseline, export, retention]}
+        generation: {type: string, maxLength: 64}
+        release_id: {type: string, maxLength: 128}
+        request: {type: object}
+    Job:
+      type: object
+      required: [id, job_type, state, generation, attempt, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        job_type: {type: string, enum: [replay, backfill, baseline, export, retention]}
+        state: {type: string, enum: [queued, running, succeeded, failed, cancelled, lease_expired]}
+        generation: {type: string}
+        attempt: {type: integer, minimum: 0}
+        created_at: {type: string, format: date-time}
+        started_at: {type: [string, "null"], format: date-time}
+        finished_at: {type: [string, "null"], format: date-time}
+        progress: {type: object}
+        attempts: {type: array, items: {type: object}}
+    JobList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Job'}}
+        next_cursor: {type: [string, "null"]}
+    QuarantineList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/QuarantineReference'}}
+        next_cursor: {type: [string, "null"]}
+    QuarantineReference:
+      type: object
+      required: [id, raw_event_id, stage, code, occurred_at]
+      properties:
+        id: {type: string, pattern: '^qua:[a-f0-9]{64}$'}
+        raw_event_id: {type: string, pattern: '^raw:[a-f0-9]{64}$'}
+        stage: {type: string, enum: [DIP, UIM]}
+        code: {type: string, pattern: '^[A-Z0-9_]+$'}
+        occurred_at: {type: string, format: date-time}
+    Entity:
+      type: object
+      required: [entity_id, entity_type, revision, identity_strength, valid_from]
+      properties:
+        entity_id: {type: string, pattern: '^ent:[a-f0-9]{64}$'}
+        entity_type: {type: string, enum: [account, device]}
+        revision: {type: integer, minimum: 1}
+        identity_strength: {type: string, enum: [strong, weak]}
+        valid_from: {type: string, format: date-time}
+        valid_to: {type: [string, "null"], format: date-time}
+        document: {type: object}
+    EntityList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: {type: array, items: {$ref: '#/components/schemas/Entity'}}
+        next_cursor: {type: [string, "null"]}
+    RiskList:
+      type: object
+      required: [items, next_cursor]
+      properties:
+        items: {type: array, items: {type: object}}
+        next_cursor: {type: [string, "null"]}
+    QueryRequest:
+      type: object
+      additionalProperties: false
+      required: [dataset, filter, from, to]
+      properties:
+        dataset: {type: string, enum: [authentication, session, iam, directory, network, dns, web, tls, entities, risks]}
+        filter: {type: string, minLength: 1, maxLength: 4096, description: Bounded TUBA query-language filter over approved fields; raw Elasticsearch DSL, scripts, and physical indices are not accepted.}
+        from: {type: string, format: date-time}
+        to: {type: string, format: date-time}
+        limit: {type: integer, minimum: 1, maximum: 1000, default: 100}
+        cursor: {type: string, maxLength: 2048}
+    QueryResult:
+      type: object
+      required: [items, next_cursor, took_ms]
+      properties:
+        items: {type: array, items: {type: object}}
+        next_cursor: {type: [string, "null"]}
+        took_ms: {type: integer, minimum: 0}
+    CollectorEnrollment:
+      type: object
+      required: [enrollment_token, expires_at]
+      properties:
+        enrollment_token: {type: string, description: One-time value; store securely and never log it}
+        expires_at: {type: string, format: date-time}
+    CollectorSummary:
+      type: object
+      required: [id, organization_id, namespace, hostname, os, architecture, installed_version, state, config_version, desired_config_version, online]
+      properties:
+        id: {type: string, pattern: '^col_[a-f0-9]{32}$'}
+        organization_id: {type: string}
+        namespace: {type: string}
+        hostname: {type: string}
+        os: {type: string}
+        architecture: {type: string}
+        installed_version: {type: string}
+        desired_version: {type: string}
+        state: {type: string}
+        config_version: {type: integer}
+        desired_config_version: {type: integer}
+        last_heartbeat_at: {type: [string, "null"], format: date-time}
+        online: {type: boolean}
+    CollectorHeartbeat:
+      type: object
+      additionalProperties: false
+      required: [version, config_version, state, sources, queue_depth]
+      properties:
+        version: {type: string, maxLength: 64}
+        config_version: {type: integer, minimum: 0}
+        state: {type: string, enum: [running, buffering, backpressured, paused, error]}
+        queue_depth: {type: integer, minimum: 0}
+        oldest_queued_at: {type: [string, "null"], format: date-time}
+        diagnostic: {type: string, maxLength: 2048}
+        sources:
+          type: array
+          maxItems: 256
+          items:
+            type: object
+            additionalProperties: false
+            required: [source_id, state, events_read, events_sent, events_drop]
+            properties:
+              source_id: {type: string, minLength: 1, maxLength: 128}
+              state: {type: string, enum: [running, paused, error]}
+              events_read: {type: integer, minimum: 0}
+              events_sent: {type: integer, minimum: 0}
+              events_drop: {type: integer, minimum: 0}
+              last_error: {type: string, maxLength: 512}
+    Principal:
+      type: object
+      required: [subject, organization_id, permissions]
+      properties:
+        subject: {type: string}
+        organization_id: {type: string}
+        permissions: {type: array, items: {type: string}}
+    Overview:
+      type: object
+      required: [open_anomalies, high_risk, cases, generated_at]
+      properties:
+        open_anomalies: {type: integer}
+        high_risk: {type: integer}
+        latest_anomaly: {type: [string, "null"], format: date-time}
+        generated_at: {type: string, format: date-time}
+        cases:
+          type: object
+          required: [active_cases, unassigned_cases, critical_cases, closed_today]
+          properties:
+            active_cases: {type: integer}
+            unassigned_cases: {type: integer}
+            critical_cases: {type: integer}
+            closed_today: {type: integer}
+    AnomalySummary:
+      type: object
+      required: [id, type, severity, status, timestamp, entity, evidence_count]
+      properties:
+        id: {type: string}
+        type: {type: string}
+        severity: {type: string, enum: [low, medium, high, critical]}
+        status: {type: string, enum: [open, investigating, closed, false_positive]}
+        timestamp: {type: string, format: date-time}
+        score: {type: number}
+        entity:
+          type: object
+          required: [id, type]
+          properties:
+            id: {type: string}
+            type: {type: string}
+        rule_id: {type: string}
+        rule_version: {type: string}
+        summary: {type: string}
+        evidence_count: {type: integer}
+    AnomalyDetail:
+      allOf:
+        - $ref: "#/components/schemas/AnomalySummary"
+        - type: object
+          required: [reason_codes, evidence_event_ids]
+          properties:
+            reason_codes: {type: array, items: {type: string}}
+            evidence_event_ids: {type: array, items: {type: string}}
+    EvidenceEvent:
+      type: object
+      required: [id, timestamp, event, user, ueba]
+      properties:
+        id: {type: string}
+        timestamp: {type: string, format: date-time}
+        event: {type: object}
+        user: {type: object}
+        ueba: {type: object}
+    CreateCase:
+      type: object
+      additionalProperties: false
+      required: [title, severity]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 300}
+        description: {type: string, maxLength: 5000}
+        severity: {type: string, enum: [low, medium, high, critical]}
+        anomaly_ids: {type: array, maxItems: 100, items: {type: string, maxLength: 256}}
+    Case:
+      type: object
+      required: [id, title, status, severity, version, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        title: {type: string}
+        description: {type: string}
+        status: {type: string, enum: [open, in_progress, closed]}
+        severity: {type: string, enum: [low, medium, high, critical]}
+        assignee: {type: string}
+        verdict: {type: string, enum: [true_positive, benign_positive, false_positive, inconclusive]}
+        verdict_reason: {type: string}
+        version: {type: integer, minimum: 1}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        closed_at: {type: [string, "null"], format: date-time}
+        anomaly_ids: {type: array, items: {type: string}}
+    CaseActivity:
+      type: object
+      required: [id, action, request_id, occurred_at, metadata]
+      properties:
+        id: {type: integer}
+        action: {type: string}
+        actor: {type: string}
+        request_id: {type: string}
+        occurred_at: {type: string, format: date-time}
+        before_state: {type: object}
+        after_state: {type: object}
+        metadata: {type: object}
+    OperationsStatus:
+      type: object
+      required: [status, checked_at, uptime_seconds, dependencies, analysis, kafka_configured]
+      properties:
+        status: {type: string, enum: [ok, degraded, unavailable]}
+        checked_at: {type: string, format: date-time}
+        uptime_seconds: {type: integer}
+        dependencies:
+          type: array
+          items:
+            type: object
+            required: [name, status, detail]
+            properties:
+              name: {type: string}
+              status: {type: string, enum: [ok, degraded, unavailable, unknown]}
+              detail: {type: string}
+              latency_ms: {type: integer}
+        analysis:
+          type: object
+          required: [status]
+          properties:
+            status: {type: string, enum: [ok, degraded, unknown]}
+            latest_at: {type: [string, "null"], format: date-time}
+            age_seconds: {type: [integer, "null"]}
+            runtime:
+              type: object
+              properties:
+                run:
+                  type: object
+                  required: [run_id, worker_instance, status, registry_version, processed_events, emitted_results, started_at, last_heartbeat_at]
+                  properties:
+                    run_id: {type: string}
+                    worker_instance: {type: string}
+                    status: {type: string, enum: [running, stopped, failed]}
+                    registry_version: {type: string}
+                    processed_events: {type: integer}
+                    emitted_results: {type: integer}
+                    started_at: {type: string, format: date-time}
+                    last_heartbeat_at: {type: string, format: date-time}
+                    stopped_at: {type: [string, "null"], format: date-time}
+                checkpoints:
+                  type: array
+                  items:
+                    type: object
+                    required: [topic, partition, offset, updated_at]
+                    properties:
+                      topic: {type: string}
+                      partition: {type: integer}
+                      offset: {type: integer}
+                      watermark: {type: [string, "null"], format: date-time}
+                      updated_at: {type: string, format: date-time}
+        kafka_configured: {type: boolean}
+    AnalysisFeedbackInput:
+      type: object
+      additionalProperties: false
+      required: [feedback_type, reason]
+      properties:
+        feedback_type: {type: string, enum: [true_positive, false_positive, false_negative, inconclusive]}
+        anomaly_id: {type: string, maxLength: 256}
+        rule_id: {type: string, maxLength: 256}
+        entity_id: {type: string, maxLength: 256}
+        event_ids: {type: array, maxItems: 100, items: {type: string, maxLength: 256}}
+        reason: {type: string, maxLength: 2000}
+    AnalysisFeedback:
+      type: object
+      required: [id, feedback_type, event_ids, reason, created_at]
+      properties:
+        id: {type: integer}
+        feedback_type: {type: string}
+        anomaly_id: {type: string}
+        rule_id: {type: string}
+        entity_id: {type: string}
+        event_ids: {type: array, items: {type: string}}
+        reason: {type: string}
+        created_at: {type: string, format: date-time}
+    SourceRegistrationInput:
+      type: object
+      additionalProperties: false
+      required: [vendor_name, vendor_product, vendor_dataset, release_id, rate_limit]
+      properties:
+        vendor_name: {type: string, minLength: 1, maxLength: 128}
+        vendor_product: {type: string, minLength: 1, maxLength: 128}
+        vendor_dataset: {type: string, minLength: 1, maxLength: 128}
+        release_id: {type: string, minLength: 1, maxLength: 128}
+        rate_limit: {type: integer, minimum: 1, maximum: 100000}
+    SourceInstance:
+      type: object
+      required: [id, organization_id, namespace, vendor_name, vendor_product, vendor_dataset, source_epoch, source_context_id, release_id, enabled, rate_limit, created_at, updated_at]
+      properties:
+        id: {type: string}
+        organization_id: {type: string}
+        namespace: {type: string}
+        vendor_name: {type: string}
+        vendor_product: {type: string}
+        vendor_dataset: {type: string}
+        source_epoch: {type: string}
+        source_context_id: {type: string, pattern: '^ctx_[a-f0-9]{32}$'}
+        release_id: {type: string}
+        enabled: {type: boolean}
+        rate_limit: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    RegisteredSource:
+      allOf:
+        - {$ref: "#/components/schemas/SourceInstance"}
+        - type: object
+          required: [api_key]
+          properties:
+            api_key: {type: string, description: Returned only once; store in source secret storage.}
+    Error:
+      type: object
+      required: [code, message, request_id]
+      properties:
+        code: {type: string}
+        message: {type: string}
+        request_id: {type: string}

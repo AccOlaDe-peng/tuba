@@ -1,0 +1,140 @@
+{
+  "schema_version": 2,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "TUBA Collector · 可靠采集目标设计",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "legend": {
+      "mode": "hidden"
+    }
+  },
+  "lanes": [
+    {
+      "id": "capture",
+      "label": "来源主机 · 采集与确认"
+    },
+    {
+      "id": "delivery",
+      "label": "可靠投递 · 平台接入"
+    }
+  ],
+  "mainPath": [
+    "source",
+    "adapter",
+    "filter",
+    "spool",
+    "sender",
+    "ingest",
+    "kafka"
+  ],
+  "nodes": [
+    {
+      "id": "source",
+      "lane": "capture",
+      "col": 0,
+      "type": "external",
+      "label": "原始日志",
+      "sublabel": "Windows / Zeek"
+    },
+    {
+      "id": "adapter",
+      "lane": "capture",
+      "col": 1,
+      "type": "backend",
+      "label": "来源适配器",
+      "sublabel": "稳定位置＋原文"
+    },
+    {
+      "id": "spool",
+      "lane": "capture",
+      "col": 3,
+      "type": "database",
+      "label": "本地持久队列",
+      "sublabel": "事务保存读取游标"
+    },
+    {
+      "id": "sender",
+      "lane": "delivery",
+      "col": 3,
+      "type": "backend",
+      "label": "发送调度器",
+      "sublabel": "按来源限流与重试"
+    },
+    {
+      "id": "ingest",
+      "lane": "delivery",
+      "col": 4,
+      "type": "security",
+      "label": "tuba-ingest",
+      "sublabel": "来源凭证＋可信信封"
+    },
+    {
+      "id": "kafka",
+      "lane": "delivery",
+      "col": 5,
+      "type": "messagebus",
+      "label": "Raw Kafka",
+      "sublabel": "写入确认后返回 202"
+    },
+    {
+      "id": "ack",
+      "lane": "capture",
+      "col": 4,
+      "type": "backend",
+      "label": "接收 HTTP 202",
+      "sublabel": "校验平台持久回执"
+    },
+    {
+      "id": "checkpoint",
+      "lane": "capture",
+      "col": 5,
+      "type": "database",
+      "label": "提交投递进度",
+      "sublabel": "匹配回执后回收队列"
+    },
+    {
+      "id": "filter",
+      "lane": "capture",
+      "col": 2,
+      "type": "backend",
+      "label": "规则判定",
+      "sublabel": "影子 / 保留 / 丢弃计数"
+    }
+  ],
+  "edges": [
+    {
+      "from": "source",
+      "to": "adapter"
+    },
+    {
+      "from": "spool",
+      "to": "sender"
+    },
+    {
+      "from": "sender",
+      "to": "ingest"
+    },
+    {
+      "from": "ingest",
+      "to": "kafka"
+    },
+    {
+      "from": "kafka",
+      "to": "ack"
+    },
+    {
+      "from": "ack",
+      "to": "checkpoint",
+      "role": "return"
+    },
+    {
+      "from": "adapter",
+      "to": "filter"
+    },
+    {
+      "from": "filter",
+      "to": "spool"
+    }
+  ]
+}

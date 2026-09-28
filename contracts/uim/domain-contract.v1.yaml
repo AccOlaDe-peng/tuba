@@ -1,0 +1,47 @@
+version: 1
+schema_version: 1.0.0
+status: first-slice-contract
+authoritative_catalog: domain-catalog.v1.yaml
+authoritative_json_schema: ../events/standard-event/1/schema.json
+owners:
+  semantic_classification: tuba-normalizer
+  quality_decision: tuba-normalizer
+  domain_routing: tuba-normalizer
+  elasticsearch_mapping: tuba-standard-indexer
+common_rules:
+  - Every standard event is one UIM event and is routed to exactly one of the eight domains in domain-catalog.v1.yaml.
+  - The server derives organization, namespace, route, release provenance, and quality; source payload claims for route, quality, and provenance are ignored.
+  - event.id is stable for retries of the same raw event and semantic event type; raw_event_id links back to the immutable raw evidence.
+  - @timestamp is the source event time normalized to UTC. Invalid or absent source time is quarantined, never replaced with received_at.
+  - event.outcome=failure is valid event data. It is not a normalization failure.
+  - A qualified event has no optional-mapping warnings; a partial event satisfies its domain minimum and has one or more reason codes.
+  - An invalid or unsupported input is emitted to quarantine with stage, code, release, raw_event_id, and bounded reason; it is not published to a domain topic.
+field_roles:
+  user: actor or primary account according to the event mapping
+  user.target: target account or alternate credential subject according to event semantics
+  group: target group for group membership operations
+  source: initiating network endpoint
+  destination: responding network endpoint
+route_registry:
+  owner: tuba-normalizer
+  domains: [authentication, session, iam, directory, network, dns, web, tls]
+  topic_pattern: "{events_topic_prefix}.{domain}.v1"
+  event_dataset_must_equal_route_domain: true
+  configured_generation: g1
+quality_reason_policy:
+  format: stable_lower_snake_case_code
+  examples:
+    - missing_source_session_id
+  unknown_reason: quarantine
+  empty_reasons_allowed_for: [qualified]
+  nonempty_reasons_required_for: [partial]
+quarantine_policy:
+  unsupported_source: EVENT_UNSUPPORTED
+  missing_required_field: domain-specific UIM_* code
+  invalid_type_or_time: domain-specific UIM_* code
+  duplicate_quarantine_id: idempotent by raw_event_id, release_id, stage, and code
+examples:
+  validation_cases: validation-cases.v1.json
+implementation_boundary:
+  - This is the first Windows Security and Zeek mapping slice; it does not promise full vendor event coverage.
+  - Generation is currently fixed to g1. Multi-generation activation, private aliases, and active-generation query selection are not implemented.

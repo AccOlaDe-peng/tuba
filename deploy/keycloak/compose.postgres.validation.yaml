@@ -1,0 +1,9 @@
+# Disposable validation override. Use a unique Compose project name so every
+# service and named volume is isolated from the running product Compose stack.
+services:
+  postgres:
+    ports: !override
+      - "127.0.0.1:15432:5432"
+  keycloak:
+    ports: !override
+      - "127.0.0.1:18181:8080"

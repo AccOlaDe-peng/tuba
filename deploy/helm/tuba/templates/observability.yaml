@@ -1,0 +1,147 @@
+{{- if .Values.observability.serviceMonitor.enabled }}
+{{- range $name, $svc := .Values.services }}
+{{- if and $svc.enabled $svc.metricsPort }}
+{{- $component := lower $name }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "tuba.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "tuba.labels" $ | nindent 4 }}
+    {{- toYaml $.Values.observability.serviceMonitor.labels | nindent 4 }}
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+      app.kubernetes.io/component: {{ $component }}
+      tuba.io/service-role: metrics
+  endpoints:
+    - port: {{ if eq (int $svc.metricsPort) (int (default 0 $svc.appPort)) }}http{{ else }}metrics{{ end }}
+      path: /metrics
+      interval: {{ $.Values.observability.serviceMonitor.interval }}
+      scrapeTimeout: {{ $.Values.observability.serviceMonitor.scrapeTimeout }}
+{{- end }}
+{{- end }}
+{{- end }}
+{{- if .Values.observability.prometheusRule.enabled }}
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "tuba.fullname" . }}
+  labels:
+    {{- include "tuba.labels" . | nindent 4 }}
+    {{- toYaml .Values.observability.prometheusRule.labels | nindent 4 }}
+spec:
+  groups:
+    - name: tuba.rules
+      rules:
+        - alert: TubaIngestRejected
+          expr: sum(rate(tuba_ingest_rejected_total[5m])) > 1
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: TUBA ingest is rejecting events
+        - alert: TubaIndexerFailures
+          expr: sum(rate(tuba_indexer_events_index_failed_total[5m])) > 0
+          for: 10m
+          labels: {severity: warning}
+          annotations:
+            summary: TUBA indexer is writing events to DLQ
+        - alert: TubaAnalysisStale
+          expr: max(time() - tuba_analysis_watermark_timestamp_seconds) > 300
+          for: 10m
+          labels: {severity: critical}
+          annotations:
+            summary: TUBA analysis watermark is more than five minutes behind
+        - alert: TubaAnalysisDeadLetter
+          expr: increase(tuba_analysis_results_dead_letter_total[15m]) > 0
+          for: 5m
+          labels: {severity: warning}
+          annotations:
+            summary: TUBA analysis sink is isolating invalid results
+        - alert: TubaAPIErrors
+          expr: sum(rate(tuba_api_http_errors_total[5m])) / clamp_min(sum(rate(tuba_api_http_requests_total[5m])), 1) > 0.02
+          for: 10m
+          labels: {severity: critical}
+          annotations:
+            summary: TUBA API 5xx ratio exceeds two percent
+        - alert: TubaKafkaLag
+          expr: max(kafka_consumergroup_lag{group=~"tuba-.*"}) > 10000
+          for: 15m
+          labels: {severity: warning}
+          annotations:
+            summary: TUBA Kafka consumer lag exceeds ten thousand events
+{{- end }}
+{{- if .Values.observability.dashboard.enabled }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tuba.fullname" . }}-dashboard
+  {{- if .Values.observability.dashboard.namespace }}
+  namespace: {{ .Values.observability.dashboard.namespace }}
+  {{- end }}
+  labels:
+    {{- include "tuba.labels" . | nindent 4 }}
+    {{- toYaml .Values.observability.dashboard.labels | nindent 4 }}
+data:
+  tuba-overview.json: |-
+    {
+      "title": "TUBA Operations",
+      "uid": "tuba-operations",
+      "schemaVersion": 41,
+      "refresh": "30s",
+      "time": {"from": "now-6h", "to": "now"},
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Ingest accepted / rejected",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+          "targets": [
+            {"expr": "sum(rate(tuba_ingest_accepted_total[5m]))", "legendFormat": "accepted"},
+            {"expr": "sum(rate(tuba_ingest_rejected_total[5m]))", "legendFormat": "rejected"}
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Indexer outcomes",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+          "targets": [
+            {"expr": "sum(rate(tuba_indexer_events_indexed_total[5m]))", "legendFormat": "indexed"},
+            {"expr": "sum(rate(tuba_indexer_events_index_failed_total[5m]))", "legendFormat": "failed"}
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Analysis watermark age",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+          "targets": [
+            {"expr": "max(time() - tuba_analysis_watermark_timestamp_seconds)", "legendFormat": "seconds"}
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Kafka consumer lag",
+          "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+          "targets": [
+            {"expr": "max by (group, topic) (kafka_consumergroup_lag{group=~\\\"tuba-.*\\\"})", "legendFormat": "consumer group"}
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "API error ratio",
+          "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+          "targets": [
+            {"expr": "sum(rate(tuba_api_http_errors_total[5m])) / clamp_min(sum(rate(tuba_api_http_requests_total[5m])), 1)", "legendFormat": "5xx ratio"}
+          ]
+        }
+      ]
+    }
+{{- end }}

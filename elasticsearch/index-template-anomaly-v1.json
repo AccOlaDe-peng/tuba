@@ -1,0 +1,13 @@
+{
+  "index_patterns": [
+    "ueba-anomalies-*"
+  ],
+  "priority": 500,
+  "composed_of": [
+    "tuba-anomaly-v1"
+  ],
+  "_meta": {
+    "managed_by": "tuba",
+    "version": 1
+  }
+}

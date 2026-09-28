@@ -1,0 +1,44 @@
+# 旧自研链路 profile：禁止直接激活。待补齐 Beat 接入 Topic/ACL/source-adapter 后发布新版本。
+apiVersion: tuba.dev/v1alpha1
+kind: IngestionProfile
+metadata:
+  name: zeek-validation-20260927
+  purpose: isolated-zeek-collector-acceptance
+  status: superseded
+  supersededBy: collector-design-v2
+  activationBlocked: true
+spec:
+  organization:
+    id: zeek_validation_20260927_001
+  namespace: zeek_validation_20260927_001
+  storageGeneration: g1
+  source:
+    label: zeek_21
+    vendor: zeek
+    product: zeek
+    datasets:
+      - conn
+      - dns
+      - http
+      - ssl
+  kafka:
+    rawTopic: tuba.collector.zeek_validation_20260927_001.raw.v1
+    eventsTopicPrefix: tuba.collector.zeek_validation_20260927_001.events
+    quarantineTopic: tuba.collector.zeek_validation_20260927_001.quarantine.v1
+    deadLetterTopic: tuba.collector.zeek_validation_20260927_001.dlq.v1
+    consumerGroupSuffix: zeek_20260927_001
+  elasticsearch:
+    standardAliasPattern: logs-ueba.{domain}-zeek_validation_20260927_001
+    rawAlias: logs-ueba.raw-zeek_validation_20260927_001
+    quarantineAlias: logs-ueba.quarantine-zeek_validation_20260927_001
+  safety:
+    mayUseTenantA: false
+    mayResetExistingConsumerGroups: false
+    mayWriteProductionTopics: false
+    generationActivationSupported: false
+  prerequisites:
+    - Create the isolated organization and its namespace in PostgreSQL.
+    - Create an active test identity membership and an ingest release/source binding.
+    - Create only the Kafka topics listed above with the agreed single-node settings.
+    - Verify all Elasticsearch aliases resolve only to this namespace.
+    - Run every worker with this namespace, topic set, and consumer-group suffix.

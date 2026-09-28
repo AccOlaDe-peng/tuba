@@ -1,0 +1,100 @@
+{{- if .Values.backup.postgres.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "tuba.fullname" . }}-postgres-backup
+  labels:
+    {{- include "tuba.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.postgres.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            {{- include "tuba.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: postgres-backup
+              image: {{ .Values.backup.postgres.image }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              envFrom:
+                - secretRef:
+                    name: {{ .Values.backup.postgres.existingSecret }}
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  set -eu
+                  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+                  file="{{ .Values.backup.postgres.mountPath }}/postgres-${stamp}.dump"
+                  pg_dump --format=custom --file="$file" "$DATABASE_URL"
+                  find "{{ .Values.backup.postgres.mountPath }}" -name 'postgres-*.dump' -mtime +{{ .Values.backup.postgres.retentionDays }} -delete
+              volumeMounts:
+                - name: backups
+                  mountPath: {{ .Values.backup.postgres.mountPath }}
+                {{- if .Values.vault.enabled }}
+                - name: vault-runtime
+                  mountPath: {{ .Values.vault.mountPath }}
+                  readOnly: true
+                {{- end }}
+          volumes:
+            - name: backups
+              persistentVolumeClaim:
+                claimName: {{ .Values.backup.postgres.existingClaim }}
+            {{- if .Values.vault.enabled }}
+            - name: vault-runtime
+              csi:
+                driver: secrets-store.csi.k8s.io
+                readOnly: true
+                volumeAttributes:
+                  secretProviderClass: {{ .Values.vault.secretProviderClassName }}
+            {{- end }}
+{{- end }}
+{{- if .Values.backup.elasticsearch.enabled }}
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "tuba.fullname" . }}-elasticsearch-snapshot
+  labels:
+    {{- include "tuba.labels" . | nindent 4 }}
+spec:
+  schedule: {{ .Values.backup.elasticsearch.schedule | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      template:
+        metadata:
+          labels:
+            {{- include "tuba.labels" . | nindent 12 }}
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: elasticsearch-snapshot
+              image: {{ .Values.backup.elasticsearch.image }}
+              envFrom:
+                - configMapRef:
+                    name: {{ default (printf "%s-runtime" (include "tuba.fullname" .)) .Values.config.existingConfigMap }}
+                - secretRef:
+                    name: {{ .Values.backup.elasticsearch.existingSecret }}
+              command: ["/bin/sh", "-ec"]
+              args:
+                - |
+                  set -eu
+                  stamp="$(date -u +%Y%m%dT%H%M%SZ)"
+                  snapshot="{{ .Values.backup.elasticsearch.snapshotPrefix }}-${stamp}"
+                  curl --fail --silent --show-error \
+                    -X PUT "${ES_URL}/_snapshot/{{ .Values.backup.elasticsearch.repository }}/${snapshot}?wait_for_completion=true"
+{{- end }}

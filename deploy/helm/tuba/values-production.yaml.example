@@ -1,0 +1,79 @@
+image:
+  registry: registry.example.com/tuba
+  tag: "1.0.0"
+  pullPolicy: IfNotPresent
+
+gateway:
+  enabled: true
+  create: true
+  name: tuba-gateway
+  className: envoy-gateway
+  hostname: tuba.example.com
+  tlsSecretName: tuba-gateway-tls
+  sectionName: https
+
+vault:
+  enabled: true
+  vaultAddress: https://vault.example.com
+  roleName: tuba-production
+
+secrets:
+  existingSecret: tuba-vault-runtime
+
+common:
+  kafka:
+    tls:
+      existingSecret: tuba-kafka-tls
+
+observability:
+  serviceMonitor:
+    enabled: true
+  prometheusRule:
+    enabled: true
+  dashboard:
+    enabled: true
+    namespace: monitoring
+    labels:
+      grafana_dashboard: "1"
+
+backup:
+  postgres:
+    enabled: true
+    existingClaim: tuba-postgres-backup
+    existingSecret: tuba-backup
+  elasticsearch:
+    enabled: true
+    existingSecret: tuba-backup
+    repository: tuba-backups
+
+services:
+  ingest:
+    replicas: 3
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 20
+  indexer:
+    replicas: 3
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 18
+  analysisWorker:
+    replicas: 3
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 12
+  analysisSink:
+    replicas: 3
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 12
+  api:
+    replicas: 3
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 15
+  web:
+    replicas: 3
+    autoscaling:
+      minReplicas: 3
+      maxReplicas: 10

@@ -1,0 +1,22 @@
+{
+  "index_patterns": [
+    "tuba-v1-uim-dns-*-g1-*"
+  ],
+  "priority": 300,
+  "composed_of": [
+    "tuba-uim-common-v1",
+    "tuba-uim-dns-v1"
+  ],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0
+    }
+  },
+  "_meta": {
+    "managed_by": "tuba",
+    "schema": "standard-event/1",
+    "domain": "dns",
+    "version": 1
+  }
+}

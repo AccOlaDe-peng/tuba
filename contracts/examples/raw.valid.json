@@ -1,0 +1,16 @@
+{
+  "schema_version": "1.0.0",
+  "raw_event_id": "raw:84ac1fcf568db4963f948c2f104f41fed3cafe93bc0a9cbd2c051314e5fc2314",
+  "organization": {"id": "tenant_a"},
+  "namespace": "prod",
+  "source_instance_id": "winsec-01",
+  "source_context_id": "ctx_0123456789abcdef0123456789abcdef",
+  "source_position": "security:record:123",
+  "source_epoch": "1",
+  "vendor": {"name": "Microsoft", "product": "Windows Security", "dataset": "windows.security"},
+  "received_at": "2026-09-25T04:12:01Z",
+  "release_id": "windows-security-1.0.0",
+  "payload_hash": "a0f02f6901461996708f4d73c5958007f6cbfa3b40a0e39515eb85d488b61b6b",
+  "payload": {"Event": {"System": {"EventID": 4625, "TimeCreated": "2026-09-25T04:12:00Z"}, "EventData": {"TargetUserName": "analyst"}}},
+  "encoding": "json"
+}

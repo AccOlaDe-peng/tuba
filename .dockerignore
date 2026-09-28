@@ -1,0 +1,13 @@
+.env
+.runtime
+.git
+output
+web/node_modules
+web/dist
+web/*.tsbuildinfo
+python/.venv
+python/build
+python/dist
+python/*.egg-info
+**/__pycache__
+**/.pytest_cache

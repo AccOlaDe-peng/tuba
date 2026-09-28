@@ -1,0 +1,120 @@
+{
+  "_meta": {
+    "managed_by": "tuba",
+    "version": 1
+  },
+  "template": {
+    "settings": {
+      "index.lifecycle.name": "tuba-anomaly-v1",
+      "index.number_of_shards": 1,
+      "index.number_of_replicas": 0,
+      "index.mapping.total_fields.limit": 1000
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "organization": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            }
+          }
+        },
+        "entity": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "type": {
+              "type": "keyword"
+            }
+          }
+        },
+        "anomaly": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "type": {
+              "type": "keyword"
+            },
+            "severity": {
+              "type": "keyword"
+            },
+            "status": {
+              "type": "keyword"
+            },
+            "score": {
+              "type": "float"
+            }
+          }
+        },
+        "evidence": {
+          "properties": {
+            "event_ids": {
+              "type": "keyword"
+            },
+            "count": {
+              "type": "integer"
+            }
+          }
+        },
+        "detection": {
+          "properties": {
+            "rule_id": {
+              "type": "keyword"
+            },
+            "rule_version": {
+              "type": "keyword"
+            },
+            "window": {
+              "properties": {
+                "start": {
+                  "type": "date"
+                },
+                "end": {
+                  "type": "date"
+                }
+              }
+            }
+          }
+        },
+        "analysis": {
+          "properties": {
+            "run_id": {
+              "type": "keyword"
+            },
+            "generated_at": {
+              "type": "date"
+            },
+            "registry_version": {
+              "type": "keyword"
+            },
+            "watermark": {
+              "type": "date"
+            },
+            "reprocessed": {
+              "type": "boolean"
+            },
+            "input_contract_version": {
+              "type": "keyword"
+            }
+          }
+        },
+        "explanation": {
+          "properties": {
+            "reason_codes": {
+              "type": "keyword"
+            },
+            "summary": {
+              "type": "text"
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,20 @@
+{
+  "index_patterns": [
+    "tuba-v1-quarantine-*-g1-*"
+  ],
+  "priority": 300,
+  "composed_of": [
+    "tuba-quarantine-v1"
+  ],
+  "template": {
+    "settings": {
+      "number_of_shards": 1,
+      "number_of_replicas": 0
+    }
+  },
+  "_meta": {
+    "managed_by": "tuba",
+    "schema": "quarantine/1",
+    "version": 1
+  }
+}

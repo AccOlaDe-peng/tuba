@@ -1,0 +1,13 @@
+FROM ghcr.io/astral-sh/uv:0.12.17 AS uv
+FROM public.ecr.aws/docker/library/python:3.14.7-slim-bookworm
+ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+RUN useradd --system --uid 65532 --create-home tuba
+WORKDIR /app
+COPY --from=uv /uv /usr/local/bin/uv
+COPY python/pyproject.toml python/uv.lock ./
+RUN uv sync --frozen --no-dev --no-install-project
+COPY python/tuba_analysis ./tuba_analysis
+RUN uv sync --frozen --no-dev
+USER 65532:65532
+ENV PATH="/app/.venv/bin:$PATH"
+ENTRYPOINT ["python", "-m", "tuba_analysis.worker"]

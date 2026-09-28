@@ -1,0 +1,40 @@
+{
+  "properties": {
+    "detection": {
+      "properties": {
+        "window": {
+          "properties": {
+            "start": {
+              "type": "date"
+            },
+            "end": {
+              "type": "date"
+            }
+          }
+        }
+      }
+    },
+    "analysis": {
+      "properties": {
+        "run_id": {
+          "type": "keyword"
+        },
+        "generated_at": {
+          "type": "date"
+        },
+        "registry_version": {
+          "type": "keyword"
+        },
+        "watermark": {
+          "type": "date"
+        },
+        "reprocessed": {
+          "type": "boolean"
+        },
+        "input_contract_version": {
+          "type": "keyword"
+        }
+      }
+    }
+  }
+}

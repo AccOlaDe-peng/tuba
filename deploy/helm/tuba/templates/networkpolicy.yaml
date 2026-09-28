@@ -1,0 +1,69 @@
+{{- if .Values.networkPolicy.enabled }}
+{{- range $name, $svc := .Values.services }}
+{{- if $svc.enabled }}
+{{- $component := lower $name }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "tuba.fullname" $ }}-{{ $component }}
+  labels:
+    {{- include "tuba.labels" $ | nindent 4 }}
+    app.kubernetes.io/component: {{ $component }}
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+      app.kubernetes.io/component: {{ $component }}
+  policyTypes: [Ingress, Egress]
+  ingress:
+      {{- if and $svc.service $svc.service.enabled $.Values.gateway.enabled }}
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml $.Values.networkPolicy.gatewayNamespaceSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ $svc.appPort }}
+    {{- end }}
+    {{- if $svc.metricsPort }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: {{ $.Release.Name | quote }}
+        - namespaceSelector:
+            matchLabels:
+              {{- toYaml $.Values.networkPolicy.monitoringNamespaceSelector | nindent 14 }}
+      ports:
+        - protocol: TCP
+          port: {{ default $svc.metricsPort $svc.appPort }}
+    {{- end }}
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: {{ $.Values.networkPolicy.dnsPort }}
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.dnsPort }}
+    {{- if ne $name "web" }}
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.kafkaPort }}
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.postgresPort }}
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.elasticsearchPort }}
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.keycloakPort }}
+        - protocol: TCP
+          port: {{ $.Values.networkPolicy.otelPort }}
+    {{- end }}
+{{- end }}
+{{- end }}
+{{- end }}

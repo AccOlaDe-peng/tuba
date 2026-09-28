@@ -1,0 +1,36 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tuba.local/contracts/events/beat-ingress/1/schema.json",
+  "title": "TUBA Beat Kafka Ingress Event v1",
+  "description": "One Filebeat or Winlogbeat ECS event. Tenant identity is resolved from the server-side Kafka topic binding, never from event fields.",
+  "type": "object",
+  "required": ["@timestamp", "agent", "event"],
+  "properties": {
+    "@timestamp": {"type": "string", "format": "date-time"},
+    "agent": {
+      "type": "object",
+      "required": ["type", "version", "id"],
+      "properties": {
+        "type": {"enum": ["filebeat", "winlogbeat"]},
+        "version": {"type": "string", "minLength": 1, "maxLength": 64},
+        "id": {"type": "string", "minLength": 1, "maxLength": 128},
+        "ephemeral_id": {"type": "string", "maxLength": 128}
+      }
+    },
+    "event": {
+      "type": "object",
+      "required": ["dataset"],
+      "properties": {
+        "dataset": {"type": "string", "minLength": 1, "maxLength": 128},
+        "original": {"type": "string", "maxLength": 1048576},
+        "kind": {"type": "string", "maxLength": 64},
+        "category": {"type": "array", "items": {"type": "string", "maxLength": 64}}
+      }
+    },
+    "message": {"type": "string", "maxLength": 1048576},
+    "host": {"type": "object"},
+    "log": {"type": "object"},
+    "winlog": {"type": "object"}
+  },
+  "additionalProperties": true
+}

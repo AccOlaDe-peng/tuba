@@ -1,0 +1,26 @@
+.DS_Store
+
+# 发布产物(体积达数 GB,不入库;本地文件保留)
+dist/
+
+# 本地配置与密钥
+.env
+
+# 运行时产物
+.runtime/
+output/backups/
+
+# Web 构建产物
+web/node_modules/
+web/dist/
+web/*.tsbuildinfo
+
+# Python 环境与构建产物
+python/.venv/
+python/dist/
+__pycache__/
+*.pyc
+*.egg-info/
+
+# 工具临时文件
+.codex*

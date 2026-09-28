@@ -1,0 +1,38 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tuba.local/contracts/releases/1/manifest.schema.json",
+  "title": "TUBA Semantic Release Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "release_id", "version", "assets", "compatibility"],
+  "properties": {
+    "schema_version": {"type": "string", "const": "1.0.0"},
+    "release_id": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,128}$"},
+    "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "assets": {
+      "type": "array", "minItems": 7,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["asset_id", "kind", "version", "path", "sha256", "dependencies"],
+        "properties": {
+          "asset_id": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,128}$"},
+          "kind": {"type": "string", "enum": ["dip", "uim", "routing", "es_mapping", "entity_rules", "data_model", "analysis_rules"]},
+          "version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+          "path": {"type": "string", "minLength": 1, "maxLength": 512, "pattern": "^[A-Za-z0-9._/-]+$"},
+          "sha256": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+          "dependencies": {"type": "array", "items": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[A-Za-z0-9_.:-]+$"}}
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object", "additionalProperties": false,
+      "required": ["raw_contract", "uim_contract", "analysis_result_contract", "generation"],
+      "properties": {
+        "raw_contract": {"type": "string", "const": "1"},
+        "uim_contract": {"type": "string", "const": "1"},
+        "analysis_result_contract": {"type": "string", "enum": ["1", "2"]},
+        "generation": {"type": "string", "pattern": "^[A-Za-z0-9_.:-]{1,64}$"}
+      }
+    }
+  }
+}

@@ -1,0 +1,19 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tuba.local/contracts/events/quarantine/1/schema.json",
+  "title": "TUBA Quarantine Reference v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["id", "organization_id", "namespace", "raw_event_id", "release_id", "stage", "code", "reason", "occurred_at"],
+  "properties": {
+    "id": {"type": "string", "pattern": "^qua:[a-f0-9]{64}$"},
+    "organization_id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+    "namespace": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"},
+    "raw_event_id": {"type": "string", "pattern": "^raw:[a-f0-9]{64}$"},
+    "release_id": {"type": "string", "minLength": 1},
+    "stage": {"type": "string", "enum": ["DIP", "UIM"]},
+    "code": {"type": "string", "pattern": "^[A-Z0-9_]+$"},
+    "reason": {"type": "string", "maxLength": 512},
+    "occurred_at": {"type": "string", "format": "date-time"}
+  }
+}

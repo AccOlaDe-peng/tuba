@@ -1,0 +1,23 @@
+{
+  "diagram_type": "workflow",
+  "specification": {
+    "path": "collector.workflow.json",
+    "sha256": "2a56c940a519e00e589d2d5c2d2b2448bb710f86f11c12eb6833f4fc95cee23c",
+    "bytes": 2815
+  },
+  "artifact": {
+    "path": "collector.html",
+    "sha256": "b57a098fe1c02dc47c489c5d898f67c7b8bd049308af91f3611734aea5001f71",
+    "bytes": 801555
+  },
+  "validation": {
+    "checksPassed": 9,
+    "errors": 0,
+    "warnings": 0
+  },
+  "browser_evidence": "passed",
+  "visual_review": "failed",
+  "visual_review_note": "Screenshots reviewed at 1440x900, 1600x1000, 1920x1080, and 2048x1320 in light and dark themes. Diagram reads clearly and is not clipped; lower area remains conspicuously sparse on large screens.",
+  "correction_rounds": 2,
+  "browser_receipt": "collector.visual-check.json"
+}

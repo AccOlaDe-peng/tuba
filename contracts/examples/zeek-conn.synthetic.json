@@ -1,0 +1,1 @@
+{"ts":1790416800.25,"uid":"C-tuba-validation-conn-001","id.orig_h":"192.0.2.10","id.resp_h":"198.51.100.20","id.orig_p":54321,"id.resp_p":443,"proto":"tcp","service":"ssl","duration":1.75,"orig_bytes":100,"resp_bytes":200,"orig_pkts":2,"resp_pkts":3}

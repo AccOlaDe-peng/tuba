@@ -1,0 +1,156 @@
+version: 1
+schema_version: 1.0.0
+status: implemented-first-slice
+owners:
+  classification: tuba-normalizer
+  quality: tuba-normalizer
+  route: tuba-normalizer
+common_required:
+  - "@timestamp"
+  - organization.id
+  - event.id
+  - event.kind
+  - event.category
+  - event.dataset
+  - vendor.name
+  - vendor.product
+  - vendor.dataset
+  - ueba.schema.version
+  - ueba.quality.status
+  - ueba.route.domain
+  - ueba.route.generation
+  - ueba.provenance.raw_event_id
+  - ueba.provenance.release_id
+common_types:
+  "@timestamp": date-time
+  organization.id: keyword
+  event.id: keyword
+  event.kind: enum[event]
+  event.category: keyword[]
+  event.dataset: keyword
+  event.action: keyword
+  event.outcome: enum[success, failure, unknown]
+  vendor.name: keyword
+  vendor.product: keyword
+  vendor.dataset: keyword
+  ueba.schema.version: keyword
+  ueba.quality.status: enum[qualified, partial]
+  ueba.quality.reasons: keyword[]
+  ueba.quality.usable_for: keyword[]
+  ueba.route.domain: enum[authentication, session, iam, directory, network, dns, web, tls]
+  ueba.route.generation: keyword
+  ueba.provenance.raw_event_id: keyword
+  ueba.provenance.release_id: keyword
+domain_types:
+  user.id: keyword
+  user.name: keyword
+  user.target.id: keyword
+  user.target.name: keyword
+  group.id: keyword
+  group.name: keyword
+  source.ip: ip
+  source.port: integer[0,65535]
+  destination.ip: ip
+  destination.port: integer[0,65535]
+  network.transport: keyword
+  network.protocol: keyword
+  network.bytes: long[0,*]
+  network.packets: long[0,*]
+  dns.question.name: keyword
+  url.domain: keyword
+  url.path: keyword
+  url.scheme: keyword
+  http.request.method: keyword
+  http.response.status_code: integer
+  destination.domain: keyword
+  tls.version: keyword
+  tls.cipher: keyword
+  event.duration: duration_nanoseconds
+quality:
+  qualified: minimum_contract_satisfied_without_optional_mapping_warnings
+  partial: minimum_contract_satisfied_with_one_or_more_optional_mapping_warnings
+  invalid: minimum_domain_contract_or_event_time_not_satisfied; send_to_quarantine
+  unsupported: no_enabled_parser_mapping_for_vendor_product_dataset_and_event; send_to_quarantine
+  failure_rules:
+    - qualified requires an empty reasons list
+    - partial requires at least one stable reason code
+    - failure outcomes are valid event facts and do not make an event invalid
+    - missing optional entity identifiers remain usable unless a domain rule below requires them
+domains:
+  authentication:
+    category: [authentication]
+    required: [event.action, event.outcome]
+    conditional: []
+    usable_for: [event_query, authentication_features]
+  session:
+    category: [session]
+    required: [event.action, event.outcome]
+    conditional: []
+    usable_for: [event_query, session_features]
+  iam:
+    category: [iam]
+    required: [event.action, event.outcome]
+    conditional: []
+    usable_for: [event_query, iam_features]
+  directory:
+    category: [iam]
+    required: [event.action, event.outcome]
+    conditional: []
+    usable_for: [event_query, directory_features]
+  network:
+    category: [network]
+    required: [network.transport, source.ip, destination.ip]
+    conditional: []
+    usable_for: [event_query, network_features]
+  dns:
+    category: [network]
+    required: [dns.question.name]
+    conditional: []
+    usable_for: [event_query, dns_features]
+  web:
+    category: [web]
+    required: [url.domain]
+    conditional: []
+    usable_for: [event_query, web_features]
+  tls:
+    category: [network]
+    required: [destination.domain]
+    conditional: []
+    usable_for: [event_query, tls_features]
+field_roles:
+  user: actor or primary account according to event semantics
+  user.target: account acted upon or alternate credential subject
+  group: group targeted by a membership change
+  source: initiating network endpoint
+  destination: responding network endpoint
+source_claims_ignored: [ueba.route, ueba.quality, ueba.provenance]
+failure_codes:
+  - DIP_JSON_INVALID
+  - DIP_WINDOWS_WINLOG_MISSING
+  - DIP_WINDOWS_EVENT_ID_MISSING
+  - DIP_WINDOWS_COMPUTER_MISSING
+  - DIP_ZEEK_DATASET_MISMATCH
+  - EVENT_UNSUPPORTED
+  - UIM_EVENT_TIME_INVALID
+  - UIM_ACTOR_REQUIRED
+  - UIM_COMMON_REQUIRED_FIELD_MISSING
+  - UIM_DOMAIN_UNSUPPORTED
+  - UIM_ROUTE_MISMATCH
+  - UIM_EVENT_OUTCOME_INVALID
+  - UIM_SCHEMA_VERSION_UNSUPPORTED
+  - UIM_EVENT_TYPE_REQUIRED
+  - UIM_PROVENANCE_REQUIRED
+  - UIM_EVENT_SEMANTICS_REQUIRED
+  - UIM_NETWORK_ENDPOINTS_REQUIRED
+  - UIM_ZEEK_ENDPOINTS_REQUIRED
+  - UIM_DNS_QUERY_REQUIRED
+  - UIM_DNS_QUESTION_REQUIRED
+  - UIM_HTTP_HOST_REQUIRED
+  - UIM_WEB_DOMAIN_REQUIRED
+  - UIM_TLS_SERVER_NAME_REQUIRED
+  - UIM_QUALITY_STATUS_INVALID
+  - UIM_QUALITY_DETAILS_INVALID
+notes:
+  - This catalog describes the first implemented Windows Security and Zeek mapping slice; it is not a claim of complete source coverage.
+  - Parser-specific optional-field warnings are carried in ueba.quality.reasons and are stable machine-readable reason codes.
+  - Domain validation in this catalog is owned by internal/uim.Validate; fixtures and contract checks must prevent drift.

@@ -1,0 +1,15 @@
+{
+  "schema_version": "1.0.0",
+  "release_id": "zeek-network-1.0.0",
+  "version": "1.0.0",
+  "assets": [
+    {"asset_id": "dip-zeek-1", "kind": "dip", "version": "1.0.0", "path": "dip/zeek.json", "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "dependencies": ["uim-1"]},
+    {"asset_id": "uim-1", "kind": "uim", "version": "1.0.0", "path": "uim/standard.json", "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "dependencies": ["routes-1"]},
+    {"asset_id": "routes-1", "kind": "routing", "version": "1.0.0", "path": "routing/domains.json", "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc", "dependencies": []},
+    {"asset_id": "mapping-1", "kind": "es_mapping", "version": "1.0.0", "path": "elasticsearch/templates.json", "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd", "dependencies": ["uim-1"]},
+    {"asset_id": "entities-1", "kind": "entity_rules", "version": "1.0.0", "path": "entities/rules.json", "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee", "dependencies": ["uim-1"]},
+    {"asset_id": "model-1", "kind": "data_model", "version": "1.0.0", "path": "model/datasets.json", "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff", "dependencies": ["routes-1"]},
+    {"asset_id": "analysis-1", "kind": "analysis_rules", "version": "1.0.0", "path": "analysis/rules.json", "sha256": "1111111111111111111111111111111111111111111111111111111111111111", "dependencies": ["entities-1", "model-1"]}
+  ],
+  "compatibility": {"raw_contract": "1", "uim_contract": "1", "analysis_result_contract": "2", "generation": "g1"}
+}

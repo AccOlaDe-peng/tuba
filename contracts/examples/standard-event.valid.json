@@ -1,0 +1,22 @@
+{
+  "@timestamp": "2026-09-26T10:00:00Z",
+  "organization": {"id": "tenant_a"},
+  "event": {
+    "id": "evt:6d8b3a7e9c1f4b2d8a6e0c4f1b9d7e5a6c2f8b4d0a1e3c5f7b9d2e4a6c8f0b1d",
+    "kind": "event",
+    "category": ["network"],
+    "dataset": "network",
+    "duration": 1750000000
+  },
+  "vendor": {"name": "zeek", "product": "zeek", "dataset": "zeek.conn"},
+  "ueba": {
+    "schema": {"version": "1.0.0"},
+    "quality": {"status": "qualified", "reasons": [], "usable_for": ["event_query", "network_features"]},
+    "route": {"domain": "network", "generation": "g1"},
+    "event": {"type": "network.connection"},
+    "provenance": {"raw_event_id": "raw:84ac1fcf568db4963f948c2f104f41fed3cafe93bc0a9cbd2c051314e5fc2314", "release_id": "zeek-network-v1", "dip_version": "1.0.0", "uim_version": "1.0.0"}
+  },
+  "source": {"ip": "192.0.2.10", "port": 54321},
+  "destination": {"ip": "198.51.100.20", "port": 443},
+  "network": {"transport": "tcp", "protocol": "ssl", "bytes": 300, "packets": 5}
+}

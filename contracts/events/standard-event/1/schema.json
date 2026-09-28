@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://tuba.local/contracts/events/standard-event/1/schema.json",
+  "title": "TUBA UIM Standard Event v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["@timestamp", "organization", "event", "vendor", "ueba"],
+  "properties": {
+    "@timestamp": {"type": "string", "format": "date-time"},
+    "organization": {"type": "object", "required": ["id"], "properties": {"id": {"type": "string", "pattern": "^[A-Za-z0-9_-]{1,64}$"}}},
+    "event": {"type": "object", "required": ["id", "kind", "category", "dataset"], "properties": {"id": {"type": "string", "minLength": 1, "maxLength": 256}, "kind": {"type": "string", "const": "event"}, "category": {"type": "array", "minItems": 1, "items": {"type": "string"}}, "dataset": {"type": "string", "minLength": 1}, "action": {"type": "string"}, "outcome": {"type": "string", "enum": ["success", "failure", "unknown"]}, "duration": {"type": "integer", "minimum": 0}}},
+    "vendor": {"type": "object", "required": ["name", "product", "dataset"], "properties": {"name": {"type": "string"}, "product": {"type": "string"}, "dataset": {"type": "string"}, "payload": {"type": "object", "additionalProperties": true}}},
+    "ueba": {"type": "object", "required": ["schema", "quality", "route", "provenance"], "properties": {"schema": {"type": "object", "required": ["version"], "properties": {"version": {"type": "string"}}}, "quality": {"type": "object", "required": ["status"], "properties": {"status": {"type": "string", "enum": ["qualified", "partial"]}, "reasons": {"type": "array", "items": {"type": "string"}}, "usable_for": {"type": "array", "items": {"type": "string"}}}}, "route": {"type": "object", "required": ["domain", "generation"], "properties": {"domain": {"type": "string", "enum": ["authentication", "session", "iam", "directory", "network", "dns", "web", "tls"]}, "generation": {"type": "string"}}}, "event": {"type": "object", "properties": {"type": {"type": "string"}}}, "provenance": {"type": "object", "required": ["raw_event_id", "release_id"], "properties": {"raw_event_id": {"type": "string"}, "release_id": {"type": "string"}, "dip_version": {"type": "string"}, "uim_version": {"type": "string"}}}}},
+    "user": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "domain": {"type": "string"}, "target": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}, "domain": {"type": "string"}}}}},
+    "group": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
+    "source": {"type": "object", "properties": {"ip": {"type": "string", "format": "ip"}, "address": {"type": "string"}, "port": {"type": "integer", "minimum": 0, "maximum": 65535}}},
+    "destination": {"type": "object", "properties": {"ip": {"type": "string", "format": "ip"}, "address": {"type": "string"}, "port": {"type": "integer", "minimum": 0, "maximum": 65535}, "domain": {"type": "string"}}},
+    "host": {"type": "object", "properties": {"id": {"type": "string"}, "name": {"type": "string"}}},
+    "network": {"type": "object", "properties": {"transport": {"type": "string"}, "protocol": {"type": "string"}, "direction": {"type": "string"}, "community_id": {"type": "string"}, "bytes": {"type": "integer", "minimum": 0}, "packets": {"type": "integer", "minimum": 0}}},
+    "dns": {"type": "object", "properties": {"question": {"type": "object", "properties": {"name": {"type": "string"}}}, "response_code": {"type": "string"}}},
+    "url": {"type": "object", "properties": {"domain": {"type": "string"}, "path": {"type": "string"}, "scheme": {"type": "string"}}},
+    "http": {"type": "object", "properties": {"request": {"type": "object", "properties": {"method": {"type": "string"}}}, "response": {"type": "object", "properties": {"status_code": {"type": "integer"}}}}},
+    "tls": {"type": "object", "properties": {"version": {"type": "string"}, "cipher": {"type": "string"}}}
+  }
+}

@@ -1,0 +1,36 @@
+{
+  "version": 1,
+  "schema_version": "1.0.0",
+  "cases": [
+    {
+      "id": "zeek_dns_missing_query",
+      "vendor": {"name": "zeek", "product": "zeek", "dataset": "zeek.dns"},
+      "payload": {"ts": 1790467200.0, "id.orig_h": "192.0.2.10", "id.resp_h": "192.0.2.53"},
+      "expected": {"result": "quarantine", "code": "UIM_DNS_QUERY_REQUIRED"}
+    },
+    {
+      "id": "zeek_connection_wrong_endpoint_type",
+      "vendor": {"name": "zeek", "product": "zeek", "dataset": "zeek.conn"},
+      "payload": {"ts": 1790467200.0, "id.orig_h": 42, "id.resp_h": "192.0.2.53"},
+      "expected": {"result": "quarantine", "code": "UIM_ZEEK_ENDPOINTS_REQUIRED"}
+    },
+    {
+      "id": "zeek_invalid_event_time",
+      "vendor": {"name": "zeek", "product": "zeek", "dataset": "zeek.conn"},
+      "payload": {"ts": "yesterday", "id.orig_h": "192.0.2.10", "id.resp_h": "192.0.2.53"},
+      "expected": {"result": "quarantine", "code": "UIM_EVENT_TIME_INVALID"}
+    },
+    {
+      "id": "unknown_vendor_mapping",
+      "vendor": {"name": "unregistered-vendor", "product": "unknown", "dataset": "unknown.events"},
+      "payload": {"event": "login"},
+      "expected": {"result": "quarantine", "code": "EVENT_UNSUPPORTED"}
+    },
+    {
+      "id": "valid_authentication_failure",
+      "vendor": {"name": "Microsoft", "product": "Windows Security", "dataset": "windows.security"},
+      "payload": {"@timestamp": "2026-09-27T00:00:00Z", "winlog": {"provider_name": "Microsoft-Windows-Security-Auditing", "channel": "Security", "event_id": "4625", "computer_name": "endpoint-01", "event_data": {"TargetUserName": "analyst"}}},
+      "expected": {"result": "standard_event", "route": "authentication", "outcome": "failure"}
+    }
+  ]
+}

@@ -1,0 +1,30 @@
+{
+  "contract_version": "1.0.0",
+  "result_type": "anomaly",
+  "result_id": "anom:example-0001",
+  "organization_id": "tenant_a",
+  "namespace": "tenant_a",
+  "rule_id": "auth.failure-then-success",
+  "rule_version": "1.0.0",
+  "run_id": "run-example-0001",
+  "document": {
+    "@timestamp": "2026-09-24T02:42:16Z",
+    "organization": {"id": "tenant_a"},
+    "detection": {
+      "rule_id": "auth.failure-then-success",
+      "rule_version": "1.0.0",
+      "window": {
+        "start": "2026-09-24T02:30:00Z",
+        "end": "2026-09-24T03:00:00Z"
+      }
+    },
+    "analysis": {
+      "run_id": "run-example-0001",
+      "generated_at": "2026-09-24T02:42:20Z",
+      "registry_version": "1.0.0",
+      "watermark": "2026-09-24T02:37:16Z",
+      "reprocessed": false,
+      "input_contract_version": "1.0.0"
+    }
+  }
+}

@@ -1,0 +1,354 @@
+{
+  "version": 1,
+  "defaults": {
+    "partitions": 1,
+    "replication_factor": 1,
+    "min_insync_replicas": 1,
+    "consumer_commit": "manual",
+    "producer_acks": "all",
+    "producer_delivery": "at_least_once",
+    "kafka_transactions": false,
+    "idempotence": "application_business_key_and_receipt",
+    "retention_status": "provisional_single_node_default_pending_A03"
+  },
+  "runtime_profiles": [
+    {
+      "profile": "zeek_validation_single_node",
+      "scope": "isolated development validation only; not a production retention commitment",
+      "namespace": "zeek_validation_20260927_001",
+      "partitions": 1,
+      "replication_factor": 1,
+      "min_insync_replicas": 1,
+      "retention": "24h",
+      "retention_status": "bounded_validation_profile_pending_A03_production_budget",
+      "max_message_bytes": 2097152,
+      "producer_acks": "all",
+      "producer_delivery": "at_least_once",
+      "consumer_commit": "manual",
+      "kafka_transactions": false,
+      "authorization": {
+        "default": "deny",
+        "source_credential_scope": "exact source topic WRITE/DESCRIBE",
+        "service_credential_scope": "literal topic and consumer group ACLs by service role",
+        "legacy_validation_identity": "literal READ-only access to historical validation topics/groups"
+      },
+      "service_principals": {
+        "source-adapter": "tuba-zeek-source-adapter",
+        "ingest": "tuba-zeek-ingest",
+        "raw-indexer": "tuba-zeek-raw-indexer",
+        "normalizer": "tuba-zeek-normalizer",
+        "quarantine-indexer": "tuba-zeek-quarantine-indexer",
+        "standard-indexer": "tuba-zeek-standard-indexer"
+      }
+    }
+  ],
+  "topics": [
+    {
+      "name": "tuba.raw.events.v1",
+      "physical_name": "tuba.collector.{namespace}.raw.v1",
+      "key": "organization.id + source_instance_id",
+      "producers": [
+        "tuba-ingest"
+      ],
+      "consumers": [
+        {
+          "consumer_group": "tuba-normalizer-<namespace>[-<consumer_group_suffix>]"
+        },
+        {
+          "consumer_group": "tuba-raw-indexer-<namespace>[-<consumer_group_suffix>]"
+        }
+      ],
+      "acl": {
+        "tuba-ingest": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-normalizer": [
+          "READ",
+          "DESCRIBE"
+        ],
+        "tuba-raw-indexer": [
+          "READ",
+          "DESCRIBE"
+        ]
+      },
+      "retention": "7d",
+      "max_message_bytes": 2097152,
+      "note": "One Raw envelope per message; PG receipt records intent/ack, Kafka is durable delivery boundary."
+    },
+    {
+      "name": "tuba.source.{source_context_id}.v1",
+      "physical_name": "tuba.source.{source_context_id}.v1",
+      "key": "source_context_id + agent.id",
+      "producers": [
+        "filebeat",
+        "winlogbeat"
+      ],
+      "consumers": [
+        {
+          "consumer_group": "tuba-source-adapter-<first-16-hex-of-sha256-topic>[-<consumer_group_suffix>]"
+        }
+      ],
+      "partitions": 1,
+      "replication_factor": 1,
+      "retention": "24h",
+      "retention_status": "provisional_until_A03_capacity_and_recovery_budget",
+      "acl": {
+        "bound_source_credential": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-source-adapter": [
+          "READ",
+          "DESCRIBE"
+        ],
+        "source_adapter_group": [
+          "READ"
+        ]
+      },
+      "max_message_bytes": 2097152,
+      "note": "Other connectors require a versioned ingress schema/producer contract before publishing here."
+    },
+    {
+      "name": "tuba.source-adapter.dlq.v1",
+      "physical_name": "tuba.collector.{namespace}.source-adapter.dlq.v1",
+      "key": "source.topic + partition + offset",
+      "producers": [
+        "tuba-source-adapter"
+      ],
+      "consumers": [
+        {
+          "consumer_group": "tuba-source-adapter-repair"
+        },
+        {
+          "consumer_group": "operations-readonly"
+        }
+      ],
+      "acl": {
+        "tuba-source-adapter": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-repair-worker": [
+          "READ",
+          "DESCRIBE"
+        ],
+        "operations-readonly": [
+          "READ",
+          "DESCRIBE"
+        ]
+      },
+      "retention": "14d",
+      "max_message_bytes": 2097152
+    },
+    {
+      "name": "tuba.events.{domain}.v1",
+      "physical_name": "tuba.collector.{namespace}.events.{domain}.v1",
+      "domains": [
+        "authentication",
+        "session",
+        "iam",
+        "directory",
+        "network",
+        "dns",
+        "web",
+        "tls"
+      ],
+      "key": "organization.id + event.id",
+      "producers": [
+        "tuba-normalizer"
+      ],
+      "consumers": [
+        {
+          "consumer_group": "tuba-standard-indexer-<domain>-<namespace>[-<consumer_group_suffix>]"
+        },
+        {
+          "consumer_group": "tuba-entity-worker-<domain>-<namespace>"
+        }
+      ],
+      "acl": {
+        "tuba-normalizer": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-standard-indexer": [
+          "READ",
+          "DESCRIBE"
+        ],
+        "tuba-entity-worker": [
+          "READ",
+          "DESCRIBE"
+        ]
+      },
+      "retention": "7d",
+      "max_message_bytes": 2097152
+    },
+    {
+      "name": "tuba.quarantine.v1",
+      "physical_name": "tuba.collector.{namespace}.quarantine.v1",
+      "key": "organization.id + raw_event_id",
+      "producers": [
+        "tuba-normalizer"
+      ],
+      "consumers": [
+        {
+          "consumer_group": "tuba-quarantine-indexer-<namespace>[-<consumer_group_suffix>]"
+        },
+        {
+          "consumer_group": "tuba-replay-worker-<namespace>"
+        }
+      ],
+      "acl": {
+        "tuba-normalizer": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-quarantine-indexer": [
+          "READ",
+          "DESCRIBE"
+        ],
+        "tuba-replay-worker": [
+          "READ",
+          "DESCRIBE"
+        ]
+      },
+      "retention": "14d",
+      "max_message_bytes": 2097152
+    },
+    {
+      "name": "tuba.attributed.events.v1",
+      "physical_name": "tuba.collector.{namespace}.attributed.events.v1",
+      "key": "organization.id + entity.id",
+      "producers": [
+        "tuba-entity-worker"
+      ],
+      "consumers": [
+        {
+          "consumer_group": "tuba-analysis-worker-<namespace>"
+        }
+      ],
+      "acl": {
+        "tuba-entity-worker": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-analysis-worker": [
+          "READ",
+          "DESCRIBE"
+        ]
+      },
+      "retention": "7d",
+      "max_message_bytes": 2097152
+    },
+    {
+      "name": "tuba.analysis.results.v1",
+      "physical_name": "tuba.collector.{namespace}.analysis.results.v1",
+      "key": "organization_id + result_id",
+      "producers": [
+        "tuba-entity-worker",
+        "tuba-analysis-worker"
+      ],
+      "consumers": [
+        {
+          "consumer_group": "tuba-analysis-sink-<namespace>"
+        }
+      ],
+      "acl": {
+        "tuba-analysis-worker": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-entity-worker": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-analysis-sink": [
+          "READ",
+          "DESCRIBE"
+        ]
+      },
+      "retention": "7d",
+      "status": "legacy_v1_read_only_during_migration",
+      "max_message_bytes": 1048576
+    },
+    {
+      "name": "tuba.analysis.results.v2",
+      "physical_name": "tuba.collector.{namespace}.analysis.results.v2",
+      "key": "organization_id + object_type + object_id",
+      "producers": [
+        "tuba-entity-worker",
+        "tuba-analysis-worker"
+      ],
+      "consumers": [
+        {
+          "consumer_group": "tuba-analysis-sink-<namespace>"
+        }
+      ],
+      "acl": {
+        "tuba-analysis-worker": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-entity-worker": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-analysis-sink": [
+          "READ",
+          "DESCRIBE"
+        ]
+      },
+      "retention": "7d",
+      "contract": "events/analysis-result/2/schema.json",
+      "max_message_bytes": 1048576
+    },
+    {
+      "name": "tuba.indexing.dlq.v1",
+      "physical_name": "tuba.collector.{namespace}.dlq.v1",
+      "key": "organization.id + delivery_id",
+      "producers": [
+        "tuba-raw-indexer",
+        "tuba-standard-indexer",
+        "tuba-quarantine-indexer",
+        "tuba-analysis-sink"
+      ],
+      "consumers": [
+        {
+          "consumer_group": "tuba-repair-worker-<namespace>"
+        }
+      ],
+      "acl": {
+        "tuba-raw-indexer": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-standard-indexer": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-quarantine-indexer": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-analysis-sink": [
+          "WRITE",
+          "DESCRIBE"
+        ],
+        "tuba-repair-worker": [
+          "READ",
+          "DESCRIBE"
+        ]
+      },
+      "retention": "14d",
+      "max_message_bytes": 2097152
+    }
+  ],
+  "delivery_notes": [
+    "Kafka consumers use explicit commits only after downstream confirmation; do not enable auto-commit.",
+    "The ingest receipt plus Raw-topic ACK is a two-step recoverable protocol, not a Kafka/PostgreSQL distributed transaction.",
+    "Standardization/indexing and DLQ delivery are at least once; stable event/object IDs and revision checks provide idempotence.",
+    "No producer uses Kafka transactions in the current single-node implementation. Do not claim exactly-once delivery.",
+    "Source ACLs are literal exact-topic rules. Wildcard topic grants are prohibited for source principals."
+  ]
+}
+

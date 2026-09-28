@@ -1,0 +1,29 @@
+{
+  "registry_version": "1.0.0",
+  "features": [
+    {
+      "id": "authentication.failure-burst",
+      "version": "1.0.0",
+      "description": "Counts failed authentication events in the configured event-time lookback.",
+      "parameters": {
+        "lookback_seconds": 1800
+      }
+    }
+  ],
+  "detections": [
+    {
+      "id": "auth.failure-then-success",
+      "version": "1.0.0",
+      "algorithm": "failure_then_success",
+      "feature_id": "authentication.failure-burst",
+      "severity": "high",
+      "parameters": {
+        "threshold": 5,
+        "lookback_seconds": 1800,
+        "window_seconds": 1800,
+        "allowed_lateness_seconds": 300
+      }
+    }
+  ],
+  "models": []
+}

@@ -1,0 +1,17 @@
+# Loopback ports for a disposable end-to-end O02 initialization project.
+# Named volumes are isolated by the caller's unique Compose project name.
+services:
+  elasticsearch:
+    ports: !override
+      - "127.0.0.1:19200:9200"
+  postgres:
+    ports: !override
+      - "127.0.0.1:15432:5432"
+  kafka:
+    environment:
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT_HOST://127.0.0.1:19094,PLAINTEXT_INTERNAL://kafka:29092
+    ports: !override
+      - "127.0.0.1:19094:9092"
+  keycloak:
+    ports: !override
+      - "127.0.0.1:18181:8080"

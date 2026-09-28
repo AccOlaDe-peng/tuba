@@ -1,0 +1,56 @@
+# Development-only fixture for end-to-end wiring checks.
+# The broker on 10.6.68.71:9092 has no authorizer; this config is synthetic-only.
+# Never point this profile at real Zeek log paths or use it as a production template.
+filebeat.inputs:
+  - type: filestream
+    id: tuba-zeek-validation-synthetic-conn
+    enabled: true
+    paths:
+      - /opt/tuba/collector-validation-v2/input/conn-v2.log
+    fields_under_root: true
+    fields:
+      event:
+        dataset: zeek.conn
+
+processors:
+  - copy_fields:
+      fields:
+        - from: message
+          to: event.original
+      fail_on_error: false
+      ignore_missing: true
+  - decode_json_fields:
+      fields: [message]
+      target: ""
+      overwrite_keys: true
+      add_error_key: true
+  - timestamp:
+      field: ts
+      layouts: [UNIX]
+      target_field: "@timestamp"
+      ignore_failure: true
+
+queue.disk:
+  path: ${path.data}/diskqueue
+  max_size: 64MB
+  segment_size: 1MB
+  read_ahead: 64
+
+filebeat.registry.flush: 1s
+setup.template.enabled: false
+setup.ilm.enabled: false
+monitoring.enabled: false
+http.enabled: false
+
+logging.to_files: true
+logging.files.path: /opt/tuba/collector-validation-v2/filebeat/logs
+logging.files.keepfiles: 1
+logging.files.permissions: 0640
+
+output.kafka:
+  hosts: ["10.6.68.71:9092"]
+  topic: "tuba.source.ctx_50000000000000000000000000000005.v1"
+  required_acks: -1
+  compression: gzip
+  max_message_bytes: 2097152
+  bulk_max_size: 1

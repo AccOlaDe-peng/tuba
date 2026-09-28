@@ -1,0 +1,9 @@
+{
+  "@timestamp": "2026-09-24T02:42:16Z",
+  "organization": {"id": "tenant_a"},
+  "event": {"id": "evt-auth-0001", "kind": "event", "category": ["authentication"], "action": "logon", "outcome": "failure", "dataset": "authentication"},
+  "vendor": {"dataset": "windows.security"},
+  "user": {"id": "zhang.wei", "name": "张伟"},
+  "source": {"ip": "10.6.6.169"},
+  "ueba": {"schema": {"version": "1.0.0"}, "quality": {"status": "qualified"}, "route": {"domain": "authentication"}}
+}

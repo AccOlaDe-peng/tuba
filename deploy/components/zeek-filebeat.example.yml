@@ -1,0 +1,54 @@
+# One TUBA Filebeat process per Zeek dataset and immutable source context.
+# Set TUBA_ZEEK_DATASET to conn, dns, http, or ssl; use an exact-topic Kafka credential.
+# Launch with dedicated --path.data and --path.logs, never the system Filebeat paths.
+
+filebeat.inputs:
+  - type: filestream
+    id: tuba-zeek-${TUBA_ZEEK_DATASET}
+    enabled: true
+    paths: ["/opt/zeek/spool/zeek/${TUBA_ZEEK_DATASET}.log"]
+    fields_under_root: true
+    fields:
+      event:
+        dataset: zeek.${TUBA_ZEEK_DATASET}
+
+processors:
+  - copy_fields:
+      fields:
+        - from: message
+          to: event.original
+      fail_on_error: false
+      ignore_missing: true
+  - decode_json_fields:
+      fields: [message]
+      target: ""
+      overwrite_keys: true
+      add_error_key: true
+  - timestamp:
+      field: ts
+      layouts: [UNIX]
+      target_field: "@timestamp"
+      ignore_failure: true
+
+queue.disk:
+  path: ${path.data}/diskqueue
+  max_size: 512MB
+  segment_size: 10MB
+  read_ahead: 512
+
+filebeat.registry.flush: 1s
+setup.template.enabled: false
+setup.ilm.enabled: false
+
+output.kafka:
+  enabled: true
+  hosts: ["${TUBA_KAFKA_BROKERS}"]
+  topic: "tuba.source.${TUBA_SOURCE_CONTEXT_ID}.v1"
+  username: "${TUBA_KAFKA_USERNAME}"
+  password: "${TUBA_KAFKA_PASSWORD}"
+  sasl.mechanism: SCRAM-SHA-512
+  security.protocol: SASL_PLAINTEXT
+  required_acks: -1
+  compression: gzip
+  max_message_bytes: 2097152
+  bulk_max_size: 128

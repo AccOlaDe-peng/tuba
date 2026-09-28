@@ -1,0 +1,71 @@
+{
+  "template": {
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "schema_version": {
+          "type": "keyword"
+        },
+        "raw_event_id": {
+          "type": "keyword"
+        },
+        "organization": {
+          "dynamic": "strict",
+          "properties": {
+            "id": {
+              "type": "keyword"
+            }
+          }
+        },
+        "namespace": {
+          "type": "keyword"
+        },
+        "source_instance_id": {
+          "type": "keyword"
+        },
+        "source_context_id": {
+          "type": "keyword"
+        },
+        "source_position": {
+          "type": "keyword"
+        },
+        "source_epoch": {
+          "type": "keyword"
+        },
+        "vendor": {
+          "dynamic": "strict",
+          "properties": {
+            "name": {
+              "type": "keyword"
+            },
+            "product": {
+              "type": "keyword"
+            },
+            "dataset": {
+              "type": "keyword"
+            }
+          }
+        },
+        "received_at": {
+          "type": "date"
+        },
+        "release_id": {
+          "type": "keyword"
+        },
+        "payload_hash": {
+          "type": "keyword"
+        },
+        "payload": {
+          "type": "flattened"
+        },
+        "encoding": {
+          "type": "keyword"
+        }
+      }
+    }
+  },
+  "_meta": {
+    "managed_by": "tuba",
+    "version": "1"
+  }
+}

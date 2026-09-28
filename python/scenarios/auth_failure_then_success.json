@@ -1,0 +1,57 @@
+{
+  "name": "auth-failure-then-success",
+  "description": "Five failures followed by a successful login within the rule lookback.",
+  "expected_anomaly_ids": [
+    "anom:4183d2948a068007f7ce67ba920380e2bc68b784c95940875c8367c95b916851"
+  ],
+  "events": [
+    {
+      "@timestamp": "2026-09-24T02:10:00Z",
+      "organization": {"id": "tenant_a"},
+      "event": {"id": "golden-f1", "kind": "event", "category": ["authentication"], "action": "logon", "outcome": "failure", "dataset": "authentication"},
+      "vendor": {"dataset": "windows.security"},
+      "user": {"id": "golden.user"},
+      "ueba": {"schema": {"version": "1.0.0"}, "quality": {"status": "qualified"}, "route": {"domain": "authentication"}}
+    },
+    {
+      "@timestamp": "2026-09-24T02:12:00Z",
+      "organization": {"id": "tenant_a"},
+      "event": {"id": "golden-f2", "kind": "event", "category": ["authentication"], "action": "logon", "outcome": "failure", "dataset": "authentication"},
+      "vendor": {"dataset": "windows.security"},
+      "user": {"id": "golden.user"},
+      "ueba": {"schema": {"version": "1.0.0"}, "quality": {"status": "qualified"}, "route": {"domain": "authentication"}}
+    },
+    {
+      "@timestamp": "2026-09-24T02:14:00Z",
+      "organization": {"id": "tenant_a"},
+      "event": {"id": "golden-f3", "kind": "event", "category": ["authentication"], "action": "logon", "outcome": "failure", "dataset": "authentication"},
+      "vendor": {"dataset": "windows.security"},
+      "user": {"id": "golden.user"},
+      "ueba": {"schema": {"version": "1.0.0"}, "quality": {"status": "qualified"}, "route": {"domain": "authentication"}}
+    },
+    {
+      "@timestamp": "2026-09-24T02:16:00Z",
+      "organization": {"id": "tenant_a"},
+      "event": {"id": "golden-f4", "kind": "event", "category": ["authentication"], "action": "logon", "outcome": "failure", "dataset": "authentication"},
+      "vendor": {"dataset": "windows.security"},
+      "user": {"id": "golden.user"},
+      "ueba": {"schema": {"version": "1.0.0"}, "quality": {"status": "qualified"}, "route": {"domain": "authentication"}}
+    },
+    {
+      "@timestamp": "2026-09-24T02:18:00Z",
+      "organization": {"id": "tenant_a"},
+      "event": {"id": "golden-f5", "kind": "event", "category": ["authentication"], "action": "logon", "outcome": "failure", "dataset": "authentication"},
+      "vendor": {"dataset": "windows.security"},
+      "user": {"id": "golden.user"},
+      "ueba": {"schema": {"version": "1.0.0"}, "quality": {"status": "qualified"}, "route": {"domain": "authentication"}}
+    },
+    {
+      "@timestamp": "2026-09-24T02:20:00Z",
+      "organization": {"id": "tenant_a"},
+      "event": {"id": "golden-s1", "kind": "event", "category": ["authentication"], "action": "logon", "outcome": "success", "dataset": "authentication"},
+      "vendor": {"dataset": "windows.security"},
+      "user": {"id": "golden.user"},
+      "ueba": {"schema": {"version": "1.0.0"}, "quality": {"status": "qualified"}, "route": {"domain": "authentication"}}
+    }
+  ]
+}

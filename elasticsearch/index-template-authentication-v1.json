@@ -1,0 +1,1 @@
+{"index_patterns":["logs-ueba.authentication-*"],"priority":500,"composed_of":["tuba-authentication-v1"],"data_stream":{},"_meta":{"managed_by":"tuba","version":1}}

@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>TUBA 安全分析平台 · 产品原型</title>
+  <style>
+    :root {
+      --ink: #17212b;
+      --muted: #667789;
+      --line: #dce4eb;
+      --paper: #f4f7f9;
+      --card: #ffffff;
+      --nav: #0e2633;
+      --nav-soft: #173847;
+      --teal: #087f74;
+      --teal-soft: #e2f4f1;
+      --orange: #d56427;
+      --red: #c33e44;
+      --yellow: #b98716;
+      --blue: #2469a0;
+      --shadow: 0 9px 30px rgba(25, 53, 68, .08);
+      font-family: Inter, "PingFang SC", "Microsoft YaHei", system-ui, sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; color: var(--ink); background: var(--paper); }
+    button, input, select { font: inherit; }
+    button { cursor: pointer; }
+    .app { display: grid; grid-template-columns: 238px 1fr; min-height: 100vh; }
+    aside { background: var(--nav); color: #d8e7ed; padding: 22px 14px; position: sticky; top: 0; height: 100vh; }
+    .brand { display: flex; align-items: center; gap: 11px; padding: 0 10px 24px; }
+    .mark { width: 36px; height: 36px; border-radius: 9px; background: linear-gradient(145deg,#31b9a4,#eeb25f); display: grid; place-items: center; color: #07222d; font-weight: 900; }
+    .brand strong { display: block; color: white; letter-spacing: .08em; }
+    .brand small { color: #89a4b0; }
+    .nav-title { padding: 16px 11px 6px; color: #6f919f; font-size: 11px; letter-spacing: .14em; }
+    .nav-item { width: 100%; display: flex; gap: 11px; align-items: center; color: #bcd0d8; background: transparent; border: 0; border-radius: 8px; padding: 10px 12px; margin: 2px 0; text-align: left; }
+    .nav-item:hover, .nav-item.active { background: var(--nav-soft); color: white; }
+    .nav-item.active { box-shadow: inset 3px 0 #37bda9; }
+    .nav-item span:first-child { width: 20px; text-align: center; }
+    .version { position: absolute; left: 24px; bottom: 18px; color: #6f919f; font-size: 12px; }
+    main { min-width: 0; }
+    header { height: 68px; background: rgba(255,255,255,.94); border-bottom: 1px solid var(--line); display: flex; align-items: center; justify-content: space-between; padding: 0 28px; position: sticky; top: 0; z-index: 5; backdrop-filter: blur(8px); }
+    .crumb { color: var(--muted); font-size: 13px; }
+    .header-actions { display: flex; gap: 10px; align-items: center; }
+    .tenant { border: 1px solid var(--line); background: white; border-radius: 8px; padding: 8px 12px; }
+    .avatar { width: 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; color: white; background: var(--teal); font-size: 13px; }
+    .page { display: none; padding: 28px; max-width: 1500px; margin: auto; }
+    .page.active { display: block; }
+    .page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 24px; margin-bottom: 23px; }
+    h1 { font-size: 25px; margin: 0 0 6px; letter-spacing: -.02em; }
+    h2 { font-size: 17px; margin: 0; }
+    h3 { font-size: 14px; margin: 0; }
+    p { color: var(--muted); margin: 4px 0; line-height: 1.6; }
+    .actions { display: flex; gap: 9px; flex-wrap: wrap; }
+    .btn { border: 1px solid var(--line); color: var(--ink); background: white; padding: 8px 13px; border-radius: 7px; }
+    .btn.primary { background: var(--teal); border-color: var(--teal); color: white; }
+    .btn.danger { color: var(--red); border-color: #eac7ca; }
+    .btn:active { transform: translateY(1px); }
+    .grid { display: grid; gap: 16px; }
+    .cols-4 { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+    .two { grid-template-columns: 1.35fr .65fr; }
+    .card { background: var(--card); border: 1px solid var(--line); border-radius: 11px; box-shadow: var(--shadow); }
+    .card-pad { padding: 19px; }
+    .metric small { color: var(--muted); }
+    .metric strong { display: block; font-size: 28px; margin: 9px 0 4px; }
+    .delta { font-size: 12px; color: var(--teal); }
+    .delta.warn { color: var(--orange); }
+    .card-head { display: flex; justify-content: space-between; align-items: center; padding: 17px 19px 12px; }
+    .legend { display: flex; gap: 14px; font-size: 12px; color: var(--muted); }
+    .dot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; margin-right: 5px; }
+    .bars { height: 205px; display: flex; align-items: end; gap: 9px; padding: 20px 20px 14px; border-top: 1px solid #edf1f4; background: linear-gradient(#fff, #fbfcfd); }
+    .bar { flex: 1; border-radius: 4px 4px 0 0; background: linear-gradient(#2aa998,#7accc1); min-height: 5px; position: relative; }
+    .bar:after { content: attr(data-label); position: absolute; bottom: -24px; left: 50%; transform: translateX(-50%); font-size: 10px; color: var(--muted); }
+    .list { border-top: 1px solid var(--line); }
+    .list-row { display: grid; grid-template-columns: 84px 1fr auto; gap: 12px; align-items: center; padding: 13px 18px; border-bottom: 1px solid #edf1f4; }
+    .list-row:last-child { border-bottom: 0; }
+    .risk { height: 7px; border-radius: 4px; background: #e8edf0; overflow: hidden; }
+    .risk i { display: block; height: 100%; background: linear-gradient(90deg,var(--yellow),var(--red)); }
+    .tag { display: inline-flex; border-radius: 99px; padding: 3px 8px; font-size: 11px; font-weight: 700; background: #edf2f5; color: #536575; }
+    .tag.high { color: #9f2931; background: #fbe7e8; }
+    .tag.medium { color: #8a6410; background: #fff2cf; }
+    .tag.open { color: #146a62; background: var(--teal-soft); }
+    .tag.blue { color: #245f8e; background: #e5f0f9; }
+    .filters { display: flex; gap: 9px; padding: 14px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+    .field { border: 1px solid var(--line); border-radius: 7px; padding: 8px 10px; background: white; color: #425363; min-width: 140px; }
+    .search { min-width: 260px; flex: 1; }
+    table { width: 100%; border-collapse: collapse; font-size: 13px; }
+    th { color: var(--muted); background: #f8fafb; text-align: left; font-weight: 600; padding: 11px 14px; border-bottom: 1px solid var(--line); }
+    td { padding: 13px 14px; border-bottom: 1px solid #edf1f4; vertical-align: top; }
+    tbody tr:hover { background: #fbfdfd; }
+    .link { color: var(--blue); border: 0; background: transparent; padding: 0; text-align: left; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+    .detail-grid { display: grid; grid-template-columns: minmax(0, 1fr) 350px; gap: 16px; }
+    .summary { border-left: 4px solid var(--red); padding: 15px 17px; background: #fff9f8; border-radius: 5px; margin-bottom: 16px; }
+    .facts { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .fact { padding: 12px; background: #f7f9fa; border-radius: 7px; }
+    .fact small { display: block; color: var(--muted); margin-bottom: 5px; }
+    .timeline { padding: 5px 20px 20px 42px; }
+    .event { position: relative; padding: 5px 0 22px 20px; border-left: 2px solid #d7e2e6; }
+    .event:before { content: ""; position: absolute; left: -6px; top: 7px; width: 10px; height: 10px; border-radius: 50%; background: var(--teal); box-shadow: 0 0 0 4px white; }
+    .event.fail:before { background: var(--red); }
+    .event time { color: var(--muted); font-size: 11px; }
+    .event p { color: var(--ink); font-size: 13px; margin-top: 5px; }
+    .kv { display: grid; grid-template-columns: 105px 1fr; gap: 8px; padding: 9px 0; border-bottom: 1px solid #edf1f4; font-size: 13px; }
+    .kv span:first-child { color: var(--muted); }
+    .health { display: flex; align-items: center; gap: 8px; }
+    .health i { width: 9px; height: 9px; border-radius: 50%; background: #32a777; }
+    .health.warn i { background: #dc8c2f; }
+    .progress { width: 130px; height: 7px; border-radius: 4px; overflow: hidden; background: #e8edf0; }
+    .progress i { display: block; height: 100%; background: var(--teal); }
+    .callout { border: 1px dashed #b8c8d0; background: #f8fbfc; padding: 14px; border-radius: 8px; color: var(--muted); font-size: 13px; }
+    .modal { position: fixed; inset: 0; background: rgba(3,18,25,.55); display: none; place-items: center; z-index: 20; }
+    .modal.show { display: grid; }
+    .dialog { width: min(520px, calc(100vw - 30px)); background: white; border-radius: 12px; padding: 22px; box-shadow: 0 20px 60px rgba(0,0,0,.3); }
+    .dialog label { display: block; color: var(--muted); font-size: 12px; margin: 15px 0 6px; }
+    .dialog .field { width: 100%; }
+    @media (max-width: 1050px) { .cols-4 { grid-template-columns: repeat(2,1fr); } .two,.detail-grid { grid-template-columns:1fr; } }
+    @media (max-width: 760px) { .app { grid-template-columns: 72px 1fr; } aside { padding: 18px 8px; } .brand div,.nav-title,.nav-item span:last-child,.version { display:none; } .brand { padding-left: 9px; } .nav-item { justify-content:center; } .page { padding:18px; } header { padding:0 16px; } .cols-4,.cols-3,.facts { grid-template-columns:1fr; } .tenant { max-width:145px; } }
+  </style>
+</head>
+<body>
+<div class="app">
+  <aside>
+    <div class="brand"><div class="mark">T</div><div><strong>TUBA</strong><small>安全分析平台</small></div></div>
+    <div class="nav-title">调查</div>
+    <button class="nav-item active" data-page="overview"><span>⌂</span><span>安全总览</span></button>
+    <button class="nav-item" data-page="anomalies"><span>⚠</span><span>异常调查</span></button>
+    <button class="nav-item" data-page="cases"><span>▣</span><span>案件中心</span></button>
+    <div class="nav-title">运营</div>
+    <button class="nav-item" data-page="sources"><span>⇄</span><span>数据源</span></button>
+    <button class="nav-item" data-page="operations"><span>◉</span><span>系统运行</span></button>
+    <div class="nav-title">管理</div>
+    <button class="nav-item" data-page="access"><span>♙</span><span>用户与权限</span></button>
+    <div class="version">Prototype 0.1 · 2026-09</div>
+  </aside>
+  <main>
+    <header>
+      <div class="crumb" id="crumb">调查 / 安全总览</div>
+      <div class="header-actions">
+        <select class="tenant"><option>华东制造 · tenant_a</option><option>隔离测试 · tenant_test</option></select>
+        <button class="btn">最近 24 小时⌄</button><div class="avatar">王</div>
+      </div>
+    </header>
+
+    <section class="page active" id="overview">
+      <div class="page-head"><div><h1>安全总览</h1><p>聚焦需要处理的风险、数据新鲜度和系统积压。</p></div><div class="actions"><button class="btn">导出摘要</button><button class="btn primary" data-go="anomalies">开始调查</button></div></div>
+      <div class="grid cols-4">
+        <div class="card card-pad metric"><small>开放异常</small><strong>27</strong><span class="delta warn">其中 6 个高危</span></div>
+        <div class="card card-pad metric"><small>处理中案件</small><strong>8</strong><span class="delta">今日关闭 3 个</span></div>
+        <div class="card card-pad metric"><small>检测新鲜度</small><strong>42 秒</strong><span class="delta">目标 &lt; 2 分钟</span></div>
+        <div class="card card-pad metric"><small>Kafka 最大积压</small><strong>12.4K</strong><span class="delta warn">认证流需关注</span></div>
+      </div>
+      <div class="grid two" style="margin-top:16px">
+        <div class="card"><div class="card-head"><div><h2>风险趋势</h2><p>按事件时间统计的异常数量</p></div><div class="legend"><span><i class="dot" style="background:#2aa998"></i>全部</span><span><i class="dot" style="background:#c33e44"></i>高危</span></div></div><div class="bars"><div class="bar" style="height:32%" data-label="00:00"></div><div class="bar" style="height:44%"></div><div class="bar" style="height:28%"></div><div class="bar" style="height:62%" data-label="06:00"></div><div class="bar" style="height:48%"></div><div class="bar" style="height:80%"></div><div class="bar" style="height:56%" data-label="12:00"></div><div class="bar" style="height:92%"></div><div class="bar" style="height:68%"></div><div class="bar" style="height:52%" data-label="18:00"></div><div class="bar" style="height:36%"></div><div class="bar" style="height:46%" data-label="现在"></div></div></div>
+        <div class="card"><div class="card-head"><div><h2>重点风险实体</h2><p>按当前风险评分排序</p></div></div><div class="list"><div class="list-row"><span class="tag high">92 高危</span><div><strong>zhang.wei</strong><p>账户 · 6 条异常</p><div class="risk"><i style="width:92%"></i></div></div><button class="link" data-go="anomaly-detail">查看</button></div><div class="list-row"><span class="tag high">86 高危</span><div><strong>WS-FIN-024</strong><p>主机 · 3 条异常</p><div class="risk"><i style="width:86%"></i></div></div><button class="link">查看</button></div><div class="list-row"><span class="tag medium">67 中危</span><div><strong>svc_backup</strong><p>账户 · 4 条异常</p><div class="risk"><i style="width:67%"></i></div></div><button class="link">查看</button></div></div></div>
+      </div>
+    </section>
+
+    <section class="page" id="anomalies">
+      <div class="page-head"><div><h1>异常调查</h1><p>按租户、时间和权限范围检索异常。</p></div><div class="actions"><button class="btn">批量分派</button><button class="btn">导出</button></div></div>
+      <div class="card"><div class="filters"><input class="field search" placeholder="搜索实体、异常 ID、规则或 IP"/><select class="field"><option>全部严重度</option><option>高危</option><option>中危</option></select><select class="field"><option>开放状态</option><option>调查中</option><option>已关闭</option></select><select class="field"><option>全部规则</option><option>失败后成功</option></select><button class="btn primary">应用筛选</button></div>
+        <table><thead><tr><th><input type="checkbox"/></th><th>严重度 / 状态</th><th>异常</th><th>实体</th><th>时间</th><th>负责人</th><th></th></tr></thead><tbody>
+          <tr><td><input type="checkbox"/></td><td><span class="tag high">高危</span> <span class="tag open">开放</span></td><td><button class="link" data-go="anomaly-detail"><strong>多次登录失败后成功</strong></button><div class="mono">anom:4a73…d91e</div></td><td>zhang.wei<br/><span class="mono">10.6.6.169</span></td><td>10:42:16<br/><span style="color:var(--muted)">3 分钟前</span></td><td>未分派</td><td><button class="link" data-go="anomaly-detail">调查 →</button></td></tr>
+          <tr><td><input type="checkbox"/></td><td><span class="tag high">高危</span> <span class="tag blue">调查中</span></td><td><strong>异常时间远程登录</strong><div class="mono">anom:b120…2aa8</div></td><td>administrator<br/><span class="mono">10.6.6.139</span></td><td>09:58:03</td><td>王敏</td><td><button class="link">调查 →</button></td></tr>
+          <tr><td><input type="checkbox"/></td><td><span class="tag medium">中危</span> <span class="tag open">开放</span></td><td><strong>服务账号交互式登录</strong><div class="mono">anom:8c11…932f</div></td><td>svc_backup<br/><span class="mono">WS-FIN-024</span></td><td>08:24:40</td><td>李明</td><td><button class="link">调查 →</button></td></tr>
+        </tbody></table>
+        <div class="filters" style="justify-content:space-between;border-bottom:0"><span style="color:var(--muted);font-size:12px">共 27 条 · 已按风险和事件时间排序</span><div><button class="btn">上一页</button> <button class="btn">下一页</button></div></div>
+      </div>
+    </section>
+
+    <section class="page" id="anomaly-detail">
+      <div class="page-head"><div><button class="link" data-go="anomalies">← 返回异常列表</button><h1 style="margin-top:10px">多次登录失败后成功</h1><p class="mono">anom:4a73c814…d91e · auth.failure-then-success@1.0.0</p></div><div class="actions"><button class="btn">标记误报</button><button class="btn">分派</button><button class="btn primary" data-modal="case">创建案件</button></div></div>
+      <div class="detail-grid"><div>
+        <div class="summary"><strong>为什么触发</strong><p>账户 zhang.wei 在 18 分钟内连续 7 次登录失败，随后从同一来源成功登录。该来源在过去 30 天未出现。</p><div style="margin-top:9px"><span class="tag high">风险 92</span> <span class="tag">置信度 0.94</span> <span class="tag open">开放</span></div></div>
+        <div class="card"><div class="card-head"><div><h2>证据时间线</h2><p>事件时间 · 已排除重复事件</p></div><button class="btn">查看原始事件</button></div><div class="timeline"><div class="event fail"><time>10:24:03 — 10:39:51</time><p><strong>7 次登录失败</strong> · Windows 4625 · 10.6.6.169 → DC-01</p></div><div class="event"><time>10:42:16</time><p><strong>登录成功</strong> · Windows 4624 · Logon Type 3 · 首次来源</p></div><div class="event"><time>10:42:42</time><p><strong>分析结果生成</strong> · run auth-20260924-1042 · 延迟 26 秒</p></div></div></div>
+        <div class="card card-pad" style="margin-top:16px"><h2>调查上下文</h2><div class="facts" style="margin-top:14px"><div class="fact"><small>过去 30 天登录来源</small><strong>4 个</strong></div><div class="fact"><small>首次观察来源</small><strong>10.6.6.169</strong></div><div class="fact"><small>关联开放异常</small><strong>2 个</strong></div></div></div>
+      </div><div>
+        <div class="card card-pad"><h2>实体摘要</h2><div class="kv"><span>账户</span><strong>zhang.wei</strong></div><div class="kv"><span>部门</span><span>财务部</span></div><div class="kv"><span>身份状态</span><span class="tag open">启用</span></div><div class="kv"><span>来源 IP</span><span class="mono">10.6.6.169</span></div><div class="kv"><span>目标</span><span>DC-01</span></div><div class="kv"><span>数据质量</span><span>qualified</span></div></div>
+        <div class="card card-pad" style="margin-top:16px"><h2>建议操作</h2><p>确认用户是否发起此次登录；检查来源主机近期行为；必要时禁用账户并保全证据。</p><button class="btn" style="width:100%;margin-top:12px">查看关联事件</button></div>
+      </div></div>
+    </section>
+
+    <section class="page" id="cases">
+      <div class="page-head"><div><h1>案件中心</h1><p>跟踪调查责任、处置进展和审计时间线。</p></div><button class="btn primary" data-modal="case">新建案件</button></div>
+      <div class="grid cols-3" style="margin-bottom:16px"><div class="card card-pad metric"><small>待分派</small><strong>3</strong></div><div class="card card-pad metric"><small>调查中</small><strong>5</strong></div><div class="card card-pad metric"><small>今日已关闭</small><strong>3</strong></div></div>
+      <div class="card"><div class="filters"><input class="field search" placeholder="搜索案件、实体或负责人"/><select class="field"><option>全部状态</option></select><select class="field"><option>全部优先级</option></select></div><table><thead><tr><th>案件</th><th>优先级</th><th>状态</th><th>负责人</th><th>关联异常</th><th>最后更新</th></tr></thead><tbody><tr><td><button class="link"><strong>CASE-2026-0042 可疑账户接管</strong></button><p>zhang.wei / 财务部</p></td><td><span class="tag high">P1</span></td><td><span class="tag blue">调查中</span></td><td>王敏</td><td>3</td><td>5 分钟前</td></tr><tr><td><strong>CASE-2026-0041 服务账号误用</strong><p>svc_backup</p></td><td><span class="tag medium">P2</span></td><td><span class="tag open">待分派</span></td><td>—</td><td>1</td><td>42 分钟前</td></tr></tbody></table></div>
+    </section>
+
+    <section class="page" id="sources">
+      <div class="page-head"><div><h1>数据源</h1><p>查看接入健康、过滤效果和数据质量。</p></div><button class="btn primary">添加数据源</button></div>
+      <div class="card"><table><thead><tr><th>数据源</th><th>状态</th><th>24h 接收</th><th>预过滤</th><th>质量通过率</th><th>最后事件</th><th></th></tr></thead><tbody><tr><td><strong>Windows AD 域控</strong><p class="mono">source-ad-01 · authentication</p></td><td><span class="health"><i></i>正常</span></td><td>18.6M</td><td>61.2%</td><td><div class="progress"><i style="width:98.7%"></i></div>98.7%</td><td>8 秒前</td><td><button class="link">配置</button></td></tr><tr><td><strong>Zeek 网络传感器</strong><p class="mono">source-zeek-01 · network</p></td><td><span class="health warn"><i></i>延迟</span></td><td>42.1M</td><td>24.8%</td><td><div class="progress"><i style="width:92%"></i></div>92.0%</td><td>4 分钟前</td><td><button class="link">诊断</button></td></tr></tbody></table></div>
+      <div class="callout" style="margin-top:16px">预过滤策略必须版本化并记录命中原因。认证成功等可能成为组合检测证据的事件不能仅因数量大而丢弃。</div>
+    </section>
+
+    <section class="page" id="operations">
+      <div class="page-head"><div><h1>系统运行</h1><p>平台组件、积压、错误和服务目标。</p></div><div class="actions"><button class="btn">查看告警</button><button class="btn">运行诊断</button></div></div>
+      <div class="grid cols-4"><div class="card card-pad"><div class="health"><i></i><strong>Kafka</strong></div><p>3 / 3 broker 正常</p></div><div class="card card-pad"><div class="health"><i></i><strong>Elasticsearch</strong></div><p>集群状态 green</p></div><div class="card card-pad"><div class="health warn"><i></i><strong>分析 Worker</strong></div><p>最大 lag 12.4K</p></div><div class="card card-pad"><div class="health"><i></i><strong>API</strong></div><p>P95 184 ms</p></div></div>
+      <div class="grid two" style="margin-top:16px"><div class="card"><div class="card-head"><div><h2>消费者积压</h2><p>按 consumer group</p></div></div><table><thead><tr><th>消费者</th><th>Topic</th><th>Lag</th><th>状态</th></tr></thead><tbody><tr><td>tuba-standard-indexer</td><td class="mono">tuba.events.authentication.v1</td><td>1,204</td><td><span class="tag open">正常</span></td></tr><tr><td>analysis-auth-v1</td><td class="mono">normalized.authentication.v1</td><td>12,408</td><td><span class="tag medium">观察</span></td></tr><tr><td>analysis-sink-v1</td><td class="mono">analysis.result.v1</td><td>18</td><td><span class="tag open">正常</span></td></tr></tbody></table></div><div class="card card-pad"><h2>今日需要处理</h2><div class="kv"><span>DLQ 新增</span><strong style="color:var(--red)">43</strong></div><div class="kv"><span>ES bulk 失败</span><strong>7</strong></div><div class="kv"><span>分析超时</span><strong>2</strong></div><div class="kv"><span>SLO 告警</span><strong>1</strong></div><button class="btn" style="width:100%;margin-top:14px">打开运行手册</button></div></div>
+    </section>
+
+    <section class="page" id="access">
+      <div class="page-head"><div><h1>用户与权限</h1><p>成员关系以 PostgreSQL 为权威，登录身份来自企业 IAM。</p></div><button class="btn primary">邀请成员</button></div>
+      <div class="grid two"><div class="card"><div class="card-head"><div><h2>租户成员</h2><p>华东制造 · 18 位成员</p></div></div><table><thead><tr><th>成员</th><th>角色</th><th>状态</th><th></th></tr></thead><tbody><tr><td><strong>王敏</strong><p>wang.min@example.com</p></td><td><span class="tag blue">分析师</span></td><td><span class="tag open">启用</span></td><td><button class="link">编辑</button></td></tr><tr><td><strong>李明</strong><p>li.ming@example.com</p></td><td><span class="tag">只读审计员</span></td><td><span class="tag open">启用</span></td><td><button class="link">编辑</button></td></tr><tr><td><strong>赵宁</strong><p>zhao.ning@example.com</p></td><td><span class="tag high">租户管理员</span></td><td><span class="tag open">启用</span></td><td><button class="link">编辑</button></td></tr></tbody></table></div><div class="card card-pad"><h2>角色权限摘要</h2><div class="kv"><span>分析师</span><span>事件/异常读取、案件写入、反馈</span></div><div class="kv"><span>只读审计员</span><span>异常、案件和审计只读</span></div><div class="kv"><span>租户管理员</span><span>成员、数据源、规则和配额</span></div><div class="callout" style="margin-top:16px">平台管理员和发布者不会自动获得租户事件读取权限。所有权限变化写入追加式审计记录。</div></div></div>
+    </section>
+  </main>
+</div>
+
+<div class="modal" id="case-modal"><div class="dialog"><h2>创建案件</h2><p>关联异常和证据会自动加入案件。</p><label>案件标题</label><input class="field" value="可疑账户接管 - zhang.wei"/><label>优先级</label><select class="field"><option>P1 · 紧急</option><option>P2 · 高</option><option>P3 · 中</option></select><label>负责人</label><select class="field"><option>王敏</option><option>李明</option><option>暂不分派</option></select><div class="actions" style="justify-content:flex-end;margin-top:20px"><button class="btn" data-close>取消</button><button class="btn primary" data-close>创建并打开</button></div></div></div>
+
+<script>
+  const names = { overview:'调查 / 安全总览', anomalies:'调查 / 异常调查', 'anomaly-detail':'调查 / 异常详情', cases:'调查 / 案件中心', sources:'运营 / 数据源', operations:'运营 / 系统运行', access:'管理 / 用户与权限' };
+  function showPage(id) {
+    document.querySelectorAll('.page').forEach(x => x.classList.toggle('active', x.id === id));
+    document.querySelectorAll('.nav-item').forEach(x => x.classList.toggle('active', x.dataset.page === id || (id === 'anomaly-detail' && x.dataset.page === 'anomalies')));
+    document.getElementById('crumb').textContent = names[id] || id;
+    history.replaceState(null, '', '#' + id);
+    window.scrollTo(0, 0);
+  }
+  document.querySelectorAll('[data-page],[data-go]').forEach(x => x.addEventListener('click', () => showPage(x.dataset.page || x.dataset.go)));
+  document.querySelectorAll('[data-modal="case"]').forEach(x => x.addEventListener('click', () => document.getElementById('case-modal').classList.add('show')));
+  document.querySelectorAll('[data-close]').forEach(x => x.addEventListener('click', () => document.getElementById('case-modal').classList.remove('show')));
+  document.getElementById('case-modal').addEventListener('click', e => { if (e.target.id === 'case-modal') e.currentTarget.classList.remove('show'); });
+  const initial = location.hash.slice(1); if (names[initial]) showPage(initial);
+</script>
+</body>
+</html>

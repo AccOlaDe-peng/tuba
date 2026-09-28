@@ -1,0 +1,27 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "tuba.fullname" . }}-runtime
+  labels:
+    {{- include "tuba.labels" . | nindent 4 }}
+data:
+  KAFKA_BROKERS: {{ .Values.common.kafka.brokers | quote }}
+  KAFKA_RAW_TOPIC: {{ .Values.common.kafka.rawTopic | quote }}
+  KAFKA_QUARANTINE_TOPIC: {{ .Values.common.kafka.quarantineTopic | quote }}
+  KAFKA_EVENTS_TOPIC: {{ .Values.common.kafka.eventsTopic | quote }}
+  KAFKA_ANALYSIS_RESULTS_TOPIC: {{ .Values.common.kafka.analysisResultsTopic | quote }}
+  KAFKA_DLQ_TOPIC: {{ .Values.common.kafka.dlqTopic | quote }}
+  KAFKA_SECURITY_PROTOCOL: {{ .Values.common.kafka.securityProtocol | quote }}
+  KAFKA_SASL_MECHANISM: {{ .Values.common.kafka.saslMechanism | quote }}
+  {{- if .Values.common.kafka.tls.existingSecret }}
+  KAFKA_TLS_CA_FILE: {{ printf "%s/%s" .Values.common.kafka.tls.mountPath .Values.common.kafka.tls.caFile | quote }}
+  KAFKA_TLS_CERT_FILE: {{ printf "%s/%s" .Values.common.kafka.tls.mountPath .Values.common.kafka.tls.certFile | quote }}
+  KAFKA_TLS_KEY_FILE: {{ printf "%s/%s" .Values.common.kafka.tls.mountPath .Values.common.kafka.tls.keyFile | quote }}
+  {{- end }}
+  ES_URL: {{ .Values.common.elasticsearch.url | quote }}
+  TUBA_ORGANIZATION_ID: {{ .Values.common.organization | quote }}
+  TUBA_NAMESPACE: {{ .Values.common.namespace | quote }}
+  OTEL_EXPORTER_OTLP_ENDPOINT: {{ .Values.common.otel.endpoint | quote }}
+  {{- range $key, $value := .Values.config.extraData }}
+  {{ $key }}: {{ $value | quote }}
+  {{- end }}

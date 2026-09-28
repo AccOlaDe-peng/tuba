@@ -1,0 +1,40 @@
+{
+  "template": {
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "id": {
+          "type": "keyword"
+        },
+        "organization_id": {
+          "type": "keyword"
+        },
+        "namespace": {
+          "type": "keyword"
+        },
+        "raw_event_id": {
+          "type": "keyword"
+        },
+        "release_id": {
+          "type": "keyword"
+        },
+        "stage": {
+          "type": "keyword"
+        },
+        "code": {
+          "type": "keyword"
+        },
+        "reason": {
+          "type": "keyword"
+        },
+        "occurred_at": {
+          "type": "date"
+        }
+      }
+    }
+  },
+  "_meta": {
+    "managed_by": "tuba",
+    "version": "1"
+  }
+}
