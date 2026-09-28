@@ -90,8 +90,15 @@ Set-PrivateDirectoryAcl $logRoot
 # Apply read/execute permissions before stopping the current release. A failed
 # ACL update must leave the active release running.
 & icacls.exe $releasePath /inheritance:r /grant:r `
-    "${RunAs}:(OI)(CI)RX" "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" /T /C | Out-Null
+    "${RunAs}:(OI)(CI)RX" "SYSTEM:(OI)(CI)F" "BUILTIN\Administrators:(OI)(CI)F" | Out-Null
 if ($LASTEXITCODE -ne 0) { throw "Could not restrict release tree ACL." }
+# Applying inheritable ACEs recursively with /T can create child files with an
+# empty effective DACL on some Windows versions. Set the protected ACL on the
+# release root, then reset each child to inherit that root ACL. This preserves
+# the dedicated account's read/execute access while keeping administrators able
+# to inspect and roll back the installed release.
+& icacls.exe (Join-Path $releasePath '*') /reset /T /C | Out-Null
+if ($LASTEXITCODE -ne 0) { throw "Could not reset release child ACL inheritance." }
 
 $manifestPath = Join-Path $configRoot 'tuba-services.json'
 $environmentPath = Join-Path $configRoot 'tuba.env'
