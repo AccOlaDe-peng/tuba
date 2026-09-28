@@ -29,7 +29,7 @@
 | [IMPLEMENTATION-GAP-MATRIX.md](IMPLEMENTATION-GAP-MATRIX.md) | 目标组件与现有代码的映射和缺口 |
 | [DATA-MODEL-BASELINE.md](DATA-MODEL-BASELINE.md) | PostgreSQL 表责任、租户边界、迁移顺序与当前数据模型缺口 |
 | [ENVIRONMENT-248-REPORT.md](ENVIRONMENT-248-REPORT.md) | 248 指定日期的只读运行环境快照 |
-| [CAPACITY-OBSERVATION-20260927.md](CAPACITY-OBSERVATION-20260927.md) | 21 上 Zeek 日志量观察；采集范围与容量预算尚未定案 |
+| [CAPACITY-OBSERVATION-20260927.md](CAPACITY-OBSERVATION-20260927.md) | 21/248 容量实测；当前 50 GiB 单节点采集、保留、水位与恢复边界 |
 | [PIPELINE-ISOLATION-PLAN.md](PIPELINE-ISOLATION-PLAN.md) | Zeek 隔离验收命名方案；真实隔离验证链路已部署，运行现状见 [环境报告](ENVIRONMENT-248-REPORT.md) |
 | [zeek-validation-20260927.yaml](../deploy/profiles/zeek-validation-20260927.yaml) | 已被新方案替代的旧 profile；禁止激活 |
 

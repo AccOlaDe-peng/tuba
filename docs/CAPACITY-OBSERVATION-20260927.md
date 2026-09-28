@@ -84,8 +84,63 @@ ES 元数据显示 Zeek validation 的 Raw 索引在 2026-09-27/28 分别有 351
 
 本次没有消除 A03 阻塞：根盘可用空间仍低于 Raw 30 天＋标准事件 90 天的未压缩下界约 36.5 GiB，且 ES/Kafka 放大、系统预留空间、Windows 数据及其它 TUBA 数据尚未计入。生产部署前仍须定最终事件范围与保留期、扩盘预算、备份目标及 RPO/RTO；在此之前不启用生产 retention profile。
 
-## A03 容量规划建议（待确认，不是生产承诺）
+## A03 当前执行边界（2026-09-28）
 
-沿用当前候选的 Zeek 范围与 Raw 30 天、标准事件 90 天目标：源端未压缩量下界约 36.5 GiB。若按 2026-09-27 ES 索引的粗略存储比例估算，Raw 约 1.44 倍、domain 接近源量，ES 目标数据约 42 GiB；Kafka 再按 Raw/domain 7 天、source 24 小时估算约 6–7 GiB。由此得到 TUBA 数据约 48–50 GiB 的规划量级，尚未含隔离数据峰值、Windows 实发编码、恢复临时空间、segment/translog 与历史重放。根盘当前非 Kafka/ES 使用约 16 GiB；按磁盘至少保留 30% 可用空间的运维目标，**128 GiB 可作为 Zeek 首期扩容规划下限，160 GiB 更适合作为包含增长余量的目标**。该估算依赖单日样本与运行时索引比例，不是精确采购或扩盘指令，也不能替代连续完整日量测量。
+此前 128/160 GiB 是基于候选 30d Raw＋90d 标准保留的粗略扩盘估值；用户已明确当前不需要扩盘建议，因此该估值不作为推荐、批准或后续默认方案。当前不制定扩盘动作。
 
-建议首期先保持 Zeek `conn/dns/http/ssl` 与已观察的 Windows 候选安全事件范围；对 139 的 4719 先做用途复核。若仍采用 Raw 30 天、标准事件 90 天、Quarantine/DLQ 14 天，先扩到不低于 128 GiB 并设置 30% 磁盘保护水位，再用至少连续 7 个完整日实测修正容量。异机备份目标尚未发现，RPO/RTO 也没有实测依据；这两项不能由扩盘推定，须在 A03 关闭前单独落实。
+现有证据只能得出：248 根盘可用约 22.65 GiB，且 Zeek Raw 30d＋标准事件 90d 的未压缩下界约 36.5 GiB，尚未计 ES/Kafka 放大与系统安全余量，故该保留组合无法在现有盘上成立。把两个保留目标同时启用会带来容量风险；但目前也没有足够连续完整日的同口径增长数据，不能诚实地给出一个新的安全保留天数。
+
+后续按现有磁盘推进：
+
+1. 保持 248 当前 validation 范围，不扩展来源或事件类型，不启用未经 A03 核准的生产保留 profile；在明确停止/清理策略前不把持续增长当作可长期接受状态。
+2. 从连续完整自然日采集同口径的 Kafka 各 Topic bytes、ES Raw/domain/Quarantine store bytes、行数、source spool 大小及剩余磁盘；标注回放、补数、索引 rollover 等扰动，不用短时目录差值外推。
+3. 以实际净增长和可用空间推导最大保留窗口，并为 OS、重建 shard、Kafka segment 和故障恢复留下安全余量；再据此决定采集范围及 Raw/domain/Quarantine 各自保留期。达不到业务最小保留要求时，需减少接入范围或暂停非必要数据流量，由业务明确取舍。
+4. 补齐 21 解压 spool 的有界清理与磁盘水位告警；容量保护应先告警并阻止新增/非必要数据，不能静默删除原始证据。异机备份目的地和 RPO/RTO 仍需单独确认。
+
+A03 仍开放。未将容量估值转化为扩盘建议，也未在 248 修改 retention、删除数据或部署监控栈。
+
+## A03 最终容量边界（2026-09-28 18:40 CST）
+
+本节取代上文所有“待确认”建议，作为当前 50 GiB 单节点开发环境的容量决定。它不承诺磁盘故障恢复，也不授权扩大来源范围。
+
+### 最新同口径实测
+
+248 根文件系统总计 `46,588,542,976` B（43.39 GiB），已用 `23,745,736,704` B（22.11 GiB），可用 `22,842,806,272` B（21.27 GiB）。TUBA 隔离 Kafka 目录约 `4,032,688,128` B（3.76 GiB），ES 数据目录约 `1,957,481,280` B（1.82 GiB）；ES 单节点 green，24 个 active primary shard、0 unassigned。
+
+Kafka broker 默认和已显式配置的 TUBA Topic retention 都是 24 小时。当前主要 Kafka 落盘约为 Raw 1.95 GiB、network 0.78 GiB、DNS 0.21 GiB、Web 0.11 GiB，加上 source Topic、Quarantine 和 consumer offsets 后合计约 3.76 GiB。该结果证明 Kafka 7/14 天保留不适合当前磁盘。
+
+ES 的 2026-09-27 Zeek Raw、network、DNS、Web、TLS、Quarantine 合计约 0.86 GiB；2026-09-28 截至 18:40 合计约 0.96 GiB，按已过时间粗略折算约 1.24 GiB/日。为覆盖流量变化，容量预算使用 1.4 GiB/日，不使用较低均值。
+
+21 根盘约 195.37 GiB、可用约 139.00 GiB。TUBA Filebeat r2 目录约 171 MiB，其中解压 archive stage 约 131 MiB、四路 Filebeat data 约 21 MiB。每个 dataset 的磁盘队列上限为 256 MB，四路合计硬上限约 1 GiB；这是字节上限，不承诺固定离线时长。archive stage 现规定最多保留 6 小时，源端 Zeek gzip 归档仍是补采依据。
+
+### 批准范围与保留
+
+| 层 | 当前批准范围 | 保留/上限 |
+| --- | --- | --- |
+| 来源 | 仅 21 的 Zeek `conn/dns/http/ssl` | 不增加 dataset；Windows、Syslog、JumpServer、Keycloak 启用前重新测量 |
+| Filebeat queue | 四个独立磁盘队列 | 每路 256 MB，合计约 1 GiB |
+| 解压 archive stage | 最近归档的临时解压副本 | 6 小时；过期 stage 自动清理，源 gzip 不由 TUBA 删除 |
+| 所有 TUBA Kafka Topic | source、Raw、domain、Quarantine、DLQ、analysis | 24 小时；1 partition、1 replica |
+| ES Raw | 当前 namespace/generation 的 UTC 日索引 | 最多 7 个自然日分区 |
+| ES domain | network/dns/web/tls；其余当前为空 | 最多 7 个自然日分区 |
+| ES Quarantine | 当前 namespace/generation | 最多 7 个自然日分区 |
+| 后续 attribution/feature/anomaly/risk | 当前不启用 | 启用前做增量容量测量；启用后的初始上限仍为 7 日 |
+
+按保守值估算，Kafka 24 小时约 3.8 GiB，ES 7 日约 9.8 GiB，合计约 13.6 GiB。扣除当前非 TUBA 使用量并保留根盘 20% 空闲后，TUBA 可用预算约 18.2 GiB，尚留约 4.6 GiB 给 segment 回收、translog、日志和测量误差。因此 7 日是当前批准上限，不是可以继续叠加新来源的余量。
+
+ES 删除按 UTC 日物理索引执行：只在第 8 个分区出现后删除最旧已关闭分区，并继续执行 `no_active_job_lease`、备份策略和审计保护；不得按文档逐条删除。Kafka retention 到期可造成不可恢复的重放边界，消费者不得静默跳到 latest。
+
+### 磁盘保护水位
+
+- 根盘使用率达到 70%（约剩 13.0 GiB）告警并冻结新来源、补采和回放。
+- 达到 75%（约剩 10.8 GiB）进入 critical，要求处理积压、核对 retention job 和异常增长。
+- 达到 80%（约剩 8.7 GiB）停止新接入写入和非必要任务，让已确认数据排空；不得依靠静默删除 Raw、Quarantine 或 DLQ 恢复空间。
+- 任何单日实际净增长超过 1.4 GiB，或 Kafka 24 小时占用超过 4.5 GiB，立即重新打开 A03；在复核前保持来源冻结。
+
+### 恢复限制
+
+Kafka 的硬回放窗口为 24 小时。消费 lag age 达到 6 小时告警、12 小时 critical、18 小时必须停止来源或进入受控恢复，避免越过 retention。Filebeat 的离线能力以每路 256 MB 队列为准，不能换算成保证小时数；队列耗尽后依靠 Zeek 原始 gzip 做显式补采并生成缺口/回放记录。
+
+当前没有异机备份目标，Kafka 和 ES 都是单副本。因此：进程或短时依赖故障在磁盘完好且未超过上述窗口时目标 RPO 为 0；248 磁盘或整机丢失时没有可承诺的 RPO/RTO，可能丢失全部 TUBA 数据。该限制已经明确，允许关闭当前开发单节点的 A03，但不构成生产灾备验收；异机备份与恢复演练继续由 O05/V07 跟踪。
+
+本次只读核查没有修改 248 retention 或删除数据。合同和生成资产已将 Kafka 统一为 24 小时、ES 当前数据层统一为 7 日；实际应用 retention 和保护水位属于 O05 部署步骤。

@@ -3,28 +3,31 @@
   "defaults_are_capacity_targets_not_legal_retention": true,
   "indices": {
     "raw": {
-      "days": 30,
+      "days": 7,
       "date_field": "received_at"
     },
     "standard_events": {
-      "days": 90,
+      "days": 7,
       "date_field": "@timestamp"
     },
     "quarantine": {
-      "days": 30,
+      "days": 7,
       "date_field": "occurred_at"
     },
     "attributions_relations": {
-      "days": 90,
-      "date_field": "event_time_or_valid_from"
+      "days": 7,
+      "date_field": "event_time_or_valid_from",
+      "activation": "requires_incremental_capacity_measurement"
     },
     "features": {
-      "days": 180,
-      "date_field": "window_start"
+      "days": 7,
+      "date_field": "window_start",
+      "activation": "requires_incremental_capacity_measurement"
     },
     "anomalies_risk_events": {
-      "days": 365,
-      "date_field": "window_start_or_event_time"
+      "days": 7,
+      "date_field": "window_start_or_event_time",
+      "activation": "requires_incremental_capacity_measurement"
     },
     "current_state_and_baselines": {
       "days": null,

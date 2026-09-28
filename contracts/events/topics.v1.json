@@ -9,7 +9,7 @@
     "producer_delivery": "at_least_once",
     "kafka_transactions": false,
     "idempotence": "application_business_key_and_receipt",
-    "retention_status": "provisional_single_node_default_pending_A03"
+    "retention_status": "approved_50gib_single_node_A03_20260928"
   },
   "runtime_profiles": [
     {
@@ -20,7 +20,7 @@
       "replication_factor": 1,
       "min_insync_replicas": 1,
       "retention": "24h",
-      "retention_status": "bounded_validation_profile_pending_A03_production_budget",
+      "retention_status": "bounded_validation_profile_within_A03_budget",
       "max_message_bytes": 2097152,
       "producer_acks": "all",
       "producer_delivery": "at_least_once",
@@ -72,7 +72,7 @@
           "DESCRIBE"
         ]
       },
-      "retention": "7d",
+      "retention": "24h",
       "max_message_bytes": 2097152,
       "note": "One Raw envelope per message; PG receipt records intent/ack, Kafka is durable delivery boundary."
     },
@@ -92,7 +92,7 @@
       "partitions": 1,
       "replication_factor": 1,
       "retention": "24h",
-      "retention_status": "provisional_until_A03_capacity_and_recovery_budget",
+      "retention_status": "approved_50gib_single_node_A03_20260928",
       "acl": {
         "bound_source_credential": [
           "WRITE",
@@ -138,7 +138,7 @@
           "DESCRIBE"
         ]
       },
-      "retention": "14d",
+      "retention": "24h",
       "max_message_bytes": 2097152
     },
     {
@@ -180,7 +180,7 @@
           "DESCRIBE"
         ]
       },
-      "retention": "7d",
+      "retention": "24h",
       "max_message_bytes": 2097152
     },
     {
@@ -212,7 +212,7 @@
           "DESCRIBE"
         ]
       },
-      "retention": "14d",
+      "retention": "24h",
       "max_message_bytes": 2097152
     },
     {
@@ -237,7 +237,7 @@
           "DESCRIBE"
         ]
       },
-      "retention": "7d",
+      "retention": "24h",
       "max_message_bytes": 2097152
     },
     {
@@ -267,7 +267,7 @@
           "DESCRIBE"
         ]
       },
-      "retention": "7d",
+      "retention": "24h",
       "status": "legacy_v1_read_only_during_migration",
       "max_message_bytes": 1048576
     },
@@ -298,7 +298,7 @@
           "DESCRIBE"
         ]
       },
-      "retention": "7d",
+      "retention": "24h",
       "contract": "events/analysis-result/2/schema.json",
       "max_message_bytes": 1048576
     },
@@ -339,7 +339,7 @@
           "DESCRIBE"
         ]
       },
-      "retention": "14d",
+      "retention": "24h",
       "max_message_bytes": 2097152
     }
   ],

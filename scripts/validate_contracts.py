@@ -103,8 +103,8 @@ def validate_topic_catalog(catalog: dict) -> None:
     for key, expected in expected_defaults.items():
         if defaults.get(key) != expected:
             raise ValueError(f"topics.v1.json: defaults.{key} must be {expected!r}")
-    if defaults.get("retention_status") != "provisional_single_node_default_pending_A03":
-        raise ValueError("topics.v1.json: default retention must remain provisional until A03 is accepted")
+    if defaults.get("retention_status") != "approved_50gib_single_node_A03_20260928":
+        raise ValueError("topics.v1.json: default retention must reference the accepted 50 GiB single-node A03 boundary")
     profiles = catalog.get("runtime_profiles")
     if not isinstance(profiles, list) or not profiles:
         raise ValueError("topics.v1.json: runtime_profiles must declare an installed profile")
@@ -127,8 +127,8 @@ def validate_topic_catalog(catalog: dict) -> None:
     for key, expected in expected_profile.items():
         if validation_profile.get(key) != expected:
             raise ValueError(f"topics.v1.json: Zeek validation profile {key} must be {expected!r}")
-    if validation_profile.get("retention_status") != "bounded_validation_profile_pending_A03_production_budget":
-        raise ValueError("topics.v1.json: validation retention must not be mistaken for a production budget")
+    if validation_profile.get("retention_status") != "bounded_validation_profile_within_A03_budget":
+        raise ValueError("topics.v1.json: validation retention must remain within the accepted A03 budget")
     expected_service_principals = {
         "source-adapter": "tuba-zeek-source-adapter",
         "ingest": "tuba-zeek-ingest",
@@ -171,6 +171,8 @@ def validate_topic_catalog(catalog: dict) -> None:
             raise ValueError(f"topics.v1.json: {name} requires a message key")
         if not re.fullmatch(r"[1-9][0-9]*(?:s|m|h|d)", str(topic.get("retention", ""))):
             raise ValueError(f"topics.v1.json: {name} retention must be an explicit duration")
+        if topic.get("retention") != "24h":
+            raise ValueError(f"topics.v1.json: {name} exceeds the accepted 50 GiB single-node Kafka retention budget")
         if not isinstance(topic.get("max_message_bytes"), int) or isinstance(topic["max_message_bytes"], bool) or topic["max_message_bytes"] <= 0:
             raise ValueError(f"topics.v1.json: {name} max_message_bytes must be positive")
         if topic["max_message_bytes"] > validation_profile["max_message_bytes"]:
@@ -230,8 +232,8 @@ def validate_topic_catalog(catalog: dict) -> None:
     expected_group = "tuba-source-adapter-<first-16-hex-of-sha256-topic>[-<consumer_group_suffix>]"
     if source["consumers"] != [{"consumer_group": expected_group}]:
         raise ValueError("topics.v1.json: source adapter group formula must match the application implementation")
-    if source.get("retention_status") != "provisional_until_A03_capacity_and_recovery_budget":
-        raise ValueError("topics.v1.json: source retention must remain provisional until capacity/RPO is accepted")
+    if source.get("retention_status") != "approved_50gib_single_node_A03_20260928":
+        raise ValueError("topics.v1.json: source retention must reference the accepted A03 boundary")
     if source.get("partitions", defaults["partitions"]) != 1 or source.get("replication_factor", defaults["replication_factor"]) != 1:
         raise ValueError("topics.v1.json: source topics require one partition and one replica in the current profile")
     if source_acl.get("bound_source_credential") != ["WRITE", "DESCRIBE"]:

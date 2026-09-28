@@ -71,7 +71,7 @@ Filebeat 保留原 message、编码、多行边界与来源元数据；Winlogbea
 
 Zeek 开发配置模板为 `deploy/components/zeek-filebeat.example.yml`：conn/dns/http/ssl 各运行一个独立 Filebeat 进程，分别使用 source context/Topic、精确 Kafka 写入凭据及 data/registry 目录。2026-09-27 在 21 用独立管理器 `scripts/manage_zeek_filebeat.py` 部署验证；活动日志从 `/opt/zeek/spool/zeek/<dataset>.log` 读取，最近 90 分钟的每小时 gzip 归档由同一管理器启动的 `archive-sync` 进程解压到 TUBA 私有 spool，再由 Filebeat 读取。归档先写临时文件，gzip 校验成功后原子改名，Filebeat 不会读到半个归档。该步骤是必要的：21 的 Filebeat 8.19.0 filestream 不解压 gzip，最初误将压缩字节作为日志发送，DIP 隔离了这些记录；修正后抽样确认 source Topic 中的归档行是有效 JSON，`event.original` 与 `message` 一致。管理器不调用 systemd；原有 systemd Filebeat 配置、registry 和进程保持不动。原始 Beat 包装与 JSON 行共同进入 Raw；Zeek DIP 校验可信 `event.dataset` 与原始事件。
 
-真实闭环快照：21 的四路独立 Filebeat → 248 隔离 SCRAM/ACL Kafka → source-adapter receipt/offset commit → Raw → DIP/UIM → 四个 ES domain alias 均有数据。修正后的归档消息继续由 Raw 保留；首轮压缩字节仍保留在 Raw 与 quarantine 作为故障证据，不被清理。无 SNI 的 TLS、缺 query 的 DNS、缺 host 的 HTTP 依据现行 UIM 合同进入 quarantine；后续可按产品字段策略评估是否将其改为 `partial`。归档解压 spool 当前未配置自动清理，生产容量/保留与断点恢复窗口须由 COL-07/A03 定版。
+真实闭环快照：21 的四路独立 Filebeat → 248 隔离 SCRAM/ACL Kafka → source-adapter receipt/offset commit → Raw → DIP/UIM → 四个 ES domain alias 均有数据。修正后的归档消息继续由 Raw 保留；首轮压缩字节仍保留在 Raw 与 quarantine 作为故障证据。无 SNI 的 TLS、缺 query 的 DNS、缺 host 的 HTTP 依据现行 UIM 合同进入 quarantine。A03 已将每路 disk queue 定为 256 MB、解压 stage 定为 6h、Kafka 定为 24h、ES 定为 7 日；stage 过期清理已进入管理脚本，部署与故障演练归 COL-07/O05。
 
 Filebeat 的 `message_max_bytes` 会截断超过上限的行，因此模板没有设置较低的自定义值。默认读取上限、Kafka `max_message_bytes`、broker 消息上限与 adapter 的 1 MiB Raw 合同仍需统一预算并用超大行验证；当前模板不能承诺所有超大行均完整进入接入 DLQ。
 | Windows Security | Winlogbeat 本地读取；按范围配置 Event ID | 权限、频道、XML、bookmark、清空/覆盖缺口；WEF 必须保留原发出主机 |

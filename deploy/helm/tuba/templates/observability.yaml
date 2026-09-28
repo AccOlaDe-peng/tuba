@@ -68,11 +68,11 @@ spec:
           annotations:
             summary: TUBA analysis watermark is more than five minutes behind
         - alert: TubaAnalysisDeadLetter
-          expr: increase(tuba_analysis_dead_letter_total[15m]) > 0
+          expr: increase(tuba_analysis_results_dead_letter_total[15m]) + increase(tuba_analysis_dead_letter_total[15m]) > 0
           for: 5m
           labels: {severity: warning}
           annotations:
-            summary: TUBA analysis sink is isolating invalid results
+            summary: TUBA analysis worker or sink is isolating invalid data
         - alert: TubaAPIErrors
           expr: sum(rate(tuba_api_http_errors_total[5m])) / clamp_min(sum(rate(tuba_api_http_requests_total[5m])), 1) > 0.02
           for: 10m

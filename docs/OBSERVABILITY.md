@@ -70,7 +70,7 @@ Helm 的 `PrometheusRule` 默认包含：
 - `TubaSourceDLQWriteFailures`：来源永久拒绝事件无法落本地 DLQ，持续 5 分钟
 - `TubaIndexerFailures`：索引永久失败持续 10 分钟
 - `TubaAnalysisStale`：watermark 落后超过 5 分钟
-- `TubaAnalysisDeadLetter`：Python analysis worker 15 分钟内产生永久拒绝事件
+- `TubaAnalysisDeadLetter`：analysis worker 或 sink 在 15 分钟内产生永久拒绝/死信
 - `TubaAPIErrors`：5xx 比例超过 2%
 - `TubaKafkaLag`：Tuba consumer group Lag 超过 10000，持续 15 分钟
 

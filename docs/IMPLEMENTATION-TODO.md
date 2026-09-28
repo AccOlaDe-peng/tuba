@@ -4,6 +4,8 @@
 
 本清单覆盖完整单节点产品目标。未勾选项仍未按本基线验收；旧 M0–M5 完成记录不能直接关闭新任务。仓库和 248 开发环境包含多阶段代码切片并完成过部分隔离/登录验收，但不代表所有切片都已部署或整阶段通过；只有达到任务完成条件的条目才勾选。
 
+状态覆盖说明：A03 已于 2026-09-28 定版并关闭。下方较早验收记录中“待 A03”“A03 未定”或旧 7d/14d Kafka 目标仅保留当时背景，不再表示当前状态；当前权威边界是 Kafka 24h、ES 7 日、Zeek 四类来源以及根盘 70/75/80% 水位。
+
 ## 当前代码切片（未等同于阶段验收）
 
 - Raw：`internal/rawevent`、`internal/ingest`、`internal/rawindexer` 和 `internal/sink/raw.go` 已有可信单事件 envelope、PostgreSQL receipt、Kafka 确认后 202、按 UTC 接收日写 Raw ES。
@@ -17,9 +19,9 @@
 
 ## 当前阶段与 Zeek 闭环后续顺序（2026-09-27）
 
-宏观上仍处于 D1 数据底座实施阶段。阶段 1「合同、数据模型与基础迁移」已于 2026-09-27 达到出口：C01–C09 均有合同/代码或运行验收证据；C05 的 Zeek validation profile 已落地物理 Topic 映射、逐服务 SCRAM 身份、literal topic/group ACL、default-deny、1 partition/1 replica、2 MiB 消息上限、24h bounded retention 和手动提交/至少一次语义。生产容量和正式 retention 仍 provisional，归 A03 阶段 0 后续决策；阶段 2 的部署/运行验收仍被 A03 阻塞，但允许先实现不依赖容量结论的代码切片。O01 与 O04 正在实现：统一 Launcher、版本包/安装器、环境文件引用与服务进程监督已落地代码；O04 已加入严格配置值校验、依赖探针和有界批量。2026-09-28 全量 Go 测试、双平台包构建/哈希校验、Windows Launcher 回环、安装脚本语法、Zeek 管理脚本 `py_compile` 与 `git diff --check` 通过；新增 Keycloak PostgreSQL 独立项目验收，及 ingest 的 live/ready 依赖启动与断连恢复运行证据。目标主机安装和 Launcher 管理实际 ingest 的停止验收仍未完成。248 未部署；A03 未定。C07 确认 ES 8.19.0 无 Data Stream，authentication alias 指向有效物理索引，无需迁移。Zeek conn/dns/http/ssl 的真实纵向链路已接通；这不代表阶段 2 以后或完整业务闭环完成。
+宏观上仍处于 D1 数据底座实施阶段。阶段 1 已完成，A03 于 2026-09-28 完成当前 50 GiB 单节点容量边界：只允许 Zeek `conn/dns/http/ssl`，所有 Kafka Topic 保留 24h，ES Raw/domain/Quarantine 最多保留 7 个 UTC 日分区，根盘 70/75/80% 分别为 warning/critical/停止新增写入水位。阶段 2 不再被容量决策阻塞，下一步由 O05 应用 retention guard 和监控水位。O01/O04 的 Launcher、安装包、进程监督、配置校验、依赖探针和有界批量已落地；目标主机重启恢复和 169 非管理员实际启动/停止仍未完成。Zeek 真实纵向链路已接通；这不代表阶段 2 以后或完整业务闭环完成。
 
-1. **下一阶段先做可靠性与容量**：推进 COL-03、COL-07、V02，演练断网、重启、强杀、轮转、积压、磁盘满、Topic 重建及重复投递，记录各段确认水位和数据缺口；同步推进 A03、V07，确定日量/峰值、保留期、恢复预算和 21 归档解压 spool 的自动清理规则。当前 spool 尚无自动清理。
+1. **下一阶段先应用容量保护并完成可靠性**：O05 按 A03 部署 24h Kafka、7 日 ES 和 70/75/80% 水位；推进 COL-03、COL-07、V02，演练断网、重启、强杀、轮转、积压、磁盘满、Topic 重建及重复投递。21 归档解压 stage 已加入 6 小时自动清理代码，仍需随 Collector 版本部署并演练。
 2. **随后完成接入治理**：推进 COL-06 的过滤策略版本、影子计数、发布与回滚；推进 C05 的 Topic retention、ACL、分区及消费组定版。当前 Zeek 仅按四个 dataset 与最近 90 分钟归档窗口选择，尚无语义过滤。
 3. **再定 UIM 质量规则**：在 N03、C02 中评审缺 SNI 的 TLS、缺 query 的 DNS、缺 host 的 HTTP 是否可以标记为 `partial`。目前原文留在 Raw，标准化结果进入 quarantine。首轮误读 gzip 的 4,295 条及旧 DLQ 423 条保留为历史证据，清理或隔离须先形成策略，不直接删除。
 4. **并行准备统一部署管理**：推进 COL-08、COL-09，交付 Management Agent、组件监督、升级/回滚及主机重启恢复；当前 Zeek 独立实例由脚本手动管理。
@@ -39,7 +41,7 @@
 
 - [x] A01（G/D）整理现有代码与目标差异表，逐一标记复用、改造、新增、停用。产物：[IMPLEMENTATION-GAP-MATRIX.md](IMPLEMENTATION-GAP-MATRIX.md)；完成条件：每个目标服务有代码落点。矩阵同时标明现有代码切片不等同于阶段验收。
 - [x] A02（O）只读盘点 248 的 CPU/内存/磁盘、端口、服务版本、数据目录、Topic、索引、进程、身份依赖。产物：[ENVIRONMENT-248-REPORT.md](ENVIRONMENT-248-REPORT.md)；完成条件：区分配置存在与运行正常，不记录密钥。报告记录了 Topic/消费者与合同的差异，未变更环境。
-- [ ] A03（O）确认采集范围、日量/峰值、平均事件大小、Raw 保留及备份目的地，形成单节点容量预算（含新增接入 Kafka、Raw Kafka 两段保留和 Beat/网关磁盘缓冲）。完成条件：明确磁盘和恢复限制。已量测 21 Zeek 两日体量、139/169 候选 Security Event ID 的 24h 数量/XML 字节及 circular log 上限，并于 248 记录 2026-09-27 22:27、23:16 及 2026-09-28 13:54、14:29、15:42 多次目录/索引快照，见 [CAPACITY-OBSERVATION-20260927.md](CAPACITY-OBSERVATION-20260927.md)；仍缺完整日量基线、Windows 最终事件范围与 Winlogbeat 实际编码尺寸、正式生产保留期、248 扩盘、异机备份目的地与 RPO/RTO。当前 Zeek Raw 30d＋标准事件 90d 的未压缩源量下界约 36.5 GiB，超过 248 当前约 22.65 GiB 可用空间；14:29 至 15:42 的 Kafka/ES 目录变化约为 -11.4/+112.5 MiB，但这一短窗口不代表稳定日量。15:42 ES 为单节点 green（24 active shards、0 unassigned），Zeek Raw 与 domain 索引仍增加；2026-09-28 未完整，不能把索引快照直接当成完整日量。容量记录给出 128 GiB 规划下限、160 GiB 建议目标，但明确是估算而非扩盘批准；至少连续 7 个完整日、Windows 实发尺寸与异机备份/RPO/RTO 仍须补齐。2026-09-28 只读检查发现 248 `/dev/sda` 为 50 GiB、LVM VG 已无空闲 extents；扩容必须先由虚拟化层增加磁盘容量，再由运维窗口扩分区/LVM/XFS。A03 未关闭，也不支持按原默认保留期直接部署。
+- [x] A03（O）确认采集范围、日量/峰值、平均事件大小、Raw 保留及备份目的地，形成单节点容量预算。2026-09-28 依据 21/248 实测关闭当前 50 GiB 开发单节点边界：仅接入 Zeek `conn/dns/http/ssl`；每路 Filebeat queue 256 MB；解压 stage 6h；所有 Kafka Topic 24h；ES Raw/domain/Quarantine 最多 7 个 UTC 日分区；根盘 70/75/80% 为 warning/critical/停止新增写入水位。Kafka 约 3.8 GiB＋ES 1.4 GiB/日的保守预算下，7 日总量约 13.6 GiB，低于保留 20% 根盘空闲后的约 18.2 GiB TUBA 预算。后续来源和分析索引启用前必须重新测量。当前无异机备份，磁盘/整机损失无 RPO/RTO 承诺；短时故障仅在磁盘完好且未超过 Kafka/队列边界时目标 RPO=0。完整证据见 [CAPACITY-OBSERVATION-20260927.md](CAPACITY-OBSERVATION-20260927.md)。实际 retention、水位告警及清理 job 部署归 O05。
 - [x] A04（G/D）为 Zeek 验收链路分配隔离 namespace、generation 和消费组；记录旧入口兼容/退出策略。已部署 namespace=`zeek_validation_20260927_001`、generation=`g1`、独立 SCRAM/ACL broker（248:29292）、四个 source context/Topic、Raw/Event/Quarantine Topic 及 r2 消费组；未修改 248 原有 9192/9193 broker，也未接管 21 原有 Filebeat。旧 profile 保留为历史记录。
 - [x] A05（G/O）梳理现有产品状态、DEVELOPMENT、DEPLOYMENT 等细分文档，保留旧验收证据。完成条件：目标要求与历史状态清楚区分，所有文档不与目标基线冲突。已将仓库 README 改为当前代码切片状态，建立文档权威顺序并在索引中列出 A01/A02/A03/A04 产物；修正 DEVELOPMENT 的 M5/OIDC 旧状态描述；明确 DEPLOYMENT 是 Helm 扩展参考且不得作为当前单节点安装方式。M1–M5 文件保留为历史证据。
 
@@ -55,7 +57,7 @@
 - [x] C08（G/W）补齐来源、发布、任务、质量、实体、风险和查询的 OpenAPI；固定权限、错误码、分页、幂等与异步状态。OpenAPI 已补 release register/validate/activate、job lifecycle、quarantine quality、entity/risk list、bounded query 契约；注明 permission extensions、cursor/limit、Idempotency-Key、异步 202、明确错误场景和禁止 raw DSL，并将未实现操作标记 planned。验收快照：YAML 可解析；39 paths/44 operations 的 operationId 唯一；111 个 internal/external refs 均解析。契约完成不代表 planned 路由已实现；已实现 sources/collectors 中待补的分页/幂等行为转入对应后续实现任务。
 - [x] C09（G/P）定义发布包 manifest 与依赖检查：DIP/UIM/路由/Mapping/实体规则/Data Model/分析资产哈希。独立 manifest schema 与迁移/不可变规则定义七类资产、SHA-256、contract/generation compatibility、bundle 内相对路径、唯一 kind/ID、存在依赖和无环图；`validate_release_bundle.py` 对实际文件流式验哈希并输出 canonical manifest 摘要。证据：合同检查通过；临时七文件 bundle 验证成功，篡改文件被拒。发布状态 API 属 C08/后续控制面实现；Beat 制品 manifest 仍独立。
 
-阶段出口：合同可独立评审；所有 ID、时间、租户、版本、物理路由有唯一生成责任；C05 Topic/ACL/group 与 bounded validation retention profile 有运行验收证据；C06 migrations 在隔离 PostgreSQL 完成全序列 up/down；C07 ES 模板校验且旧同名 Data Stream 已迁移，或只读证明不存在并确认 alias 指向有效目标。以上出口已于 2026-09-27 达成，阶段 1 完成。A03 仍是阶段 0 未完成任务，生产容量、正式 retention、异机备份与 RPO/RTO 未定；阶段 2 可继续实现不依赖这些决策的代码和隔离验收，但容量、保留、备份及目标机部署门槛未满足前不得关闭阶段或对 248 部署。
+阶段出口：合同可独立评审；所有 ID、时间、租户、版本、物理路由有唯一生成责任；C05 Topic/ACL/group 有运行验收证据；C06 migrations 完成全序列 up/down；C07 ES 模板校验且不存在旧同名 Data Stream。以上出口已于 2026-09-27 达成；A03 于 2026-09-28 补齐当前 50 GiB 单节点容量和恢复限制。阶段 2 可部署 retention guard，但异机备份仍没有恢复承诺。
 
 ## 阶段 2：单节点运行基础（P0；依赖 A02、A03、C05–C07）
 
@@ -105,6 +107,8 @@
   - O05 日志限额进展（2026-09-28）：Launcher 管理的每个服务日志现在按 16 MiB 轮转，保留 3 个旧文件；Launcher supervisor 日志在下次启动前检查并轮转。RC23 Windows/Linux 包已构建并通过 24 项 allowlist/secret-reference 审计；SHA-256：Windows `ea6c21294cecd9d904ecc71b5e66bd775b14f4802857513fc74923869f697655`，Linux `a2e9b8e92b6a7a7ccdb3cab759f910637cda080625de190c4ba56fade296b3ed`。Windows 包内 10 服务 manifest、Web/HTTP proxy 验收通过，Linux 包在 71 临时解包后完成 SHA-256 和 10 服务 manifest validate。`go test ./...` 与 `git diff --check` 通过。仍缺单节点 Prometheus/Grafana scrape/dashboard/alerts、node exporter 磁盘水位、Kafka lag 监测和 A03 决定后的 retention guard；RC23 尚未安装到目标机。
   - COL-07/O04 worker 故障演练（2026-09-28）：在 71 以 RC23 Linux 包内真实 control-worker、normalizer、source-adapter 与 Launcher，通过一次性临时 Docker shim 建立唯一命名网络及 Kafka 4.3.1/PostgreSQL 16 disposable 容器；没有使用或停止 71 上原有 Zeek、MySQL、MongoDB 容器。脚本先后验证 Launcher 管理的 control-worker 在 PostgreSQL 与 Kafka 分别停止时 readiness 200→503、恢复后 503→200；强杀其隔离子进程后 Launcher 自动拉起新 PID 且 readiness 恢复；向 Launcher 发 SIGTERM 后 worker 优雅退出、状态为 stopped；normalizer/source-adapter readiness 和平台信号退出均通过。首轮核心断言通过后暴露 Python 3.6 `Path.unlink(missing_ok=...)` 清理不兼容，修正后复跑最终退出码 0，输出 `PASS`；临时 Compose 网络/容器已删除，复核 71 仅原有四个业务容器仍运行。该演练不覆盖 Kafka lag/Zeek spool 积压、重复/跨 offset 投递、轮转、磁盘满、日志覆盖、Topic 重建或目标裸机重启；COL-07 仍未关闭。
   - O05 环境只读核查（2026-09-28）：248 未发现 Prometheus、Grafana、node exporter 或 Kafka exporter 进程，3000/9090/9093/9100 也无监听。日志轮转代码与 RC23 包已具备，单节点 scrape、dashboard、磁盘/lag 告警和 retention guard 尚未部署；部署前需先满足 A03 存储门槛。
+  - O05 指标合同修订（2026-09-28）：核对 `internal/` 与 `python/tuba_analysis` 的真实埋点后，修正 Helm PrometheusRule/dashboard 中失效的 ingest accepted/rejected 与 analysis watermark/DLQ 名称，告警改为实际暴露的 Kafka 写失败、source adapter 重试/DLQ 落盘失败及 Raw/domain 索引写失败指标。OBSERVABILITY.md 补充当前真实指标目录，并明确 Kafka lag 与磁盘空间依赖外部 exporter；身份/格式拒绝和限流当前无 Prometheus 计数，未伪造相应拒绝率告警。本轮只改配置和文档，尚未运行 Helm render，也未部署 exporter/Prometheus/Grafana。
+  - A03 最终边界（2026-09-28）：当前 50 GiB 单节点仅允许 Zeek 四类日志；Kafka 24h，ES 7 日，Filebeat queue 每路 256 MB，archive stage 6h，根盘 70/75/80% 水位。合同和生成资产已更新；实际 retention guard 与告警部署转入 O05。
   - O01/O04 169 非管理员实进程验收复查（2026-09-28）：远程管理主机的 WinRM 5985/5986 当前 TCP 不可达，SSH 22 可连接但提供的 Administrator 凭据未通过 SSH 认证；没有改账号、登录权或服务状态。先前计划任务验收已证明 `tuba` 缺少 `SeBatchLogonRight`，临时授权曾被策略拦截。需要恢复获准的 WinRM 管理通道，或让运维提供一个现成的 `WIN-169\\tuba` 交互会话，再完成 helper 的真实启动/停止验收。
 
 ## 阶段 3：可信原始接入与证据（P0；依赖 C01、C06、O01–O04）

@@ -20,6 +20,7 @@ LOGS = os.path.join(ROOT, "logs")
 DATA = os.path.join(ROOT, "data")
 ARCHIVE_DATA = os.path.join(ROOT, "archive")
 ARCHIVE_SOURCE = "/opt/zeek/logs"
+ARCHIVE_STAGE_RETENTION_SECONDS = 6 * 60 * 60
 SECRETS = os.path.join(ROOT, "secrets.json")
 STATE = os.path.join(RUN, "processes.json")
 FILEBEAT = "/usr/share/filebeat/bin/filebeat"
@@ -140,6 +141,14 @@ def sync_archives_once():
     for dataset in CONTEXTS:
         destination_dir = os.path.join(ARCHIVE_DATA, dataset)
         os.makedirs(destination_dir, mode=0o750, exist_ok=True)
+        for name in os.listdir(destination_dir):
+            staged = os.path.join(destination_dir, name)
+            try:
+                if os.path.isfile(staged) and now - os.stat(staged).st_mtime > ARCHIVE_STAGE_RETENTION_SECONDS:
+                    os.remove(staged)
+                    print("removed expired archive stage %s" % staged, flush=True)
+            except OSError as error:
+                print("archive cleanup pending %s: %s" % (staged, error), flush=True)
         pattern = os.path.join(ARCHIVE_SOURCE, "*", dataset + ".*.log.gz")
         for source in glob.glob(pattern):
             try:
