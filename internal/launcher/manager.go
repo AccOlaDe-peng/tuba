@@ -58,7 +58,11 @@ func Start(manifestPath string) error {
 	if err != nil {
 		return fmt.Errorf("resolve launcher executable: %w", err)
 	}
-	runnerLog, err := os.OpenFile(filepath.Join(manifest.LogDir, "launcher.log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+	runnerLogPath := filepath.Join(manifest.LogDir, "launcher.log")
+	if err := rotateExistingLogIfNeeded(runnerLogPath, serviceLogMaxBytes, serviceLogBackups); err != nil {
+		return fmt.Errorf("rotate launcher log: %w", err)
+	}
+	runnerLog, err := os.OpenFile(runnerLogPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
 	if err != nil {
 		return fmt.Errorf("open launcher log: %w", err)
 	}
@@ -252,7 +256,7 @@ func runService(ctx context.Context, logDir string, service ServiceSpec, state *
 	restarts := 0
 	delay := service.restartMinDelay
 	for ctx.Err() == nil {
-		logFile, err := os.OpenFile(filepath.Join(logDir, service.Name+".log"), os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0600)
+		logFile, err := openRollingLog(filepath.Join(logDir, service.Name+".log"), serviceLogMaxBytes, serviceLogBackups)
 		if err != nil {
 			state.setService(service.Name, ServiceStatus{State: "failed", Restarts: restarts, LastExit: err.Error(), LastChanged: time.Now().UTC()})
 			return

@@ -37,16 +37,28 @@ spec:
   groups:
     - name: tuba.rules
       rules:
-        - alert: TubaIngestRejected
-          expr: sum(rate(tuba_ingest_rejected_total[5m])) > 1
+        - alert: TubaIngestKafkaFailures
+          expr: sum(rate(tuba_raw_ingest_kafka_failures_total[5m])) > 0
+          for: 10m
+          labels: {severity: critical}
+          annotations:
+            summary: TUBA ingest is failing to publish events to Kafka
+        - alert: TubaSourceDeliveryRetries
+          expr: sum(rate(tuba_source_adapter_delivery_retries_total[5m])) > 0
           for: 10m
           labels: {severity: warning}
           annotations:
-            summary: TUBA ingest is rejecting events
+            summary: TUBA source adapter is retrying event delivery
+        - alert: TubaSourceDLQWriteFailures
+          expr: sum(rate(tuba_source_adapter_dlq_write_failures_total[5m])) > 0
+          for: 5m
+          labels: {severity: critical}
+          annotations:
+            summary: TUBA source adapter cannot persist rejected events
         - alert: TubaIndexerFailures
-          expr: sum(rate(tuba_indexer_events_index_failed_total[5m])) > 0
+          expr: sum(rate(tuba_indexer_events_index_failed_total[5m])) + sum(rate(tuba_raw_indexer_index_failed_total[5m])) > 0
           for: 10m
-          labels: {severity: warning}
+          labels: {severity: critical}
           annotations:
             summary: TUBA indexer is writing events to DLQ
         - alert: TubaAnalysisStale
@@ -56,7 +68,7 @@ spec:
           annotations:
             summary: TUBA analysis watermark is more than five minutes behind
         - alert: TubaAnalysisDeadLetter
-          expr: increase(tuba_analysis_results_dead_letter_total[15m]) > 0
+          expr: increase(tuba_analysis_dead_letter_total[15m]) > 0
           for: 5m
           labels: {severity: warning}
           annotations:
@@ -98,11 +110,11 @@ data:
         {
           "id": 1,
           "type": "timeseries",
-          "title": "Ingest accepted / rejected",
+          "title": "Raw ingest accepted / Kafka failures",
           "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
           "targets": [
-            {"expr": "sum(rate(tuba_ingest_accepted_total[5m]))", "legendFormat": "accepted"},
-            {"expr": "sum(rate(tuba_ingest_rejected_total[5m]))", "legendFormat": "rejected"}
+            {"expr": "sum(rate(tuba_raw_ingest_accepted_total[5m]))", "legendFormat": "accepted"},
+            {"expr": "sum(rate(tuba_raw_ingest_kafka_failures_total[5m]))", "legendFormat": "Kafka failures"}
           ]
         },
         {
@@ -111,8 +123,8 @@ data:
           "title": "Indexer outcomes",
           "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
           "targets": [
-            {"expr": "sum(rate(tuba_indexer_events_indexed_total[5m]))", "legendFormat": "indexed"},
-            {"expr": "sum(rate(tuba_indexer_events_index_failed_total[5m]))", "legendFormat": "failed"}
+            {"expr": "sum(rate(tuba_indexer_events_indexed_total[5m])) + sum(rate(tuba_raw_indexer_indexed_total[5m]))", "legendFormat": "indexed"},
+            {"expr": "sum(rate(tuba_indexer_events_index_failed_total[5m])) + sum(rate(tuba_raw_indexer_index_failed_total[5m]))", "legendFormat": "failed"}
           ]
         },
         {

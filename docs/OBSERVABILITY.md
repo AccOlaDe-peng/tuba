@@ -20,23 +20,31 @@ API/ingest 请求默认由 `HTTP_REQUEST_TIMEOUT=30s` 限时，HTTP server 的�
 
 | 指标 | 含义 |
 | --- | --- |
-| `tuba_ingest_accepted_total` | 成功写入 Kafka 的认证事件 |
-| `tuba_ingest_rejected_total` | 身份、格式或输入错误拒绝 |
-| `tuba_ingest_rate_limited_total` | 被限流请求 |
-| `tuba_ingest_filtered_total` | 按版本化规则预过滤 |
+| `tuba_raw_ingest_accepted_total` | Raw ingest 接受并确认写入 Kafka 的事件 |
+| `tuba_raw_ingest_kafka_failures_total` | Raw ingest 写 Kafka 失败 |
+| `tuba_source_adapter_events_fetched_total` | Source adapter 从来源 Topic 拉取的事件 |
+| `tuba_source_adapter_events_accepted_total` | Source adapter 收到服务端成功回执的事件 |
+| `tuba_source_adapter_events_rejected_total` | Source adapter 收到永久拒绝并写入本地 DLQ 的事件 |
+| `tuba_source_adapter_delivery_retries_total` | Source adapter 可重试投递次数 |
+| `tuba_source_adapter_dlq_write_failures_total` | Source adapter 本地 DLQ 持久化失败 |
+| `tuba_source_adapter_offset_commit_failures_total` | Source adapter 提交来源 offset 失败 |
+| `tuba_raw_indexer_indexed_total` / `tuba_raw_indexer_index_failed_total` | Raw 索引写入成功 / 失败 |
 | `tuba_indexer_events_received_total` | 索引器读取事件 |
 | `tuba_indexer_events_indexed_total` | 成功写入 ES |
 | `tuba_indexer_events_index_failed_total` | 永久写入失败并进入 DLQ |
+| `tuba_indexer_events_validation_failed_total` | 标准索引器校验失败 |
 | `tuba_indexer_bulk_retry_total` | Bulk 部分失败重试批次 |
-| `tuba_analysis_results_received_total` | analysis sink 接收结果 |
-| `tuba_analysis_results_written_total` | 分析结果写入 ES |
-| `tuba_analysis_results_dead_letter_total` | 坏分析结果进入 DLQ |
+| `tuba_analysis_results_received_total` / `tuba_analysis_results_written_total` | Analysis sink 接收 / 写入结果 |
+| `tuba_analysis_results_dead_letter_total` | Analysis sink 坏结果进入 DLQ |
 | `tuba_analysis_processed_events_total` | Python worker 已处理事件 |
 | `tuba_analysis_emitted_results_total` | Python worker 已发布结果 |
+| `tuba_analysis_dead_letter_total` | Python analysis worker 永久拒绝事件数 |
 | `tuba_analysis_watermark_timestamp_seconds` | 各 Kafka partition 的事件时间水位 |
 | `tuba_api_http_requests_total` | API 请求总量 |
 | `tuba_api_http_errors_total` | API 5xx 总量 |
-| `kafka_consumergroup_lag` | Kafka Exporter 提供的消费组 Lag |
+| `kafka_consumergroup_lag` | Kafka Exporter 提供的消费组 Lag；当前应用不自行暴露该指标 |
+
+当前没有 `tuba_ingest_rejected_total`、`tuba_ingest_accepted_total` 等旧名，也没有应用内磁盘剩余空间或 Kafka lag 指标。HTTP 身份/格式拒绝和限流尚未形成 Prometheus 计数，因此不能用它们制作拒绝率告警。单节点监控需另配操作系统磁盘采集器和 Kafka exporter，并确认 Grafana/Prometheus 抓取目标可达；Exporter 未部署前，相应面板无数据是预期状态。
 
 ## SLO 基线
 
@@ -57,10 +65,12 @@ API/ingest 请求默认由 `HTTP_REQUEST_TIMEOUT=30s` 限时，HTTP server 的�
 
 Helm 的 `PrometheusRule` 默认包含：
 
-- `TubaIngestRejected`：5 分钟拒绝速率超过 1/s，持续 10 分钟
+- `TubaIngestKafkaFailures`：Kafka 写入失败速率大于 0，持续 10 分钟
+- `TubaSourceDeliveryRetries`：来源投递持续重试，持续 10 分钟
+- `TubaSourceDLQWriteFailures`：来源永久拒绝事件无法落本地 DLQ，持续 5 分钟
 - `TubaIndexerFailures`：索引永久失败持续 10 分钟
 - `TubaAnalysisStale`：watermark 落后超过 5 分钟
-- `TubaAnalysisDeadLetter`：15 分钟内出现坏分析结果
+- `TubaAnalysisDeadLetter`：Python analysis worker 15 分钟内产生永久拒绝事件
 - `TubaAPIErrors`：5xx 比例超过 2%
 - `TubaKafkaLag`：Tuba consumer group Lag 超过 10000，持续 15 分钟
 
@@ -70,10 +80,11 @@ Helm 的 `PrometheusRule` 默认包含：
 
 `observability.dashboard.enabled=true` 创建 Grafana sidecar ConfigMap，包含：
 
-- ingest accepted/rejected
+- Raw ingest accepted/Kafka failures
+- Source adapter accepted/retried/DLQ failures
 - indexer indexed/failed
 - analysis watermark age
-- Kafka consumer lag
+- Kafka consumer lag（依赖 Kafka Exporter）
 - API 5xx ratio
 
 日志应使用结构化字段，并至少包含 `service`、`environment`、`request_id`、`topic`、`partition`、`offset` 和错误码。禁止记录 token、API key、密码和原始敏感载荷。

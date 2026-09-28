@@ -48,7 +48,7 @@ sudo bash scripts/install_tuba_linux.sh 0.1.0 dist/tuba-0.1.0-linux-amd64.tar.gz
 
 清单声明命令、工作目录、重启退避区间及传给每个服务的环境字段。敏感环境值必须写成 `${ENV_NAME}` 引用。实际值从受限环境文件读取；Launcher 不把解析后的秘密写入参数、状态文件或 Launcher 日志，服务只得到清单显式声明的变量和基础 OS 环境白名单。示例清单为 API/ingest 设置 30 秒 `HTTP_REQUEST_TIMEOUT`，数据库服务设置 15 秒 `PG_STATEMENT_TIMEOUT`；后者可在 1 秒至 5 分钟内调整。默认退避从 1 秒增长到 30 秒；可在单个 service 中用 `restart_min` 和 `restart_max` 覆盖。
 
-Launcher 状态文件仅含进程 PID、重启次数和最近退出状态。服务日志保存在独立文件；`logs --tail N` 最多读取末尾 4 MiB/1000 行，完整日志按文件名保存。日志轮转归 O05。
+Launcher 状态文件仅含进程 PID、重启次数和最近退出状态。服务日志保存在独立文件；每个服务日志约束为 16 MiB，超过限制时轮转，最多保留 3 个旧文件（每服务约 64 MiB，上限可能多出一个写入块）。Launcher supervisor 日志在下次启动前检查并轮转达到 16 MiB 的文件，最多保留 3 份。`logs --tail N` 读取当前活动日志，最多读取末尾 4 MiB/1000 行；轮转文件可在日志目录中按 `.1` 至 `.3` 查看。该上限只约束 TUBA Launcher 管理的进程日志，不代替操作系统、Prometheus/Grafana 或 Kafka/ES 的磁盘与消息保留告警；监控采集和磁盘阈值仍由 O05/A03 收口。
 
 ## 验收边界
 

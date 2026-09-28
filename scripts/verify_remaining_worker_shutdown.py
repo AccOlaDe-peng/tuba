@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
 """Start normalizer, control worker, and source adapter on isolated dependencies, then stop them."""
 
-from __future__ import annotations
-
 import hashlib
 import json
+import errno
 import os
 import secrets
 import signal
@@ -17,6 +16,7 @@ import urllib.error
 import urllib.request
 import uuid
 from pathlib import Path
+from typing import Dict, List, Optional
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,16 +29,24 @@ WORKERS = {
 }
 
 
-def run(command: list[str], env: dict[str, str], input_text: str | None = None) -> str:
-    result = subprocess.run(command, cwd=ROOT, env=env, input=input_text, text=True,
-                            capture_output=True, timeout=120, check=False)
+def run(command: List[str], env: Dict[str, str], input_text: Optional[str] = None) -> str:
+    result = subprocess.run(command, cwd=ROOT, env=env, input=input_text, universal_newlines=True,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120, check=False)
     if result.returncode:
         detail = (result.stderr or result.stdout).strip()
         raise RuntimeError(f"command failed ({result.returncode}): {Path(command[0]).name}: {detail[-2000:]}")
     return result.stdout.strip()
 
 
-def wait_ready(url: str, process: subprocess.Popen[str], log_path: Path) -> None:
+def unlink_if_exists(path: Path) -> None:
+    try:
+        path.unlink()
+    except OSError as exc:
+        if exc.errno != errno.ENOENT:
+            raise
+
+
+def wait_ready(url: str, process: subprocess.Popen, log_path: Path) -> None:
     deadline = time.monotonic() + 30
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -54,7 +62,7 @@ def wait_ready(url: str, process: subprocess.Popen[str], log_path: Path) -> None
     raise RuntimeError(f"worker readiness did not become healthy: {url}")
 
 
-def wait_status(url: str, process: subprocess.Popen[str], log_path: Path, expected: int,
+def wait_status(url: str, process: subprocess.Popen, log_path: Path, expected: int,
                 timeout: int = 30) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -74,7 +82,7 @@ def wait_status(url: str, process: subprocess.Popen[str], log_path: Path, expect
     raise RuntimeError(f"worker readiness did not become HTTP {expected}: {url}")
 
 
-def stop_all(processes: dict[str, subprocess.Popen[str]]) -> None:
+def stop_all(processes: Dict[str, subprocess.Popen]) -> None:
     for process in processes.values():
         if process.poll() is None:
             process.send_signal(signal.CTRL_BREAK_EVENT if os.name == "nt" else signal.SIGTERM)
@@ -92,7 +100,8 @@ def kill_managed_child(pid: int) -> None:
     if pid <= 1:
         raise RuntimeError(f"refusing to terminate invalid managed child PID: {pid}")
     if os.name == "nt":
-        result = subprocess.run(["taskkill.exe", "/PID", str(pid), "/F"], capture_output=True, text=True,
+        result = subprocess.run(["taskkill.exe", "/PID", str(pid), "/F"], stdout=subprocess.PIPE,
+                                stderr=subprocess.PIPE, universal_newlines=True,
                                 timeout=10, check=False)
         if result.returncode:
             raise RuntimeError(f"could not terminate isolated managed child PID {pid}: {result.stderr.strip()}")
@@ -116,19 +125,32 @@ def main() -> int:
     for path in COMPOSE_FILES:
         compose.extend(["--file", str(path)])
     workdir = Path(tempfile.mkdtemp(prefix="tuba-workers-stop-"))
-    binaries = {name: workdir / (name + (".exe" if os.name == "nt" else "")) for name in WORKERS}
-    launcher_binary = workdir / ("tuba-launcher.exe" if os.name == "nt" else "tuba-launcher")
+    binary_suffix = ".exe" if os.name == "nt" else ""
+    prebuilt_dir_value = os.environ.get("TUBA_VALIDATION_BIN_DIR", "").strip()
+    prebuilt_dir = Path(prebuilt_dir_value).resolve() if prebuilt_dir_value else None
+    binaries = {
+        name: ((prebuilt_dir / (binary_name + binary_suffix)) if prebuilt_dir else
+               workdir / (binary_name + binary_suffix))
+        for name, binary_name in WORKERS.items()
+    }
+    launcher_binary = ((prebuilt_dir / ("tuba-launcher" + binary_suffix)) if prebuilt_dir else
+                       workdir / ("tuba-launcher" + binary_suffix))
     config_path = workdir / "source-adapter.json"
     manifest_path = workdir / "tuba-services.json"
     state_dir = workdir / "launcher-state"
     log_dir = workdir / "launcher-logs"
-    processes: dict[str, subprocess.Popen[str]] = {}
-    logs: list[object] = []
+    processes: Dict[str, subprocess.Popen] = {}
+    logs: List[object] = []
     started = False
     try:
-        for name, package in WORKERS.items():
-            run(["go", "build", "-o", str(binaries[name]), "./cmd/" + package], env)
-        run(["go", "build", "-o", str(launcher_binary), "./cmd/tuba-launcher"], env)
+        if prebuilt_dir:
+            for binary in list(binaries.values()) + [launcher_binary]:
+                if not binary.is_file() or (os.name != "nt" and not os.access(str(binary), os.X_OK)):
+                    raise RuntimeError("prebuilt validation binary is missing or not executable: " + str(binary))
+        else:
+            for name, package in WORKERS.items():
+                run(["go", "build", "-o", str(binaries[name]), "./cmd/" + package], env)
+            run(["go", "build", "-o", str(launcher_binary), "./cmd/tuba-launcher"], env)
         started = True
         run(compose + ["up", "--detach", "--wait", "kafka", "postgres", "kafka-init"], env)
         pg_id = run(compose + ["ps", "--all", "--quiet", "postgres"], env).splitlines()[0]
@@ -192,28 +214,28 @@ def main() -> int:
         launcher_env["TUBA_STAGE2_VALIDATION_DATABASE_URL"] = envs["control-worker"]["DATABASE_URL"]
         launcher_log = open(workdir / "launcher.log", "w", encoding="utf-8")
         logs.append(launcher_log)
-        launcher_options: dict[str, object] = {"cwd": ROOT, "env": launcher_env, "stdin": subprocess.DEVNULL,
-                                               "stdout": launcher_log, "stderr": subprocess.STDOUT, "text": True}
+        launcher_options: Dict[str, object] = {"cwd": ROOT, "env": launcher_env, "stdin": subprocess.DEVNULL,
+                                               "stdout": launcher_log, "stderr": subprocess.STDOUT}
         if os.name == "nt":
             launcher_options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
         else:
             launcher_options["start_new_session"] = True
         processes["control-worker"] = subprocess.Popen(
             [str(launcher_binary), "run", "--manifest", str(manifest_path)], **launcher_options
-        )  # type: ignore[arg-type]
+        )
 
         def start_worker(name: str) -> None:
             child_env = os.environ.copy()
             child_env.update(envs[name])
             log_file = open(workdir / (name + ".log"), "w", encoding="utf-8")
             logs.append(log_file)
-            options: dict[str, object] = {"cwd": ROOT, "env": child_env, "stdin": subprocess.DEVNULL,
-                                          "stdout": log_file, "stderr": subprocess.STDOUT, "text": True}
+            options: Dict[str, object] = {"cwd": ROOT, "env": child_env, "stdin": subprocess.DEVNULL,
+                                          "stdout": log_file, "stderr": subprocess.STDOUT}
             if os.name == "nt":
                 options["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
             else:
                 options["start_new_session"] = True
-            processes[name] = subprocess.Popen([str(binaries[name])], **options)  # type: ignore[arg-type]
+            processes[name] = subprocess.Popen([str(binaries[name])], **options)
 
         control_ready = "http://127.0.0.1:19099/health/ready"
         wait_ready(control_ready, processes["control-worker"], workdir / "launcher.log")
@@ -268,7 +290,8 @@ def main() -> int:
         stop_all(processes)
         processes.clear()
         status = subprocess.run([str(launcher_binary), "status", "--manifest", str(manifest_path)],
-                                cwd=ROOT, env=launcher_env, text=True, capture_output=True, timeout=15, check=False)
+                                cwd=ROOT, env=launcher_env, universal_newlines=True,
+                                stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, check=False)
         if status.returncode != 0 or "TUBA launcher is stopped" not in status.stdout:
             raise RuntimeError(f"Launcher did not report stopped after supervisor signal: {status.stdout} {status.stderr}")
         for log_file in logs:
@@ -288,17 +311,18 @@ def main() -> int:
                 run(compose + ["down", "--volumes", "--remove-orphans"], env)
             except Exception as exc:  # noqa: BLE001 - cleanup diagnostic only
                 print(f"WARNING: isolated Compose cleanup needs attention: {exc}", file=sys.stderr)
-        config_path.unlink(missing_ok=True)
-        manifest_path.unlink(missing_ok=True)
-        launcher_binary.unlink(missing_ok=True)
-        for path in binaries.values():
-            path.unlink(missing_ok=True)
+        unlink_if_exists(config_path)
+        unlink_if_exists(manifest_path)
+        if not prebuilt_dir:
+            unlink_if_exists(launcher_binary)
+            for path in binaries.values():
+                unlink_if_exists(path)
         for directory in (state_dir, log_dir):
             if directory.parent == workdir and directory.exists():
                 shutil.rmtree(directory)
-        (workdir / "launcher.log").unlink(missing_ok=True)
+        unlink_if_exists(workdir / "launcher.log")
         for name in WORKERS:
-            (workdir / (name + ".log")).unlink(missing_ok=True)
+            unlink_if_exists(workdir / (name + ".log"))
         workdir.rmdir()
 
 
