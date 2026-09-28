@@ -46,6 +46,16 @@ API/ingest 请求默认由 `HTTP_REQUEST_TIMEOUT=30s` 限时，HTTP server 的�
 
 当前没有 `tuba_ingest_rejected_total`、`tuba_ingest_accepted_total` 等旧名，也没有应用内磁盘剩余空间或 Kafka lag 指标。HTTP 身份/格式拒绝和限流尚未形成 Prometheus 计数，因此不能用它们制作拒绝率告警。单节点监控需另配操作系统磁盘采集器和 Kafka exporter，并确认 Grafana/Prometheus 抓取目标可达；Exporter 未部署前，相应面板无数据是预期状态。
 
+248 的 O05 capacity guard 在 `127.0.0.1:19100/metrics` 提供 `tuba_capacity_disk_used_percent`、`tuba_capacity_level`、`tuba_capacity_delete_candidates` 和 `tuba_capacity_deleted_indices_total`。它同时记录水位状态变化。Prometheus/Grafana 和外部通知状态见下方 248 单节点部署合同与实施 TODO。
+
+### 248 单节点监控部署合同
+
+配置与 dashboard 源文件位于 `deploy/observability/single-node/`，由 `scripts/manage_tuba_monitoring.py` 手动启停，不注册 systemd。所有端口只绑定 `127.0.0.1`，通过 SSH 隧道访问：Prometheus `19090`、node exporter `19101`、Kafka exporter `19102`、capacity guard `19100`，Grafana 预留 `13000`。Prometheus 保留 15 天，TSDB 同时限制为 1 GiB。
+
+Prometheus 抓取 capacity guard、主机文件系统、现场可达的 Raw indexer (`19095`) 和 Kafka exporter。其余 worker 端口只有在对应进程运行且该版本启用 metrics listener 后才应加入目标清单。Kafka exporter 使用 Kafka KRaft broker 独立 SCRAM-SHA-512 principal `tuba-kafka-observer`；ACL 仅授予 cluster Describe、`tuba.` 前缀 Topic Describe，以及 `tuba-` 前缀 consumer group Read/Describe。口令只在 248 Kafka root-only `secrets.json` 中保存，并经进程环境传递，不放入命令行参数。Exporter 和告警规则进一步按当前 Zeek profile 的消费组后缀过滤，避免旧验证组残留造成误报。
+
+首期告警覆盖根盘 70/75/80% 水位、capacity guard/node exporter/Kafka exporter 不可用、TUBA consumer lag > 10,000 持续 10 分钟，以及“存在积压但 consumer group 没有活动成员”持续 5 分钟。Prometheus 告警可本地查看；外发通知需要 Alertmanager receiver 和环境方提供的 webhook、邮件或企业微信接收配置。接收配置未提供前不声称通知闭环完成。Grafana dashboard 已以文件 provisioning 形式提供。
+
 ## SLO 基线
 
 | 能力 | SLI | 目标 |

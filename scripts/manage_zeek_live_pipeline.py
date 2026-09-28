@@ -74,6 +74,58 @@ def process_matches(pid, binary):
         return False
 
 
+def supervisor_matches(pid):
+    try:
+        state = open("/proc/%d/stat" % pid, "r").read().rsplit(")", 1)[1].strip().split()[0]
+        if state == "Z":
+            return False
+        args = open("/proc/%d/cmdline" % pid, "rb").read()
+        return os.path.realpath(__file__).encode() in args and b"--supervise-binary" in args
+    except (OSError, ValueError):
+        return False
+
+
+def state_process_matches(name, details):
+    pid = int(details["pid"])
+    if details.get("supervised"):
+        if not supervisor_matches(pid):
+            return False
+        child_pid = supervised_child_pid(name)
+        return child_pid is not None and process_matches(child_pid, os.path.join(BIN, name))
+    return process_matches(pid, os.path.join(BIN, name))
+
+
+def state_process_alive(name, details):
+    pid = int(details["pid"])
+    return supervisor_matches(pid) if details.get("supervised") else process_matches(pid, os.path.join(BIN, name))
+
+
+def child_pid_path(name):
+    return os.path.join(RUN, name + ".child.pid")
+
+
+def supervised_child_pid(name):
+    try:
+        return int(open(child_pid_path(name), "r").read().strip())
+    except (OSError, ValueError):
+        return None
+
+
+def wait_component_started(name, details, timeout=10):
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if details.get("supervised"):
+            child_pid = supervised_child_pid(name)
+            if child_pid is not None and process_matches(child_pid, os.path.join(BIN, name)):
+                return
+            if not supervisor_matches(int(details["pid"])):
+                break
+        elif process_matches(int(details["pid"]), os.path.join(BIN, name)):
+            return
+        time.sleep(.1)
+    raise RuntimeError(name + " child failed to start; inspect its validation log")
+
+
 def load_state():
     try:
         with open(STATE, "r") as handle:
@@ -96,24 +148,25 @@ def stop_processes(state):
     for name, details in reversed(list(state.items())):
         pid = int(details["pid"])
         binary = os.path.join(BIN, name)
-        if not process_matches(pid, binary):
+        matches = state_process_alive(name, details)
+        if not matches:
             continue
         try:
             os.killpg(pid, signal.SIGTERM)
         except ProcessLookupError:
             continue
         deadline = time.time() + 10
-        while time.time() < deadline and process_matches(pid, binary):
+        while time.time() < deadline and state_process_alive(name, details):
             time.sleep(.2)
-        if process_matches(pid, binary):
+        if state_process_alive(name, details):
             try:
                 os.killpg(pid, signal.SIGKILL)
             except ProcessLookupError:
                 pass
             deadline = time.time() + 5
-            while time.time() < deadline and process_matches(pid, binary):
+            while time.time() < deadline and state_process_alive(name, details):
                 time.sleep(.2)
-            if process_matches(pid, binary):
+            if state_process_alive(name, details):
                 remaining.append(name)
     if remaining:
         raise RuntimeError("data-plane processes did not stop: " + ", ".join(remaining))
@@ -128,7 +181,7 @@ def start():
         os.makedirs(directory, mode=0o750, exist_ok=True)
     state = load_state()
     for name, details in state.items():
-        if process_matches(int(details["pid"]), os.path.join(BIN, name)):
+        if state_process_alive(name, details):
             raise RuntimeError("data-plane process already running: " + name)
     if state:
         save_state({})
@@ -181,19 +234,131 @@ def start():
             # contract repair, while keeping quarantine/source-adapter watermarks.
             if name in ("tuba-raw-indexer", "tuba-normalizer", "tuba-standard-indexer"):
                 component_env["KAFKA_CONSUMER_GROUP_SUFFIX"] = "zeeklive20260927r2"
-            process = subprocess.Popen([binary], cwd=ROOT, env=component_env, stdin=subprocess.DEVNULL,
-                                       stdout=log, stderr=subprocess.STDOUT, start_new_session=True)
+            process = subprocess.Popen([sys.executable, os.path.abspath(__file__),
+                                        "--supervise-binary", binary], cwd=ROOT,
+                                       env=component_env, stdin=subprocess.DEVNULL,
+                                       stdout=log, stderr=subprocess.STDOUT,
+                                       start_new_session=True)
             log.close()
-            running[name] = {"pid": process.pid, "binary": binary}
+            running[name] = {"pid": process.pid, "binary": binary, "supervised": True}
             save_state(running)
             time.sleep(.75)
-            if process.poll() is not None:
-                raise RuntimeError(name + " exited; inspect its validation log")
+            wait_component_started(name, running[name])
         print("started TUBA data plane for four real Zeek datasets over SCRAM-authenticated Kafka")
         for name, details in running.items():
             print(name + " pid=" + str(details["pid"]))
     except Exception:
         stop_processes(running)
+        raise
+
+
+def process_environment(pid):
+    raw = open("/proc/%d/environ" % pid, "rb").read()
+    return dict(item.split(b"=", 1) for item in raw.split(bytes([0])) if b"=" in item)
+
+
+def existing_adapter_token(state, live):
+    preferred = ("tuba-ingest", "tuba-source-adapter", "tuba-normalizer",
+                 "tuba-raw-indexer", "tuba-standard-indexer", "tuba-quarantine-indexer")
+    for name in preferred:
+        if name not in live:
+            continue
+        token = process_environment(int(state[name]["pid"])).get(b"SOURCE_ADAPTER_TOKEN", b"").decode()
+        if len(token) >= 32:
+            return token
+    raise RuntimeError("cannot recover the existing adapter token from any running data-plane process")
+
+
+def start_components(names, restart=False):
+    """Recover selected stopped workers without touching live peers or offsets."""
+    state = load_state()
+    live = {name for name, details in state.items() if state_process_alive(name, details)}
+    requested = list(dict.fromkeys(names))
+    unknown = [name for name in requested if name not in SERVICE_ROLES]
+    if unknown:
+        raise RuntimeError("unknown component: " + ", ".join(unknown))
+    token = existing_adapter_token(state, live)
+    if restart:
+        for name in requested:
+            if name not in live:
+                continue
+            details = state[name]
+            pid = int(details["pid"])
+            alive = lambda: (supervisor_matches(pid) if details.get("supervised")
+                             else process_matches(pid, os.path.join(BIN, name)))
+            os.killpg(pid, signal.SIGTERM)
+            deadline = time.time() + 10
+            while time.time() < deadline and alive():
+                time.sleep(.2)
+            if alive():
+                os.killpg(pid, signal.SIGKILL)
+                deadline = time.time() + 5
+                while time.time() < deadline and alive():
+                    time.sleep(.2)
+                if alive():
+                    raise RuntimeError("could not stop component for supervised restart: " + name)
+            live.remove(name)
+    missing = [name for name in requested if name not in live]
+    if not missing:
+        print("requested components already running")
+        return
+    secrets_data = json.load(open(SECRETS, "r"))
+    services = secrets_data["services"]
+    base = read_api_environment()
+    env = dict(base)
+    env.update({
+        "KAFKA_BROKERS": BROKER,
+        "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
+        "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
+        "KAFKA_RAW_TOPIC": RAW_TOPIC,
+        "KAFKA_QUARANTINE_TOPIC": QUARANTINE_TOPIC,
+        "KAFKA_EVENTS_TOPIC_PREFIX": EVENT_PREFIX,
+        "KAFKA_DLQ_TOPIC": DLQ_TOPIC,
+        "KAFKA_SOURCE_ADAPTER_DLQ_TOPIC": ADAPTER_DLQ_TOPIC,
+        "TUBA_ORGANIZATION_ID": ORGANIZATION,
+        "TUBA_NAMESPACE": NAMESPACE,
+        "HTTP_LISTEN": "127.0.0.1:8080",
+        "RAW_INDEXER_METRICS_LISTEN": "127.0.0.1:19095",
+        "SOURCE_ADAPTER_METRICS_LISTEN": "127.0.0.1:19185",
+        "SOURCE_ADAPTER_TOKEN": token,
+        "SOURCE_ADAPTER_CONSUMER_GROUP_SUFFIX": "zeeklive20260927r2",
+        "SOURCE_ADAPTER_CONFIG": CONFIG,
+    })
+    started = {}
+    try:
+        for name in missing:
+            binary = os.path.join(BIN, name)
+            if not os.path.isfile(binary) or not os.access(binary, os.X_OK):
+                raise RuntimeError("missing or non-executable component: " + name)
+            component_env = dict(env)
+            component_env["KAFKA_SASL_USERNAME"] = services[SERVICE_ROLES[name]]["username"]
+            component_env["KAFKA_SASL_PASSWORD"] = services[SERVICE_ROLES[name]]["password"]
+            if name in ("tuba-raw-indexer", "tuba-normalizer", "tuba-standard-indexer"):
+                component_env["KAFKA_CONSUMER_GROUP_SUFFIX"] = "zeeklive20260927r2"
+            elif name == "tuba-quarantine-indexer":
+                component_env["KAFKA_CONSUMER_GROUP_SUFFIX"] = "zeeklive20260927"
+            else:
+                component_env["KAFKA_CONSUMER_GROUP_SUFFIX"] = "zeeklive20260927"
+            with open(os.path.join(LOGS, name + ".log"), "ab", buffering=0) as log:
+                process = subprocess.Popen([sys.executable, os.path.abspath(__file__),
+                                            "--supervise-binary", binary], cwd=ROOT,
+                                           env=component_env, stdin=subprocess.DEVNULL,
+                                           stdout=log, stderr=subprocess.STDOUT,
+                                           start_new_session=True)
+            started[name] = {"pid": process.pid, "binary": binary, "supervised": True}
+            wait_component_started(name, started[name])
+        state.update(started)
+        save_state(state)
+        for name, details in started.items():
+            print("started " + name + " pid=" + str(details["pid"]))
+    except Exception:
+        for details in started.values():
+            pid = int(details["pid"])
+            if supervisor_matches(pid):
+                try:
+                    os.killpg(pid, signal.SIGTERM)
+                except ProcessLookupError:
+                    pass
         raise
 
 
@@ -204,17 +369,59 @@ def status():
         return
     for name, details in state.items():
         pid = int(details["pid"])
-        current = "running" if process_matches(pid, os.path.join(BIN, name)) else "stopped/stale"
+        if details.get("supervised") and state_process_alive(name, details):
+            current = "running" if state_process_matches(name, details) else "restarting"
+        else:
+            current = "running" if state_process_matches(name, details) else "stopped/stale"
         print(name + " pid=" + str(pid) + " " + current)
+
+
+def supervise(binary):
+    delay = 2
+    name = os.path.basename(binary)
+    os.makedirs(RUN, mode=0o750, exist_ok=True)
+    pid_path = child_pid_path(name)
+    while True:
+        started_at = time.monotonic()
+        process = subprocess.Popen([binary], cwd=ROOT, env=os.environ,
+                                   stdin=subprocess.DEVNULL, start_new_session=False)
+        temporary = pid_path + ".tmp"
+        with open(temporary, "w") as handle:
+            handle.write(str(process.pid) + "\n")
+        os.chmod(temporary, 0o600)
+        os.replace(temporary, pid_path)
+        result = process.wait()
+        try:
+            if supervised_child_pid(name) == process.pid:
+                os.remove(pid_path)
+        except OSError:
+            pass
+        if time.monotonic() - started_at >= 300:
+            delay = 2
+        print("component exited with code=" + str(result) + "; restarting in " + str(delay) + " seconds", flush=True)
+        time.sleep(delay)
+        delay = min(delay * 2, 60)
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("start", "stop", "status"))
+    parser.add_argument("--supervise-binary")
+    parser.add_argument("--restart", action="store_true")
+    parser.add_argument("action", nargs="?", choices=("start", "start-components", "stop", "status"))
+    parser.add_argument("components", nargs="*")
     args = parser.parse_args()
     try:
+        if args.supervise_binary:
+            supervise(args.supervise_binary)
+            return 0
+        if not args.action:
+            parser.error("action is required")
         if args.action == "start":
             start()
+        elif args.action == "start-components":
+            if not args.components:
+                raise RuntimeError("start-components requires one or more component names")
+            start_components(args.components, restart=args.restart)
         elif args.action == "stop":
             stop_processes(load_state())
             print("stopped")

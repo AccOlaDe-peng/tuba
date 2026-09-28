@@ -1,0 +1,19 @@
+{
+  "annotations": {"list": []},
+  "editable": false,
+  "graphTooltip": 1,
+  "panels": [
+    {"datasource": {"type": "prometheus", "uid": "tuba-prometheus"}, "fieldConfig": {"defaults": {"unit": "percent", "min": 0, "max": 100}, "overrides": []}, "gridPos": {"h": 7, "w": 12, "x": 0, "y": 0}, "id": 1, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}}, "targets": [{"expr": "tuba_capacity_disk_used_percent", "legendFormat": "Root disk used %", "refId": "A"}], "title": "248 Capacity Guard: root disk", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "tuba-prometheus"}, "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []}, "gridPos": {"h": 7, "w": 12, "x": 12, "y": 0}, "id": 2, "options": {"legend": {"displayMode": "table", "placement": "bottom"}, "tooltip": {"mode": "single"}}, "targets": [{"expr": "sum by (consumergroup) (kafka_consumergroup_lag{consumergroup=~\"(tuba-.*-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927)\"})", "legendFormat": "{{consumergroup}}", "refId": "A"}], "title": "Kafka consumer lag by TUBA group", "type": "timeseries"},
+    {"datasource": {"type": "prometheus", "uid": "tuba-prometheus"}, "fieldConfig": {"defaults": {"unit": "short"}, "overrides": []}, "gridPos": {"h": 8, "w": 24, "x": 0, "y": 7}, "id": 3, "options": {"cellHeight": "sm", "showHeader": true}, "targets": [{"expr": "up{job=~\"tuba-workers|tuba-capacity-guard|node|kafka-exporter|prometheus\"}", "format": "table", "instant": true, "refId": "A"}], "title": "Scrape target health (1 = up)", "type": "table"},
+    {"datasource": {"type": "prometheus", "uid": "tuba-prometheus"}, "fieldConfig": {"defaults": {"unit": "short", "min": 0}, "overrides": []}, "gridPos": {"h": 7, "w": 12, "x": 0, "y": 15}, "id": 4, "options": {"legend": {"displayMode": "list", "placement": "bottom"}, "tooltip": {"mode": "single"}}, "targets": [{"expr": "tuba_capacity_delete_candidates", "legendFormat": "Indices awaiting retention", "refId": "A"}, {"expr": "increase(tuba_capacity_deleted_indices_total[1h])", "legendFormat": "Indices deleted (1h)", "refId": "B"}], "title": "Retention guard actions", "type": "timeseries"}
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["tuba", "single-node", "o05"],
+  "time": {"from": "now-6h", "to": "now"},
+  "timezone": "browser",
+  "title": "TUBA Single Node Operations",
+  "uid": "tuba-single-node",
+  "version": 1
+}

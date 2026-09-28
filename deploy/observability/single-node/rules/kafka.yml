@@ -1,0 +1,27 @@
+groups:
+  - name: tuba-kafka
+    rules:
+      - alert: TubaKafkaExporterUnavailable
+        expr: up{job="kafka-exporter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: Kafka exporter is unavailable
+          description: Verify exporter and the dedicated read-only Kafka principal.
+      - alert: TubaKafkaConsumerLag
+        expr: kafka_consumergroup_lag{consumergroup=~"(tuba-.*-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927)"} > 10000
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUBA Kafka consumer group lag is high
+          description: 'Consumer group {{ $labels.consumergroup }} has lag {{ $value }}. Check worker health and ES write latency.'
+      - alert: TubaKafkaConsumerInactiveWithBacklog
+        expr: (sum by (consumergroup) (kafka_consumergroup_lag_sum{consumergroup=~"(tuba-.*-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927)"}) > 0) and on (consumergroup) (kafka_consumergroup_members{consumergroup=~"(tuba-.*-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927)"} == 0)
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: TUBA Kafka consumer has backlog but no active member
+          description: 'Consumer group {{ $labels.consumergroup }} has pending messages and no active member. Check Launcher/worker state; do not reset offsets.'

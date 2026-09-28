@@ -87,12 +87,12 @@ func (a Adapter) Run(ctx context.Context) error {
 		a.RetryBackoff = 200 * time.Millisecond
 	}
 	for ctx.Err() == nil {
-		message, err := a.Consumer.FetchMessage(ctx)
+		message, err := a.fetchUntilAvailable(ctx)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
-			return fmt.Errorf("fetch source event: %w", err)
+			return err
 		}
 		a.inc("tuba_source_adapter_events_fetched_total")
 		if message.Topic != "" && message.Topic != a.Binding.Topic {
@@ -123,9 +123,8 @@ func (a Adapter) processUntilCommitted(ctx context.Context, message kafka.Messag
 				}
 				a.inc("tuba_source_adapter_dlq_written_total")
 			}
-			if commitErr := a.Consumer.CommitMessages(ctx, message); commitErr != nil {
-				a.inc("tuba_source_adapter_offset_commit_failures_total")
-				return fmt.Errorf("commit source topic offset after durable receipt: %w", commitErr)
+			if commitErr := a.commitUntilSuccessful(ctx, message); commitErr != nil {
+				return commitErr
 			}
 			a.inc("tuba_source_adapter_offsets_committed_total")
 			if permanent {
@@ -145,6 +144,68 @@ func (a Adapter) processUntilCommitted(ctx context.Context, message kafka.Messag
 		}
 	}
 	return ctx.Err()
+}
+
+func (a Adapter) fetchUntilAvailable(ctx context.Context) (kafka.Message, error) {
+	delay := a.RetryBackoff
+	for ctx.Err() == nil {
+		message, err := a.Consumer.FetchMessage(ctx)
+		if err == nil {
+			return message, nil
+		}
+		if ctx.Err() != nil {
+			return kafka.Message{}, ctx.Err()
+		}
+		a.inc("tuba_source_adapter_kafka_fetch_retries_total")
+		if err := waitRetry(ctx, delay); err != nil {
+			return kafka.Message{}, err
+		}
+		delay = nextRetryDelay(delay)
+	}
+	return kafka.Message{}, ctx.Err()
+}
+
+func (a Adapter) commitUntilSuccessful(ctx context.Context, message kafka.Message) error {
+	delay := a.RetryBackoff
+	for ctx.Err() == nil {
+		if err := a.Consumer.CommitMessages(ctx, message); err == nil {
+			return nil
+		}
+		a.inc("tuba_source_adapter_offset_commit_failures_total")
+		if err := waitRetry(ctx, delay); err != nil {
+			return err
+		}
+		delay = nextRetryDelay(delay)
+	}
+	return ctx.Err()
+}
+
+func waitRetry(ctx context.Context, delay time.Duration) error {
+	if delay <= 0 {
+		delay = 200 * time.Millisecond
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
+}
+
+func nextRetryDelay(delay time.Duration) time.Duration {
+	if delay <= 0 {
+		return 200 * time.Millisecond
+	}
+	if delay >= 30*time.Second {
+		return 30 * time.Second
+	}
+	delay *= 2
+	if delay > 30*time.Second {
+		return 30 * time.Second
+	}
+	return delay
 }
 
 func (a Adapter) inc(name string) {

@@ -144,3 +144,35 @@ Kafka 的硬回放窗口为 24 小时。消费 lag age 达到 6 小时告警、1
 当前没有异机备份目标，Kafka 和 ES 都是单副本。因此：进程或短时依赖故障在磁盘完好且未超过上述窗口时目标 RPO 为 0；248 磁盘或整机丢失时没有可承诺的 RPO/RTO，可能丢失全部 TUBA 数据。该限制已经明确，允许关闭当前开发单节点的 A03，但不构成生产灾备验收；异机备份与恢复演练继续由 O05/V07 跟踪。
 
 本次只读核查没有修改 248 retention 或删除数据。合同和生成资产已将 Kafka 统一为 24 小时、ES 当前数据层统一为 7 日；实际应用 retention 和保护水位属于 O05 部署步骤。
+
+## O05 应用记录（2026-09-28）
+
+248 已实际运行容量守护进程，使用产品自带管理 CLI start/stop/status，不注册 systemd。它每 60 秒检查 `/`，仅清理 `zeek_validation_20260927_001` namespace 下超过 7 日的 Raw、Quarantine 和八领域 UTC 日索引，并在 `127.0.0.1:19100` 暴露健康和 Prometheus 指标。ES persistent disk watermarks 已设置并读回为 low 70%、high 75%、flood stage 80%；达到 flood stage 时 Elasticsearch 自动设置只读但允许删除的保护块。
+
+部署验收时根盘使用率约 50.8%，状态 `normal`，删除候选 0，ready 返回 200。首次启动的匹配范围未限制 namespace，依据 7 日规则删除了一个 2024-07-14 的旧 `tenant_a` network 样例索引（4 条文档）。该删除已写入 audit JSONL，但没有备份，不能恢复；发现后守护进程已停止、规则收窄为当前批准 namespace、重新启动并读回候选为 0。后续不会处理其它 namespace。
+
+当前“告警”交付为本机状态变化日志和 Prometheus 指标；尚无 Prometheus/Grafana 或外部通知接收器，因此 O05 总任务仍保持开放。Kafka Topic 已处于 24h broker/topic retention，本轮未重启 Kafka、未修改业务进程和现存事件数据。
+
+### 监控栈部署进度（2026-09-28）
+
+248 已运行 Prometheus 3.5.0、node_exporter 1.9.1、Kafka exporter 1.9.0、Grafana 12.2.0；服务由 `/opt/tuba/monitoring/manage_tuba_monitoring.py start|stop|status [all|service]` 管理，不注册 systemd。Prometheus TSDB 上限 15 日/1 GiB；Prometheus 19090、node exporter 19101、Kafka exporter 19102、Grafana 13000 和 capacity guard 19100 均经 `ss` 核实仅监听 `127.0.0.1`。进程分别由 `tuba-prometheus`、`tuba-node-exporter`、`tuba-kafka-exporter`、`tuba-grafana` 等 nologin 用户运行。Prometheus 配置及 8 条告警规则经 promtool 检查，现场可达的 5/5 scrape targets 均为 UP。Grafana `/api/health` 返回 200；Prometheus datasource 和 TUBA Operations dashboard 已完成 API 读回。官方 SHA-256 sidecar 已匹配 Prometheus、node_exporter、Grafana 包；Kafka exporter v1.9.0 release 没有官方 digest，远端下载文件与工作站官方 release 副本 SHA-256 一致。
+
+`tuba-kafka-observer` 使用独立 SCRAM-SHA-512 凭据，只有 cluster Describe、`tuba.` Topic Describe、`tuba-` consumer group Read/Describe。Exporter 与告警按当前 Zeek profile group ID 过滤，排除历史 placeholder group。2026-09-28 现场发现 `/opt/tuba/collector-live/manage_zeek_live_pipeline.py status` 显示 `tuba-source-adapter`、`tuba-normalizer` 为 stopped/stale；conn source consumer group 最新读数 lag 11,199、无活动成员，其他来源 Topic 也有积压。Prometheus 已出现 lag 与 inactive-with-backlog 告警；此次部署没有重启业务数据面，也没有修改/重置 offset。该数据面恢复是当前需处理的运行事项。
+
+Grafana admin 口令随机生成并保存在 `/opt/tuba/monitoring/secrets.json`（root-only）；使用本机 SSH 隧道访问，口令可由主机管理员从该文件读取。Alertmanager 外发通知未部署，因为尚无指定渠道及接收端 URL/凭据。Prometheus UI 告警和 Grafana dashboard 已可本地查询，外部触达仍未闭环，O05 保持开放。
+
+### O05 数据面积压恢复跟进（2026-09-28）
+
+在 248 首次核对时，`tuba-source-adapter` 与 `tuba-normalizer` 为 stopped/stale。已将 `start-components` 增加到数据面管理器，并在 248 部署后仅恢复这两个组件。恢复时从仍在运行的 `tuba-ingest` 进程读取原有 `SOURCE_ADAPTER_TOKEN`，复用 consumer group suffix；`tuba-ingest`、raw/quarantine/standard indexer 均未重启，Kafka offset 未重置。恢复后六个数据面进程均报告 running。
+
+恢复后的 Prometheus 样本显示 lag 仍高：Normalizer `raw.live2` 消费组在两次约 42 秒间隔采样中从 4,735 上升到 8,009；source-adapter 消费组亦有持续积压。由此确认进程恢复成功，但处理速率尚未追上输入或积压仍在回放；本记录不将 Kafka lag 记为已恢复。下一步应比较每个来源 Topic 的 LOG-END-OFFSET 与 CURRENT-OFFSET 增速，并核对 ingest receipt 与 Raw ES bulk 写入吞吐/错误，再决定限流或容量调整；不得通过重置 offset 清积压。
+
+### O05 外部邮件告警状态（2026-09-28）
+
+接收地址确定为 `1096429536@qq.com`。QQ SMTP 客户端授权码仍待提供；应使用 `smtp.qq.com:465` 和客户端授权码，不接受网页登录密码。Alertmanager receiver、凭据文件与受控测试邮件尚未配置/发送，因此告警通知闭环未完成。
+
+### O05 消费积压恢复与进程监督（2026-09-28）
+
+进一步排查到 source-adapter 与 standard-indexer 会在 Kafka 暂时关闭连接/提交 offset 失败时退出；broker 进程持续运行，故障路径是 worker 返回错误后没有本地自动恢复。已扩展 `/opt/tuba/collector-live/manage_zeek_live_pipeline.py`：单组件恢复及 `--restart start-components ...` 会沿用同一 adapter token 和消费组，通过进程监督器在异常退出 2 秒后重启。六个组件（ingest、source-adapter、raw-indexer、normalizer、quarantine-indexer、standard-indexer）均已迁入监督器；执行时只逐个优雅重启指定 worker，未改 Topic、ACL 或 offset。
+
+积压回放期间，Prometheus consumer lag 峰值约 15,596；source-adapter 在约 119 秒内增加 5,479 条成功回执计数，Normalizer 消费组 lag 在 1 分钟采样中下降约 3,224，Raw-indexer lag=0。随后观测六个进程均为 running，source-adapter `/health/ready` 返回 ready，Kafka exporter 聚合 lag 先为 0、最新为 4 条在途记录。此次不执行 offset reset；少量非零 lag 是采样时仍在处理的新消息，不视为丢失。需在常态运行中继续监视监督器重启次数与 consumer lag。

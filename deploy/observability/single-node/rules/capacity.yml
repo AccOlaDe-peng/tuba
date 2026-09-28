@@ -1,0 +1,43 @@
+groups:
+  - name: tuba-capacity
+    rules:
+      - alert: TubaDiskWarning
+        expr: tuba_capacity_disk_used_percent >= 70
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUBA host disk usage is above 70%
+          description: '248 root disk usage is {{ $value }}%. Check retention and ingestion before the critical watermark.'
+      - alert: TubaDiskCritical
+        expr: tuba_capacity_disk_used_percent >= 75
+        for: 3m
+        labels:
+          severity: critical
+        annotations:
+          summary: TUBA host disk usage is above 75%
+          description: '248 is near Elasticsearch flood-stage protection; inspect disk consumers and reduce/stop ingestion if needed.'
+      - alert: TubaDiskFloodStage
+        expr: tuba_capacity_disk_used_percent >= 80
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: TUBA host disk reached 80% flood-stage boundary
+          description: 'Elasticsearch can set read_only_allow_delete. Immediately stop or throttle ingest and free approved space.'
+      - alert: TubaCapacityGuardUnavailable
+        expr: up{job="tuba-capacity-guard"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: TUBA capacity guard metrics are unavailable
+          description: Verify the capacity guard process and its 127.0.0.1:19100 listener.
+      - alert: TubaNodeExporterUnavailable
+        expr: up{job="node"} == 0
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: Node exporter metrics are unavailable
+          description: Host disk and filesystem metrics are missing.

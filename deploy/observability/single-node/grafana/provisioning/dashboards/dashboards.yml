@@ -1,0 +1,10 @@
+apiVersion: 1
+providers:
+  - name: TUBA
+    orgId: 1
+    folder: TUBA
+    type: file
+    disableDeletion: true
+    editable: false
+    options:
+      path: /opt/tuba/monitoring/grafana/provisioning/dashboards
