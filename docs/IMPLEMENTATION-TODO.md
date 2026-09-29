@@ -259,7 +259,13 @@ Windows 接入与位置/哈希稳定性排查结束后，按用户决定将这�
 
 1. **Windows 渲染不稳定**：同一记录两次读取时，`event.original` 内 `<RenderingInfo>` 的本地化任务名不同（实测 `Logon` vs `Credential Validation`，为整份文件中唯一差异）。已由 Winlogbeat `script` processor 剥离 `<RenderingInfo>`、并 `drop_fields` 移除 `agent.ephemeral_id`/`event.created`/`event.action`/`winlog.task|opcode|keywords` 修复；`<System>` 与 `<EventData>` 原始数据保留。
 2. **Beats JSON 字段顺序随机**：同一内容两次投递的字节序不同（实测**规范化后 sha256 完全相同、0 字段差异**，而原始字节长度 5647 vs 7264）。已由 `rawevent.CanonicalPayloadHash`（排序键 + `json.Number`）修复，ingest、adapter、`rawevent.New/Validate` 三处统一。
-3. **Filebeat 位置在 inode 复用下不唯一**：实测 `conn.log` 与 `dns.log` 占用同一 inode（1592008），不同记录撞同一位置，后到者被判冲突丢弃。已由 `StableBeatPosition` 优先使用 `log.file.fingerprint`（新形式 `filebeat-v2:`）配合 Filebeat `file_identity.fingerprint` 修复。
+3. **同一 Zeek 记录被从两个路径读入**：Filebeat 同时读活日志与归档目录，而 Zeek 轮转是把 `conn.log` **复制**进归档，inode 随之改变。实测同一记录的两次投递唯一差异是 `log.file.inode`（1592008 vs 3941775）与 `log.file.path`（活路径 vs `archive/conn/conn.01:00:00-02:00:00.log`），其余 37 个字段完全一致且 `uid`/`ts` 相同——**是同一记录的重复投递，不是不同记录撞位**。
+   修复分两步，缺一不可：
+   - `StableBeatPosition` 优先使用 `log.file.fingerprint`（新形式 `filebeat-v2:`）配合 Filebeat `file_identity.fingerprint`，使两条路径产生**相同**位置。这一步把问题从“同一事件被索引两遍”变为“位置正确、payload 因位置元数据而不同”。
+   - `CanonicalPayloadHash` 将采集器传输元数据（`log.file.path`/`inode`/`device_id`、`agent.ephemeral_id`、`event.created`）**排除在摘要之外**，字段本身仍完整保留在存储的 payload 中。这是为满足 `contracts/events/beat-ingress/1/contract.md` 对保留 `log.file.path` 的要求——不能靠丢弃字段解决。
+   验证：修复后 150 秒内 adapter DLQ **零新增**（修复前约 1 条/秒）。
+
+   订正说明：本节此前把第 3 类根因记为“inode 复用导致不同记录撞位”，并据此推断 `StableBeatPosition` 未生效。**该推断已被实测推翻**——位置始终稳定（两次投递位置完全相同、`uid`/`ts` 相同），真正原因是同一记录携带了随路径变化的元数据。保留订正过程，以免读者被早先的错误结论误导。
 
 另记录一次本轮自身造成的故障，不做隐瞒：2026-09-30 部署规范化哈希时只更新了**计算方**（ingest、adapter），遗漏了同样调用 `rawevent.Validate` 的**校验方**（raw-indexer、normalizer），导致约 11 分钟内每条原始信封都因 `payload_hash mismatch` 进 DLQ，raw-indexer 吞吐由约 250 条/秒降至约 1 条/秒。补齐这两个组件并重启两条链后恢复。教训：**改动共享校验函数的语义时，必须同时找出所有调用方**，不能只顺着“谁计算”去找。
 
