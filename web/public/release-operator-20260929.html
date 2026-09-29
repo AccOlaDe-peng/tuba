@@ -1,0 +1,113 @@
+<!doctype html><meta charset="utf-8"><title>TUBA Release Operator</title>
+<style>body{font:16px system-ui;margin:40px auto;max-width:900px;color:#102522}button{padding:12px 20px;background:#087d70;color:white;border:0;border-radius:8px;font-size:16px}pre{white-space:pre-wrap;background:#eef3f0;padding:20px;border-radius:8px;min-height:120px}</style>
+<h1>Windows Security 1.0.0 发布验收</h1><p>使用当前 TUBA 登录会话；每次操作由 API 授权并写入审计。</p><button id="run">登记并执行 validate → stage → activate</button><pre id="out">等待开始。</pre>
+<script>
+const manifest = {
+  "schema_version": "1.0.0",
+  "release_id": "windows-security-1.0.0",
+  "version": "1.0.0",
+  "assets": [
+    {
+      "asset_id": "windows-security-dip",
+      "kind": "dip",
+      "version": "1.0.0",
+      "path": "dip/windows-security.json",
+      "sha256": "3aba6a23276ee7bc20df4d49a0b4b4baa21ca6b5579c1d1b30bbe7691f71d521",
+      "dependencies": [
+        "windows-security-uim"
+      ]
+    },
+    {
+      "asset_id": "windows-security-uim",
+      "kind": "uim",
+      "version": "1.0.0",
+      "path": "uim/windows-security.json",
+      "sha256": "649f7e61f2c6099f9a4eb5decabb11ce0da91effd4f6483be7421a6cb693df27",
+      "dependencies": [
+        "windows-security-routing"
+      ]
+    },
+    {
+      "asset_id": "windows-security-routing",
+      "kind": "routing",
+      "version": "1.0.0",
+      "path": "routing/domains.json",
+      "sha256": "f890bad67eef621e03e644f97928c21ddcaae9d5b8428a18ae91e69c2b0642be",
+      "dependencies": []
+    },
+    {
+      "asset_id": "windows-security-es-mapping",
+      "kind": "es_mapping",
+      "version": "1.0.0",
+      "path": "elasticsearch/templates.json",
+      "sha256": "5e6866f57b111d4ca5c059dd47d47c1e927ea1cfd11de5df96f449cf4a99a5a3",
+      "dependencies": [
+        "windows-security-uim"
+      ]
+    },
+    {
+      "asset_id": "windows-security-entities",
+      "kind": "entity_rules",
+      "version": "1.0.0",
+      "path": "entities/rules.json",
+      "sha256": "7132c670b181bc73b2e98409f00b068398fe6f9cedbccfa6fb49c577054fbee2",
+      "dependencies": [
+        "windows-security-uim"
+      ]
+    },
+    {
+      "asset_id": "windows-security-data-model",
+      "kind": "data_model",
+      "version": "1.0.0",
+      "path": "model/datasets.json",
+      "sha256": "03eca7b192036f2f83230c44c8077e07dfd79d5a1b1be43bf26c7d06209370a2",
+      "dependencies": [
+        "windows-security-routing"
+      ]
+    },
+    {
+      "asset_id": "windows-security-analysis",
+      "kind": "analysis_rules",
+      "version": "1.0.0",
+      "path": "analysis/rules.json",
+      "sha256": "30e4783c76c507c90fe29452dbd46f213732db99587f98f1debd99b455567866",
+      "dependencies": [
+        "windows-security-entities",
+        "windows-security-data-model"
+      ]
+    }
+  ],
+  "compatibility": {
+    "raw_contract": "1",
+    "uim_contract": "1",
+    "analysis_result_contract": "2",
+    "generation": "g1"
+  }
+}
+;
+const out=document.querySelector('#out'); const button=document.querySelector('#run');
+function log(x){out.textContent += '\\n'+x}
+async function api(path, options={}) {
+ const token=sessionStorage.getItem('tuba.access_token'); if(!token) throw new Error('当前页面没有有效登录会话');
+ const r=await fetch('/api/v1'+path,{...options,headers:{Authorization:'Bearer '+token,...options.headers}});
+ const body=await r.text(); let data; try{data=body?JSON.parse(body):null}catch{data=body}
+ if(!r.ok) throw new Error(path+' HTTP '+r.status+': '+(typeof data==='string'?data:JSON.stringify(data)));
+ return data;
+}
+button.onclick=async()=>{button.disabled=true;out.textContent='检查当前身份与发布权限…';
+ try {
+  const me=await api('/me'); if(!me.permissions?.includes('release:manage')) throw new Error('当前身份未获得 release:manage');
+  log('已确认发布权限');
+  let release;
+  try { release=await api('/releases/windows-security-1.0.0'); log('读取现有版本：'+release.state); }
+  catch(e){ if(!String(e).includes('HTTP 404')) throw e;
+   release=await api('/releases',{method:'POST',headers:{'Content-Type':'application/json','Idempotency-Key':'windows-security-1.0.0-20260929'},body:JSON.stringify(manifest)}); log('登记完成：'+release.state);
+  }
+  const actions={draft:'validate',validated:'stage',staged:'activate'};
+  while(actions[release.state]) { const action=actions[release.state]; release=await api('/releases/windows-security-1.0.0/'+action,{method:'POST'}); log(action+' 完成：'+release.state); }
+  if(release.state!=='active') throw new Error('不支持的发布状态：'+release.state);
+  log('发布审计记录：');
+  const audit=await api('/releases/windows-security-1.0.0/audit'); log(JSON.stringify(audit,null,2));
+ } catch(e){log('失败：'+e.message)} finally {button.disabled=false}
+};
+</script>

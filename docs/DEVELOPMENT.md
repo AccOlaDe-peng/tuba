@@ -105,6 +105,12 @@ go run ./cmd/tuba-source-topic-admin -context ctx_0123456789abcdef0123456789abcd
 
 当前 Web 登录页直接向配置的开发 Keycloak realm 提交用户名和密码，realm 需允许 `tuba-web` 的 Direct Access Grants；API 仍校验返回的访问令牌并基于 PostgreSQL 成员关系授权。该简化登录仅用于当前开发验收，不代表生产身份接入已定版。既有 M1–M5 UI/认证记录见历史验收文档，不作为完整目标架构的交付证明。
 
+### 247 开发环境首个租户管理员引导
+
+247 的开发 realm 与本机 local-dev realm 是不同 issuer。首个 247 操作者必须先在 Keycloak 创建用户，再通过 `cmd/tuba-bootstrap-operator` 为实际 Keycloak `sub` 建立首个 `tenant_admin` 成员关系。该一次性工具要求目标 issuer 下尚无有效 tenant administrator；它在同一 PostgreSQL 事务内建立 identity/membership 并写入 `identity.bootstrap_membership` 审计事件，`actor_identity_id` 为空表示这是无现存登录操作者时的显式 bootstrap，`approved_by` 记录外部授权依据。已有管理员时工具会拒绝执行，后续成员变更必须走受保护的 `/api/v1/members` API。不要手工 SQL 修改成员关系。
+
+开发环境 Keycloak 用户可由 `scripts/provision_247_dev_operator.py` 创建。脚本只从环境读取 Keycloak bootstrap admin 凭据，生成随机密码并仅打印一次；密码不落盘。将用户 `sub`、issuer 和组织传给引导工具后，使用生成的用户名/密码登录。当前工作站的 Vite OIDC 参数保存在被 Git 忽略的 `web/.env.local`；访问 248 loopback API 时还需受控 SSH 本地转发 `127.0.0.1:8788 -> 248:127.0.0.1:8788`。
+
 ## CI
 
 根目录 `.gitlab-ci.yml` 使用与本地相同的 Go、Python 和 Node 主版本，执行合同检查、Go/Python/前端测试及 Go 构建。后续里程碑会增加 OpenAPI/JSON Schema 兼容、安全扫描、镜像构建和部署验证。

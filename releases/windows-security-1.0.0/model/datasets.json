@@ -1,0 +1,8 @@
+{
+  "schema_version": "1.0.0",
+  "datasets": [
+    {"name": "windows.security", "vendor": "Microsoft", "product": "windows", "domains": ["authentication", "session", "iam", "directory"], "evidence": ["event.original", "winlog.event_data", "winlog.record_id", "host.name"]}
+  ],
+  "timestamp_source": "@timestamp",
+  "source_position": "winlogbeat-v1:<hex(computer)>:<hex(channel)>:<record_id>:<UTC timestamp>"
+}

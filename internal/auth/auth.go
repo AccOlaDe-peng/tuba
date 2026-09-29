@@ -11,11 +11,11 @@ import (
 )
 
 var permissions = map[string]map[string]bool{
-	"viewer":         {"event:read": true, "anomaly:read": true, "case:read": true},
-	"analyst":        {"event:read": true, "anomaly:read": true, "case:read": true, "case:write": true, "analysis:feedback": true},
-	"tenant_admin":   {"event:read": true, "anomaly:read": true, "case:read": true, "case:write": true, "analysis:feedback": true, "user:manage": true, "operations:read": true, "source:manage": true},
-	"platform_admin": {"tenant:manage": true, "user:manage": true, "operations:read": true},
-	"publisher":      {"asset:publish": true},
+	"viewer":             {"event:read": true, "anomaly:read": true, "case:read": true},
+	"analyst":            {"event:read": true, "anomaly:read": true, "case:read": true, "case:write": true, "analysis:feedback": true},
+	"tenant_admin":       {"event:read": true, "anomaly:read": true, "case:read": true, "case:write": true, "analysis:feedback": true, "user:manage": true, "operations:read": true, "source:manage": true},
+	"platform_admin":     {"tenant:manage": true, "user:manage": true, "operations:read": true},
+	"platform_publisher": {"release:read": true, "release:manage": true},
 }
 
 type Principal struct {

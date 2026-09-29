@@ -487,21 +487,18 @@ paths:
   /releases:
     get:
       operationId: listReleases
-      summary: List immutable semantic releases in the authenticated tenant
+      summary: List immutable semantic releases visible to authorized platform publishers
       x-required-permission: release:read
-      x-implementation-status: planned
-      parameters:
-        - {$ref: "#/components/parameters/Cursor"}
-        - {$ref: "#/components/parameters/Limit"}
+      x-implementation-status: implemented
       responses:
-        "200": {description: Paginated release summaries, content: {application/json: {schema: {$ref: "#/components/schemas/ReleaseList"}}}}
+        "200": {description: Release summaries, content: {application/json: {schema: {$ref: "#/components/schemas/ReleaseList"}}}}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
     post:
       operationId: createRelease
       summary: Register an immutable semantic release manifest
       x-required-permission: release:manage
-      x-implementation-status: planned
+      x-implementation-status: implemented
       parameters:
         - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
       requestBody:
@@ -518,7 +515,7 @@ paths:
       operationId: getRelease
       summary: Read release state and manifest digest
       x-required-permission: release:read
-      x-implementation-status: planned
+      x-implementation-status: implemented
       parameters:
         - {name: id, in: path, required: true, schema: {type: string, maxLength: 128}}
       responses:
@@ -530,31 +527,72 @@ paths:
       operationId: validateRelease
       summary: Verify asset hashes, dependencies and service compatibility
       x-required-permission: release:manage
-      x-implementation-status: planned
+      x-implementation-status: implemented
       parameters:
         - {name: id, in: path, required: true, schema: {type: string, maxLength: 128}}
       responses:
-        "202": {description: Validation job queued, headers: {Location: {schema: {type: string}}}, content: {application/json: {schema: {$ref: "#/components/schemas/AsyncJobAccepted"}}}}
+        "200": {description: Assets verified and release moved to validated state, content: {application/json: {schema: {$ref: "#/components/schemas/Release"}}}}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {description: Release not found}
         "409": {description: Release is not draft or already immutable-validated}
   /releases/{id}/activate:
     post:
       operationId: activateRelease
-      summary: Stage and activate a validated release for a generation
+      summary: Activate a staged immutable release
       x-required-permission: release:manage
-      x-implementation-status: planned
+      x-implementation-status: implemented
       parameters:
         - {name: id, in: path, required: true, schema: {type: string, maxLength: 128}}
-        - {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 16, maxLength: 128}}
-      requestBody:
-        required: true
-        content: {application/json: {schema: {$ref: "#/components/schemas/ReleaseActivation"}}}
       responses:
-        "202": {description: Activation job queued, content: {application/json: {schema: {$ref: "#/components/schemas/AsyncJobAccepted"}}}}
+        "200": {description: Release state transitioned, content: {application/json: {schema: {$ref: "#/components/schemas/Release"}}}}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {description: Release not found}
         "409": {description: Release is not validated or generation is already active}
+  /releases/{id}/stage:
+    post:
+      operationId: stageRelease
+      summary: Stage a previously validated immutable release
+      x-required-permission: release:manage
+      x-implementation-status: implemented
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, maxLength: 128}}
+      responses:
+        "200": {description: Release moved to staged state, content: {application/json: {schema: {$ref: "#/components/schemas/Release"}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Release not found}
+        "409": {description: Release is not validated}
+  /releases/{id}/audit:
+    get:
+      operationId: getReleaseAudit
+      summary: Read append-only global audit history for one release
+      x-required-permission: release:read
+      x-implementation-status: implemented
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, maxLength: 128}}
+      responses:
+        "200": {description: Release audit entries, content: {application/json: {schema: {type: object, properties: {items: {type: array, items: {type: object}}}}}}}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /platform/release-publishers/{subject}:
+    put:
+      operationId: grantReleasePublisher
+      summary: Grant global semantic-release publishing rights
+      x-required-permission: release:manage
+      x-implementation-status: implemented
+      parameters:
+        - {name: subject, in: path, required: true, schema: {type: string, maxLength: 256}}
+      responses:
+        "204": {description: Publisher grant recorded and audited}
+        "403": {$ref: "#/components/responses/Forbidden"}
+    delete:
+      operationId: revokeReleasePublisher
+      summary: Revoke global semantic-release publishing rights
+      x-required-permission: release:manage
+      x-implementation-status: implemented
+      parameters:
+        - {name: subject, in: path, required: true, schema: {type: string, maxLength: 256}}
+      responses:
+        "204": {description: Publisher grant revoked and audited}
+        "403": {$ref: "#/components/responses/Forbidden"}
   /jobs:
     get:
       operationId: listJobs
@@ -731,21 +769,20 @@ components:
       $ref: ../events/beat-ingress/1/schema.json
     Release:
       type: object
-      required: [id, version, state, sha256, created_at]
+      required: [id, version, state, sha256, manifest, created_at]
       properties:
         id: {type: string, maxLength: 128}
         version: {type: string, pattern: '^[0-9]+\.[0-9]+\.[0-9]+$'}
         state: {type: string, enum: [draft, validated, staged, active, retired]}
         sha256: {type: string, pattern: '^[a-f0-9]{64}$'}
-        generation: {type: [string, "null"]}
+        manifest: {type: object}
         created_at: {type: string, format: date-time}
         activated_at: {type: [string, "null"], format: date-time}
     ReleaseList:
       type: object
-      required: [items, next_cursor]
+      required: [items]
       properties:
         items: {type: array, items: {$ref: '#/components/schemas/Release'}}
-        next_cursor: {type: [string, "null"]}
     ReleaseActivation:
       type: object
       additionalProperties: false

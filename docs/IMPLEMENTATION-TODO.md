@@ -168,7 +168,7 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
 - [ ] T01（G）创建 control-worker：任务状态机、attempt、租约、fencing、重试、取消、心跳与 SKIP LOCKED 领取。
 - [ ] T02（G/P/D）实现 inbox＋状态＋checkpoint＋outbox 单事务协议，恢复以 PG checkpoint 为权威；处理 rebalance/旧租约写入。
 - [ ] T03（G）实现有界 outbox publisher、聚合键顺序、投递重试和超时告警；无业务状态跨进程共享文件。
-- [ ] T04（G）实现资产依赖校验、不可变发布包、staged/active 状态及审计；旧版本回滚不原位覆盖资产。
+- [ ] T04（G）受权限控制、可审计的 release 发布闭环。代码/API/合同和手册已交付；248 的 00012/00013 迁移、首位 publisher 引导和新版 API 部署已完成，Windows Security bundle 已就位。剩余：用有效操作员会话登记 manifest，执行 draft→validated→staged→active，并读回 actor/action/request ID 审计后勾选。release 资产不可原位覆盖；source 必须显式绑定 staged/active release。
 - [ ] T05（G/D）实现 inbox/outbox/state retention、任务临时文件清理、活跃租约/证据保留保护。
 
 ## 阶段 6：实体与归因（P1；依赖阶段 4、阶段 5、C03）
@@ -237,8 +237,10 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
 - 248 O05 监控、容量保护、磁盘水位与消息保留已部署且复核健康；邮件外发按用户要求暂缓。
 - 21 Filebeat archive-sync 改为读取 Filebeat registry 快照/WAL，只有稳定游标达到文件 EOF 才清理 stage；无法证明的过期文件 fail-closed 保留。现场首轮只回收 36 个已确认文件，保留 108 个待确认文件（约 16.8 MB）；四个 Filebeat 进程未重启。
 - 248 已部署稳定源位置和重复 receipt 兼容版本，四个更新组件 hash 与构建产物一致、旧二进制已备份。六组件 running、ingest readiness 200、scrape targets 6/6 UP；两轮各 5 次、间隔 30 秒的 lag 样本在 0–10 间波动，最终读数均为 0。短时非零分布在 network、DNS 标准索引以及 conn source-adapter/Raw indexer，没有呈现持续单向增长；仍需长期观察 lag 和索引新鲜度，不能以一次归零替代稳定性窗口。
-- Winlogbeat 采集器和 UIM 语义已通过包配置/Windows shadow，但未进入 Kafka/TUBA。唯一当前部署阻塞是需有效的 TUBA `source:manage` 授权会话来创建正式来源上下文；仅有 Windows Administrator/248 root 权限不等价于应用侧来源授权。创建虚假 identity 或直接 SQL 越过审计不是可接受的自我确认方式。
-- 尚不能宣称“全部可靠性任务完成”：COL-07/V02 的 Topic 重建、离线 queue 恢复接入、磁盘满/系统重启、源日志覆盖、积压期间凭据切换、跨 offset 实流重放与逐段数量对账未全验；B04/V08 异机备份目标与恢复演练未定；O05 外发邮件暂缓。未重置 Kafka offsets、未改用户/权限或清理未确认数据。
+- Winlogbeat 采集器和 UIM 语义已通过包配置/Windows shadow，但未进入 Kafka/TUBA。此前缺少有效 `source:manage` 会话；2026-09-29 已按用户明确请求，在 247 创建 `tuba-operator-20260929`，并通过受限的一次性引导命令为实际 Keycloak issuer/subject 在 `tenant_a` 建立 `tenant_admin` membership，审计 action=`identity.bootstrap_membership`、actor 为空并在 metadata 记录授权来源。登录 token 经 248 `/api/v1/me` 读回 `source:manage`/`user:manage`，`GET /api/v1/sources` 返回 200。原先的 local-dev `tenant_admin` membership 使用不同 issuer，不可登录，不计为当前 realm 的有效管理员。
+- 2026-09-29 当前 TUBA `source_instances` 列表为空。248 `release_bundles` 原有 `zeek-validation-20260927-v1` staged 记录的 manifest 是空对象 `{}`，不能作为 Windows Security 语义 release；本轮没有改动该旧记录。Windows Security bundle 已补齐并预置 248；T04 API、迁移及 publisher 引导已部署，实际 release row 仍待有效操作员登录后按审计流程创建。发布完成后，再通过来源 API 分别登记 139/169，创建独立 Kafka SCRAM 身份/精确 ACL、更新 adapter allowlist，最后完成 Kafka→receipt→Raw ES→DIP/UIM→标准 ES 的逐段数量及重放验收。
+- 2026-09-29 登录与 Winlogbeat release 续进：当前操作员曾通过 `/api/v1/me` 验证 `tenant_admin`、`source:manage`、`user:manage`，来源列表 API 返回空数组。新增 `releases/windows-security-1.0.0/`，包含 DIP、Windows 事件到 UIM 语义/四域 routing、authentication/session/iam/directory ES templates、实体/数据模型和显式 ingestion-only 空分析规则；release manifest 七类资产/依赖/哈希通过 `scripts/validate_release_bundle.py`，canonical digest=`0195fd13e09ff09684af16827c0156a457af4e7a4fdcc1655b4939efa6355a74`。release 发布 API 已实现且在 248 部署，bundle 7 个 asset 的服务端文件 hash 验证已完成；当前因浏览器 access token 被 API 判为无效，尚未创建/推进 release row。
+- 尚不能宣称“全部可靠性任务完成”：COL-07/V02 的 Topic 重建、离线 queue 恢复接入、磁盘满/系统重启、源日志覆盖、积压期间凭据切换、跨 offset 实流重放与逐段数量对账未全验；B04/V08 异机备份目标与恢复演练未定；O05 外发邮件暂缓。未重置 Kafka offsets 或清理未确认数据。本轮按用户授权为当前 operator subject 新增首位 global release publisher，并记录 bootstrap 审计；未做其他权限变更。
 
 ## 后续多节点（P2；本轮不要求实施）
 
@@ -292,3 +294,5 @@ T 可在 D1 后半段开始；Q/W 在对应 API 合同稳定后逐步交付。�
 - 运行结果：21 独立 Filebeat → 71 合成专用 Topic → 248 source-adapter/ingest receipt/Raw → DIP/UIM → network ES 成功；conn 标准事件保留原文且端点与 300 bytes 正确。Raw alias 共 2 条（含失败轮的原始证据），network alias 1 条 qualified 事件。首轮错误记录通过 quarantine Topic 被专用 indexer 写入 `logs-ueba.quarantine-zeek_validation_20260927_001`，ES count=1。
 - 21 临时验证 Filebeat 已停止，既有 systemd Filebeat 仍为 active；未修改其服务、配置或 registry。248 验证数据面经启动器停止并确认 `stopped`。启动器已加入限定到所记录验证进程组的 SIGKILL 超时升级。
 - A04/COL-03/COL-04/N03 继续保持未完成：以上是合成数据的路径验收，不代表共享明文 broker 的生产隔离。71 无 ACL、248 broker 对外通告 localhost；需先提供具备可用远端 advertised listener 和 ACL 的接入 Kafka，再验收真实 Zeek 数据、四类 dataset、轮转/归档恢复及 Beat 管理。\n
+
+- 2026-09-29 T04 现场部署：248 的数据库实际使用旧版 `public.schema_migrations(filename, applied_at)`，迁移最新到 00011；已确认 00012 前置不一致 source_context 为 0。基于用户“你帮我执行”的明确授权、已有完整 PostgreSQL 备份 `/opt/tuba/backups/pre-release-publishing-20260929.dump`（SHA-256 `e43e88d7a55911c2af16e0a61ced7bcfbd395db0b31f5cdfe309dcecf0b3c935`），以现有 `tuba` 数据库身份、持有 `74190024001` advisory lock，分别事务执行并登记 `00012_source_context_scope.sql`、`00013_release_publishing.sql`；读回两条 ledger 记录、发布者/idempotency 表及两个触发器均存在。未修改数据库角色/授权。248 `/opt/tuba/bin/tuba-api` 已备份到 `tuba-api.pre-release-publishing-20260929` 后原位切换；配置备份为 `tuba.env.pre-release-publishing-20260929`，新增 `TUBA_RELEASE_ROOT=/opt/tuba/releases`。API readiness 200；首位 publisher 已用一次性工具授予当前 operator subject `26a64c67-b05a-4d52-b08f-201a8657ec03`，审批引用 `user-authorization-20260929` 已进入 bootstrap 审计。bundle 7 个 asset 在 248 的 hash 校验通过。发布 API 的实际浏览器操作还未执行：原浏览器 access token 已被 API 判为无效（401），当前需重新登录后继续；未创建 Windows release row，也未推进其状态。故 T04 保持未完成。

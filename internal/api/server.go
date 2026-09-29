@@ -34,6 +34,7 @@ type Server struct {
 	RequestTimeout  time.Duration
 	Metrics         *telemetry.Registry
 	KafkaConfigured bool
+	ReleaseRoot     string
 }
 
 func (s Server) Handler() http.Handler {
@@ -72,6 +73,15 @@ func (s Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/cases/{id}/actions", s.protected("case:write", s.caseAction))
 	mux.HandleFunc("GET /api/v1/cases/{id}/activity", s.protected("case:read", s.caseActivity))
 	mux.HandleFunc("GET /api/v1/operations/status", s.protected("operations:read", s.operations))
+	mux.HandleFunc("GET /api/v1/releases", s.protected("release:read", s.listReleases))
+	mux.HandleFunc("POST /api/v1/releases", s.protected("release:manage", s.createRelease))
+	mux.HandleFunc("GET /api/v1/releases/{id}", s.protected("release:read", s.getRelease))
+	mux.HandleFunc("POST /api/v1/releases/{id}/validate", s.protected("release:manage", s.transitionRelease("validate")))
+	mux.HandleFunc("POST /api/v1/releases/{id}/stage", s.protected("release:manage", s.transitionRelease("stage")))
+	mux.HandleFunc("POST /api/v1/releases/{id}/activate", s.protected("release:manage", s.transitionRelease("activate")))
+	mux.HandleFunc("GET /api/v1/releases/{id}/audit", s.protected("release:read", s.releaseAudit))
+	mux.HandleFunc("PUT /api/v1/platform/release-publishers/{subject}", s.protected("release:manage", s.setReleasePublisher(false)))
+	mux.HandleFunc("DELETE /api/v1/platform/release-publishers/{subject}", s.protected("release:manage", s.setReleasePublisher(true)))
 	mux.HandleFunc("POST /api/v1/analysis/feedback", s.protected("analysis:feedback", s.createAnalysisFeedback))
 	mux.HandleFunc("GET /api/v1/sources", s.protected("source:manage", s.listSources))
 	mux.HandleFunc("POST /api/v1/sources", s.protected("source:manage", s.registerSource))

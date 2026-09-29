@@ -1,0 +1,10 @@
+{
+  "schema_version": "1.0.0",
+  "identity_authority": "windows-domain",
+  "identities": [
+    {"entity_type": "user", "authority_field": "organization.id", "strong_key": "user.id", "fallback_key": "user.name", "fallback_strength": "weak"},
+    {"entity_type": "group", "authority_field": "organization.id", "strong_key": "group.id", "fallback_key": "group.name", "fallback_strength": "weak"},
+    {"entity_type": "host", "authority_field": "organization.id", "strong_key": "host.name", "fallback_strength": "weak"}
+  ],
+  "role_semantics": {"user": "actor or primary account", "user.target": "account acted upon or alternate credential subject", "group": "group targeted by membership change"}
+}

@@ -1,0 +1,82 @@
+{
+  "schema_version": "1.0.0",
+  "release_id": "windows-security-1.0.0",
+  "version": "1.0.0",
+  "assets": [
+    {
+      "asset_id": "windows-security-dip",
+      "kind": "dip",
+      "version": "1.0.0",
+      "path": "dip/windows-security.json",
+      "sha256": "3aba6a23276ee7bc20df4d49a0b4b4baa21ca6b5579c1d1b30bbe7691f71d521",
+      "dependencies": [
+        "windows-security-uim"
+      ]
+    },
+    {
+      "asset_id": "windows-security-uim",
+      "kind": "uim",
+      "version": "1.0.0",
+      "path": "uim/windows-security.json",
+      "sha256": "649f7e61f2c6099f9a4eb5decabb11ce0da91effd4f6483be7421a6cb693df27",
+      "dependencies": [
+        "windows-security-routing"
+      ]
+    },
+    {
+      "asset_id": "windows-security-routing",
+      "kind": "routing",
+      "version": "1.0.0",
+      "path": "routing/domains.json",
+      "sha256": "f890bad67eef621e03e644f97928c21ddcaae9d5b8428a18ae91e69c2b0642be",
+      "dependencies": []
+    },
+    {
+      "asset_id": "windows-security-es-mapping",
+      "kind": "es_mapping",
+      "version": "1.0.0",
+      "path": "elasticsearch/templates.json",
+      "sha256": "5e6866f57b111d4ca5c059dd47d47c1e927ea1cfd11de5df96f449cf4a99a5a3",
+      "dependencies": [
+        "windows-security-uim"
+      ]
+    },
+    {
+      "asset_id": "windows-security-entities",
+      "kind": "entity_rules",
+      "version": "1.0.0",
+      "path": "entities/rules.json",
+      "sha256": "7132c670b181bc73b2e98409f00b068398fe6f9cedbccfa6fb49c577054fbee2",
+      "dependencies": [
+        "windows-security-uim"
+      ]
+    },
+    {
+      "asset_id": "windows-security-data-model",
+      "kind": "data_model",
+      "version": "1.0.0",
+      "path": "model/datasets.json",
+      "sha256": "03eca7b192036f2f83230c44c8077e07dfd79d5a1b1be43bf26c7d06209370a2",
+      "dependencies": [
+        "windows-security-routing"
+      ]
+    },
+    {
+      "asset_id": "windows-security-analysis",
+      "kind": "analysis_rules",
+      "version": "1.0.0",
+      "path": "analysis/rules.json",
+      "sha256": "30e4783c76c507c90fe29452dbd46f213732db99587f98f1debd99b455567866",
+      "dependencies": [
+        "windows-security-entities",
+        "windows-security-data-model"
+      ]
+    }
+  ],
+  "compatibility": {
+    "raw_contract": "1",
+    "uim_contract": "1",
+    "analysis_result_contract": "2",
+    "generation": "g1"
+  }
+}

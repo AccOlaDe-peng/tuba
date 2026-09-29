@@ -1,0 +1,528 @@
+{
+  "schema_version": "1.0.0",
+  "templates": {
+    "index-uim-authentication-v1.json": {
+      "index_patterns": [
+        "tuba-v1-uim-authentication-*-g1-*"
+      ],
+      "priority": 300,
+      "composed_of": [
+        "tuba-uim-common-v1",
+        "tuba-uim-authentication-v1"
+      ],
+      "template": {
+        "settings": {
+          "number_of_shards": 1,
+          "number_of_replicas": 0
+        }
+      },
+      "_meta": {
+        "managed_by": "tuba",
+        "schema": "standard-event/1",
+        "domain": "authentication",
+        "version": 1
+      }
+    },
+    "index-uim-session-v1.json": {
+      "index_patterns": [
+        "tuba-v1-uim-session-*-g1-*"
+      ],
+      "priority": 300,
+      "composed_of": [
+        "tuba-uim-common-v1",
+        "tuba-uim-session-v1"
+      ],
+      "template": {
+        "settings": {
+          "number_of_shards": 1,
+          "number_of_replicas": 0
+        }
+      },
+      "_meta": {
+        "managed_by": "tuba",
+        "schema": "standard-event/1",
+        "domain": "session",
+        "version": 1
+      }
+    },
+    "index-uim-iam-v1.json": {
+      "index_patterns": [
+        "tuba-v1-uim-iam-*-g1-*"
+      ],
+      "priority": 300,
+      "composed_of": [
+        "tuba-uim-common-v1",
+        "tuba-uim-iam-v1"
+      ],
+      "template": {
+        "settings": {
+          "number_of_shards": 1,
+          "number_of_replicas": 0
+        }
+      },
+      "_meta": {
+        "managed_by": "tuba",
+        "schema": "standard-event/1",
+        "domain": "iam",
+        "version": 1
+      }
+    },
+    "index-uim-directory-v1.json": {
+      "index_patterns": [
+        "tuba-v1-uim-directory-*-g1-*"
+      ],
+      "priority": 300,
+      "composed_of": [
+        "tuba-uim-common-v1",
+        "tuba-uim-directory-v1"
+      ],
+      "template": {
+        "settings": {
+          "number_of_shards": 1,
+          "number_of_replicas": 0
+        }
+      },
+      "_meta": {
+        "managed_by": "tuba",
+        "schema": "standard-event/1",
+        "domain": "directory",
+        "version": 1
+      }
+    },
+    "component-uim-common-v1.json": {
+      "template": {
+        "mappings": {
+          "dynamic": "strict",
+          "properties": {
+            "@timestamp": {
+              "type": "date"
+            },
+            "event": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "kind": {
+                  "type": "keyword"
+                },
+                "category": {
+                  "type": "keyword"
+                },
+                "dataset": {
+                  "type": "keyword"
+                },
+                "action": {
+                  "type": "keyword"
+                },
+                "outcome": {
+                  "type": "keyword"
+                },
+                "duration": {
+                  "type": "long"
+                }
+              }
+            },
+            "organization": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "ueba": {
+              "dynamic": "strict",
+              "properties": {
+                "schema": {
+                  "dynamic": "strict",
+                  "properties": {
+                    "version": {
+                      "type": "keyword"
+                    }
+                  }
+                },
+                "quality": {
+                  "dynamic": "strict",
+                  "properties": {
+                    "status": {
+                      "type": "keyword"
+                    },
+                    "reasons": {
+                      "type": "keyword"
+                    },
+                    "usable_for": {
+                      "type": "keyword"
+                    }
+                  }
+                },
+                "route": {
+                  "dynamic": "strict",
+                  "properties": {
+                    "domain": {
+                      "type": "keyword"
+                    },
+                    "generation": {
+                      "type": "keyword"
+                    }
+                  }
+                },
+                "event": {
+                  "dynamic": "strict",
+                  "properties": {
+                    "type": {
+                      "type": "keyword"
+                    }
+                  }
+                },
+                "provenance": {
+                  "dynamic": "strict",
+                  "properties": {
+                    "raw_event_id": {
+                      "type": "keyword"
+                    },
+                    "release_id": {
+                      "type": "keyword"
+                    },
+                    "dip_version": {
+                      "type": "keyword"
+                    },
+                    "uim_version": {
+                      "type": "keyword"
+                    }
+                  }
+                }
+              }
+            },
+            "vendor": {
+              "dynamic": "strict",
+              "properties": {
+                "name": {
+                  "type": "keyword"
+                },
+                "product": {
+                  "type": "keyword"
+                },
+                "dataset": {
+                  "type": "keyword"
+                },
+                "payload": {
+                  "type": "flattened"
+                }
+              }
+            }
+          }
+        }
+      },
+      "_meta": {
+        "managed_by": "tuba",
+        "version": "1"
+      }
+    },
+    "component-uim-authentication-v1.json": {
+      "template": {
+        "mappings": {
+          "dynamic": "strict",
+          "properties": {
+            "user": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                },
+                "domain": {
+                  "type": "keyword"
+                },
+                "target": {
+                  "dynamic": "strict",
+                  "properties": {
+                    "id": {
+                      "type": "keyword"
+                    },
+                    "name": {
+                      "type": "keyword"
+                    },
+                    "domain": {
+                      "type": "keyword"
+                    }
+                  }
+                }
+              }
+            },
+            "group": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "host": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "source": {
+              "dynamic": "strict",
+              "properties": {
+                "ip": {
+                  "type": "ip"
+                },
+                "address": {
+                  "type": "keyword"
+                },
+                "port": {
+                  "type": "integer"
+                }
+              }
+            },
+            "destination": {
+              "dynamic": "strict",
+              "properties": {
+                "ip": {
+                  "type": "ip"
+                },
+                "address": {
+                  "type": "keyword"
+                },
+                "port": {
+                  "type": "integer"
+                },
+                "domain": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        }
+      },
+      "_meta": {
+        "managed_by": "tuba",
+        "version": "1"
+      }
+    },
+    "component-uim-session-v1.json": {
+      "template": {
+        "mappings": {
+          "dynamic": "strict",
+          "properties": {
+            "user": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                },
+                "domain": {
+                  "type": "keyword"
+                },
+                "target": {
+                  "dynamic": "strict",
+                  "properties": {
+                    "id": {
+                      "type": "keyword"
+                    },
+                    "name": {
+                      "type": "keyword"
+                    },
+                    "domain": {
+                      "type": "keyword"
+                    }
+                  }
+                }
+              }
+            },
+            "host": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "source": {
+              "dynamic": "strict",
+              "properties": {
+                "ip": {
+                  "type": "ip"
+                },
+                "address": {
+                  "type": "keyword"
+                },
+                "port": {
+                  "type": "integer"
+                }
+              }
+            },
+            "destination": {
+              "dynamic": "strict",
+              "properties": {
+                "ip": {
+                  "type": "ip"
+                },
+                "address": {
+                  "type": "keyword"
+                },
+                "port": {
+                  "type": "integer"
+                },
+                "domain": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        }
+      },
+      "_meta": {
+        "managed_by": "tuba",
+        "version": "1"
+      }
+    },
+    "component-uim-iam-v1.json": {
+      "template": {
+        "mappings": {
+          "dynamic": "strict",
+          "properties": {
+            "user": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                },
+                "domain": {
+                  "type": "keyword"
+                },
+                "target": {
+                  "dynamic": "strict",
+                  "properties": {
+                    "id": {
+                      "type": "keyword"
+                    },
+                    "name": {
+                      "type": "keyword"
+                    },
+                    "domain": {
+                      "type": "keyword"
+                    }
+                  }
+                }
+              }
+            },
+            "group": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "host": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        }
+      },
+      "_meta": {
+        "managed_by": "tuba",
+        "version": "1"
+      }
+    },
+    "component-uim-directory-v1.json": {
+      "template": {
+        "mappings": {
+          "dynamic": "strict",
+          "properties": {
+            "user": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                },
+                "domain": {
+                  "type": "keyword"
+                },
+                "target": {
+                  "dynamic": "strict",
+                  "properties": {
+                    "id": {
+                      "type": "keyword"
+                    },
+                    "name": {
+                      "type": "keyword"
+                    },
+                    "domain": {
+                      "type": "keyword"
+                    }
+                  }
+                }
+              }
+            },
+            "group": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            },
+            "host": {
+              "dynamic": "strict",
+              "properties": {
+                "id": {
+                  "type": "keyword"
+                },
+                "name": {
+                  "type": "keyword"
+                }
+              }
+            }
+          }
+        }
+      },
+      "_meta": {
+        "managed_by": "tuba",
+        "version": "1"
+      }
+    }
+  },
+  "strict_dynamic_mapping": true,
+  "raw_evidence_field": "vendor.payload"
+}

@@ -38,7 +38,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &http.Server{Addr: listen, Handler: api.Server{Verifier: verifier, Authorizer: store, ES: client, Control: store, StartedAt: time.Now().UTC(), RequestTimeout: requestTimeout, Metrics: telemetry.New(), KafkaConfigured: os.Getenv("KAFKA_BROKERS") != ""}.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: requestTimeout, WriteTimeout: requestTimeout + 5*time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: listen, Handler: api.Server{Verifier: verifier, Authorizer: store, ES: client, Control: store, StartedAt: time.Now().UTC(), RequestTimeout: requestTimeout, Metrics: telemetry.New(), KafkaConfigured: os.Getenv("KAFKA_BROKERS") != "", ReleaseRoot: os.Getenv("TUBA_RELEASE_ROOT")}.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: requestTimeout, WriteTimeout: requestTimeout + 5*time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := lifecycle.NotifyContext(context.Background())
 	defer stop()
 	log.Printf("TUBA API listening on %s", listen)

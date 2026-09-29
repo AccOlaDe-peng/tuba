@@ -1,0 +1,19 @@
+{
+  "schema_version": "1.0.0",
+  "parser": "tuba-normalizer/windows-security-v1",
+  "vendor": {"name": "Microsoft", "product": "windows", "dataset": "windows.security"},
+  "evidence": {"raw_envelope_preserves_full_beat_event": true, "uim_maps_winlog_event_data": true},
+  "admission": {
+    "channel": "Security",
+    "providers": ["Microsoft-Windows-Security-Auditing"],
+    "special_provider_by_event_id": {"1102": "Microsoft-Windows-Eventlog"},
+    "event_ids": ["4624", "4625", "4634", "4647", "4648", "4672", "4719", "4720", "4722", "4723", "4724", "4725", "4726", "4728", "4729", "4732", "4733", "4756", "4757", "4768", "4769", "4771", "4776", "1102"],
+    "required_fields": ["@timestamp", "winlog.computer_name", "winlog.channel", "winlog.event_id", "winlog.record_id"]
+  },
+  "identity_fields": {
+    "subject": ["SubjectUserSid", "SubjectUserName"],
+    "target": ["TargetUserSid", "TargetUserName", "TargetSid"],
+    "group": ["TargetSid", "TargetUserName"],
+    "group_member": ["MemberSid", "MemberName"]
+  }
+}

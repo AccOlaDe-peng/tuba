@@ -1,0 +1,6 @@
+{
+  "schema_version": "1.0.0",
+  "status": "ingestion-only",
+  "rules": [],
+  "reason": "This release pins Windows Security parsing, routing, and data-model semantics. Detection rules remain separately governed and are not activated by this ingestion release."
+}

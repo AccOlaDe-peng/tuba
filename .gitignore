@@ -5,6 +5,7 @@ dist/
 
 # 本地配置与密钥
 .env
+.env.local
 
 # 运行时产物
 .runtime/

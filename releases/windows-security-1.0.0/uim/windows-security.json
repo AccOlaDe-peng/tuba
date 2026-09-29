@@ -1,0 +1,32 @@
+{
+  "schema_version": "1.0.0",
+  "implementation": "internal/uim.normalizeWindows",
+  "dataset": "windows.security",
+  "event_semantics": {
+    "4624": {"domain": "authentication", "category": "authentication", "action": "logon-success", "outcome": "success", "principal": "TargetUser"},
+    "4625": {"domain": "authentication", "category": "authentication", "action": "logon-failure", "outcome": "failure", "principal": "TargetUser"},
+    "4634": {"domain": "session", "category": "session", "action": "logoff", "outcome": "success", "principal": "TargetUser"},
+    "4647": {"domain": "session", "category": "session", "action": "logoff", "outcome": "success", "principal": "SubjectUser"},
+    "4648": {"domain": "authentication", "category": "authentication", "action": "explicit-credentials-use", "outcome": "success", "principal": "SubjectUser", "target": "TargetUser"},
+    "4672": {"domain": "authentication", "category": "authentication", "action": "special-privileges-assigned", "outcome": "success", "principal": "SubjectUser"},
+    "4719": {"domain": "iam", "category": "iam", "action": "audit-policy-change", "outcome": "success", "principal": "SubjectUser", "target": "TargetUser"},
+    "4720": {"domain": "iam", "category": "iam", "action": "user-create", "outcome": "success", "principal": "SubjectUser", "target": "TargetUser"},
+    "4722": {"domain": "iam", "category": "iam", "action": "user-enable", "outcome": "success", "principal": "SubjectUser", "target": "TargetUser"},
+    "4723": {"domain": "iam", "category": "iam", "action": "password-change", "outcome": "success", "principal": "TargetUser"},
+    "4724": {"domain": "iam", "category": "iam", "action": "password-reset", "outcome": "success", "principal": "TargetUser"},
+    "4725": {"domain": "iam", "category": "iam", "action": "user-disable", "outcome": "success", "principal": "SubjectUser", "target": "TargetUser"},
+    "4726": {"domain": "iam", "category": "iam", "action": "user-delete", "outcome": "success", "principal": "SubjectUser", "target": "TargetUser"},
+    "4728": {"domain": "directory", "category": "iam", "action": "group-member-add", "outcome": "success", "principal": "SubjectUser", "group": "TargetGroup", "target": "Member"},
+    "4729": {"domain": "directory", "category": "iam", "action": "group-member-remove", "outcome": "success", "principal": "SubjectUser", "group": "TargetGroup", "target": "Member"},
+    "4732": {"domain": "directory", "category": "iam", "action": "group-member-add", "outcome": "success", "principal": "SubjectUser", "group": "TargetGroup", "target": "Member"},
+    "4733": {"domain": "directory", "category": "iam", "action": "group-member-remove", "outcome": "success", "principal": "SubjectUser", "group": "TargetGroup", "target": "Member"},
+    "4756": {"domain": "directory", "category": "iam", "action": "group-member-add", "outcome": "success", "principal": "SubjectUser", "group": "TargetGroup", "target": "Member"},
+    "4757": {"domain": "directory", "category": "iam", "action": "group-member-remove", "outcome": "success", "principal": "SubjectUser", "group": "TargetGroup", "target": "Member"},
+    "4768": {"domain": "authentication", "category": "authentication", "action": "credential-validation", "outcome": "from_Status", "principal": "TargetUser"},
+    "4769": {"domain": "authentication", "category": "authentication", "action": "credential-validation", "outcome": "from_Status", "principal": "TargetUser"},
+    "4771": {"domain": "authentication", "category": "authentication", "action": "kerberos-preauth-failure", "outcome": "failure", "principal": "TargetUser"},
+    "4776": {"domain": "authentication", "category": "authentication", "action": "credential-validation", "outcome": "from_Status", "principal": "TargetUser"},
+    "1102": {"domain": "iam", "category": "iam", "action": "security-log-cleared", "outcome": "success", "principal": "SubjectUser", "provider": "Microsoft-Windows-Eventlog"}
+  },
+  "quality": {"missing_optional_identity": "partial:missing_user_identity", "invalid_source_ip": "partial:invalid_source_ip", "missing_directory_actor": "quarantine:UIM_ACTOR_REQUIRED"}
+}

@@ -60,6 +60,15 @@ func (s *Store) Authorize(ctx context.Context, p auth.Principal) (auth.Principal
 	if len(roles) == 0 {
 		return p, errors.New("active membership not found")
 	}
+	// Platform release permissions come from a separate, audited global grant,
+	// never from tenant membership or token-supplied role claims.
+	var platformPublisher bool
+	if err := s.Pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM platform_release_publishers pp JOIN identities i ON i.id=pp.identity_id WHERE i.issuer=$1 AND i.subject=$2 AND i.disabled_at IS NULL AND pp.revoked_at IS NULL)`, s.Issuer, p.Subject).Scan(&platformPublisher); err != nil {
+		return p, err
+	}
+	if platformPublisher {
+		roles = append(roles, "platform_publisher")
+	}
 	p.Roles = roles
 	return p, nil
 }

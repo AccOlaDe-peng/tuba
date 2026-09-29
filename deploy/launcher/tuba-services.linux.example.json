@@ -125,6 +125,7 @@
         "OIDC_AUDIENCE": "${OIDC_AUDIENCE}",
         "OIDC_JWKS_URL": "${OIDC_JWKS_URL}",
         "DATABASE_URL": "${DATABASE_URL}",
+        "TUBA_RELEASE_ROOT": "${TUBA_RELEASE_ROOT}",
         "PG_STATEMENT_TIMEOUT": "${PG_STATEMENT_TIMEOUT}",
         "ES_URL": "${ES_URL}",
         "ES_API_KEY": "${TUBA_API_ES_API_KEY}",

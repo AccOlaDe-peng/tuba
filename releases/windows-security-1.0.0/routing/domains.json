@@ -1,0 +1,12 @@
+{
+  "schema_version": "1.0.0",
+  "generation": "g1",
+  "event_dataset": "windows.security",
+  "routes": {
+    "authentication": {"topic": "${KAFKA_EVENTS_TOPIC}.authentication.v1", "event_ids": ["4624", "4625", "4648", "4672", "4768", "4769", "4771", "4776"]},
+    "session": {"topic": "${KAFKA_EVENTS_TOPIC}.session.v1", "event_ids": ["4634", "4647"]},
+    "iam": {"topic": "${KAFKA_EVENTS_TOPIC}.iam.v1", "event_ids": ["4719", "4720", "4722", "4723", "4724", "4725", "4726", "1102"]},
+    "directory": {"topic": "${KAFKA_EVENTS_TOPIC}.directory.v1", "event_ids": ["4728", "4729", "4732", "4733", "4756", "4757"]}
+  },
+  "source_claims_ignored": ["ueba.route", "ueba.quality", "ueba.provenance"]
+}
