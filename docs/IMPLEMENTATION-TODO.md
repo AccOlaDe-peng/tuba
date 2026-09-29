@@ -244,6 +244,29 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
 - 2026-09-29 登录与 Winlogbeat release 续进：当前操作员曾通过 `/api/v1/me` 验证 `tenant_admin`、`source:manage`、`user:manage`，来源列表 API 返回空数组。新增 `releases/windows-security-1.0.0/`，包含 DIP、Windows 事件到 UIM 语义/四域 routing、authentication/session/iam/directory ES templates、实体/数据模型和显式 ingestion-only 空分析规则；release manifest 七类资产/依赖/哈希通过 `scripts/validate_release_bundle.py`，canonical digest=`0195fd13e09ff09684af16827c0156a457af4e7a4fdcc1655b4939efa6355a74`。release 发布 API 已实现且在 248 部署，bundle 7 个 asset 的服务端文件 hash 验证已完成；当前因浏览器 access token 被 API 判为无效，尚未创建/推进 release row。
 - 尚不能宣称“全部可靠性任务完成”：COL-07/V02 的 Topic 重建、离线 queue 恢复接入、磁盘满/系统重启、源日志覆盖、积压期间凭据切换、跨 offset 实流重放与逐段数量对账未全验；B04/V08 异机备份目标与恢复演练未定；O05 外发邮件暂缓。未重置 Kafka offsets 或清理未确认数据。本轮按用户授权为当前 operator subject 新增首位 global release publisher，并记录 bootstrap 审计；未做其他权限变更。
 
+### 2026-09-30 已知数据缺口：隔离（DLQ）事件
+
+Windows 接入与位置/哈希稳定性排查结束后，按用户决定将这些隔离事件**记录为已知缺口，不做回放**。缺口不等于“数据丢失”：事件正文完整保存在 DLQ topic 内、可从中恢复或重放，但它们**不在任何 ES 索引里**，对查询不可见，也不能计为已交付数据。
+
+两个 DLQ topic 均为 `retention.ms=86400000`，即**滚动保留 24 小时**：
+
+| Topic | 记录时数量 | 主要失败原因 |
+| --- | --- | --- |
+| `tuba.collector.zeek_validation_20260927_001.dlq.v1` | 9,565 | 早期 `raw envelope contract or tenant scope mismatch`（旧 ingest 把 Windows 信封写进 Zeek raw topic）与 `quarantine identity or tenant scope is invalid`；末段为 `payload_hash mismatch`（2026-09-30 约 11 分钟部署不完整回归，见下） |
+| `tuba.collector.zeek_validation_20260927_001.source-adapter.dlq.v1` | 2,605 | `INGEST_REJECTED_409`：同一 source position 配到不同 payload |
+
+409 的成因经逐字段取证确认为三类，均已修复：
+
+1. **Windows 渲染不稳定**：同一记录两次读取时，`event.original` 内 `<RenderingInfo>` 的本地化任务名不同（实测 `Logon` vs `Credential Validation`，为整份文件中唯一差异）。已由 Winlogbeat `script` processor 剥离 `<RenderingInfo>`、并 `drop_fields` 移除 `agent.ephemeral_id`/`event.created`/`event.action`/`winlog.task|opcode|keywords` 修复；`<System>` 与 `<EventData>` 原始数据保留。
+2. **Beats JSON 字段顺序随机**：同一内容两次投递的字节序不同（实测**规范化后 sha256 完全相同、0 字段差异**，而原始字节长度 5647 vs 7264）。已由 `rawevent.CanonicalPayloadHash`（排序键 + `json.Number`）修复，ingest、adapter、`rawevent.New/Validate` 三处统一。
+3. **Filebeat 位置在 inode 复用下不唯一**：实测 `conn.log` 与 `dns.log` 占用同一 inode（1592008），不同记录撞同一位置，后到者被判冲突丢弃。已由 `StableBeatPosition` 优先使用 `log.file.fingerprint`（新形式 `filebeat-v2:`）配合 Filebeat `file_identity.fingerprint` 修复。
+
+另记录一次本轮自身造成的故障，不做隐瞒：2026-09-30 部署规范化哈希时只更新了**计算方**（ingest、adapter），遗漏了同样调用 `rawevent.Validate` 的**校验方**（raw-indexer、normalizer），导致约 11 分钟内每条原始信封都因 `payload_hash mismatch` 进 DLQ，raw-indexer 吞吐由约 250 条/秒降至约 1 条/秒。补齐这两个组件并重启两条链后恢复。教训：**改动共享校验函数的语义时，必须同时找出所有调用方**，不能只顺着“谁计算”去找。
+
+**出口期限**：DLQ topic 滚动删除，上表计数会持续下降，**更早的内容已经不可恢复**。若要将其作为证据留存或回放，必须在各自的 24 小时窗口内导出；逾期则本缺口应视为“永久未索引”，只保留本节的计数记录。
+
+**未做的验收**：修复后未做端到端回放验收（重放 DLQ 内容并核对 ES 数量）。按用户决定，本轮只记录缺口、不回放。
+
 ## 后续多节点（P2；本轮不要求实施）
 
 - [ ] X01 Kafka 多 broker/控制器、Topic 副本/ISR、分区迁移与故障演练。
