@@ -23,6 +23,12 @@ NAMESPACE = "zeek_validation_20260927_001"
 ORGANIZATION = NAMESPACE
 BROKER = "10.6.68.248:29292"
 RAW_TOPIC = "tuba.collector." + NAMESPACE + ".raw.live2.v1"
+# The ingest routes each source to a raw topic derived from its own namespace,
+# while the consumers below read one concrete topic. The pattern resolves to
+# exactly RAW_TOPIC for this namespace, so this chain is unaffected; a source
+# registered under another namespace lands on that namespace's own topic
+# instead of being rejected downstream as a tenant scope mismatch.
+RAW_TOPIC_PATTERN = "tuba.collector.{namespace}.raw.live2.v1"
 EVENT_PREFIX = "tuba.collector." + NAMESPACE + ".events"
 QUARANTINE_TOPIC = "tuba.collector." + NAMESPACE + ".quarantine.v1"
 DLQ_TOPIC = "tuba.collector." + NAMESPACE + ".dlq.v1"
@@ -223,6 +229,7 @@ def start():
         "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
         "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
         "KAFKA_RAW_TOPIC": RAW_TOPIC,
+        "KAFKA_RAW_TOPIC_PATTERN": RAW_TOPIC_PATTERN,
         "KAFKA_QUARANTINE_TOPIC": QUARANTINE_TOPIC,
         "KAFKA_EVENTS_TOPIC_PREFIX": EVENT_PREFIX,
         "KAFKA_DLQ_TOPIC": DLQ_TOPIC,
@@ -331,6 +338,7 @@ def start_components(names, restart=False):
         "KAFKA_SECURITY_PROTOCOL": "SASL_PLAINTEXT",
         "KAFKA_SASL_MECHANISM": "SCRAM-SHA-512",
         "KAFKA_RAW_TOPIC": RAW_TOPIC,
+        "KAFKA_RAW_TOPIC_PATTERN": RAW_TOPIC_PATTERN,
         "KAFKA_QUARANTINE_TOPIC": QUARANTINE_TOPIC,
         "KAFKA_EVENTS_TOPIC_PREFIX": EVENT_PREFIX,
         "KAFKA_DLQ_TOPIC": DLQ_TOPIC,

@@ -57,6 +57,108 @@ func (unusedDeadLetter) WriteMessages(context.Context, ...kafka.Message) error {
 	return errors.New("unexpected DLQ write")
 }
 
+type recordingDeadLetter struct {
+	mu       sync.Mutex
+	messages []kafka.Message
+}
+
+func (d *recordingDeadLetter) WriteMessages(_ context.Context, messages ...kafka.Message) error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.messages = append(d.messages, messages...)
+	return nil
+}
+
+type recordingConsumer struct {
+	mu          sync.Mutex
+	commitCalls int
+}
+
+func (c *recordingConsumer) FetchMessage(ctx context.Context) (kafka.Message, error) {
+	<-ctx.Done()
+	return kafka.Message{}, ctx.Err()
+}
+
+func (c *recordingConsumer) CommitMessages(context.Context, ...kafka.Message) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.commitCalls++
+	return nil
+}
+
+func beatEventBody() []byte {
+	return []byte(`{"@timestamp":"2026-09-28T10:00:00Z","agent":{"type":"filebeat","version":"8.19.0","id":"beat-a"},"event":{"dataset":"zeek.conn"},"log":{"file":{"device_id":"2053","inode":"8926348","path":"/var/log/conn.log"},"offset":10118640}}`)
+}
+
+// An ingest that examined the event and rejected it will reject it again on every
+// retry. Treating that as retryable holds the source offset forever and stalls
+// every later event behind it, so the rejection is quarantined and committed.
+func TestProcessUntilCommittedQuarantinesIngestRejectedEvent(t *testing.T) {
+	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
+	message := kafka.Message{Topic: topic, Partition: 0, Offset: 42, Value: beatEventBody()}
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "source position was already used for a different payload", http.StatusConflict)
+	}))
+	defer server.Close()
+
+	consumer := &recordingConsumer{}
+	dead := &recordingDeadLetter{}
+	adapter := Adapter{Binding: Binding{Topic: topic}, IngestURL: server.URL, AdapterToken: "adapter-token",
+		Consumer: consumer, DeadLetter: dead, RetryBackoff: time.Millisecond, Metrics: telemetry.New(),
+		HTTPClient: http.DefaultClient}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = adapter.processUntilCommitted(ctx, message)
+
+	if calls != 1 {
+		t.Fatalf("ingest calls=%d, want 1: a permanent rejection must not be retried", calls)
+	}
+	if len(dead.messages) != 1 {
+		t.Fatalf("DLQ writes=%d, want 1", len(dead.messages))
+	}
+	if consumer.commitCalls != 1 {
+		t.Fatalf("commits=%d, want 1 so the rejected record stops blocking the partition", consumer.commitCalls)
+	}
+}
+
+// A 5xx is the ingest being unavailable, not the event being unacceptable: the
+// offset has to stay uncommitted so the record is retried rather than dropped.
+func TestProcessUntilCommittedRetriesIngestServerError(t *testing.T) {
+	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
+	message := kafka.Message{Topic: topic, Partition: 0, Offset: 42, Value: beatEventBody()}
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "raw ingestion is not configured", http.StatusServiceUnavailable)
+	}))
+	defer server.Close()
+
+	consumer := &recordingConsumer{}
+	dead := &recordingDeadLetter{}
+	adapter := Adapter{Binding: Binding{Topic: topic}, IngestURL: server.URL, AdapterToken: "adapter-token",
+		Consumer: consumer, DeadLetter: dead, RetryBackoff: time.Millisecond, Metrics: telemetry.New(),
+		HTTPClient: http.DefaultClient}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = adapter.processUntilCommitted(ctx, message)
+
+	if calls < 2 {
+		t.Fatalf("ingest calls=%d, want repeated retries for a 5xx", calls)
+	}
+	if len(dead.messages) != 0 {
+		t.Fatalf("DLQ writes=%d, want 0: an unavailable ingest must not quarantine data", len(dead.messages))
+	}
+	if consumer.commitCalls != 0 {
+		t.Fatalf("commits=%d, want 0 while the ingest is failing", consumer.commitCalls)
+	}
+}
+
 func TestRunRetriesKafkaFetchAndCommitWithoutRedeliveringAcceptedRecord(t *testing.T) {
 	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
 	body := []byte(`{"@timestamp":"2026-09-28T10:00:00Z","agent":{"type":"filebeat","version":"8.19.0","id":"beat-a"},"event":{"dataset":"zeek.conn"},"log":{"file":{"device_id":"2053","inode":"8926348","path":"/var/log/conn.log"},"offset":10118640}}`)

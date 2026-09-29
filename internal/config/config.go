@@ -11,8 +11,13 @@ import (
 )
 
 type Config struct {
-	Brokers                                                                    []string
-	RawTopic, QuarantineTopic                                                  string
+	Brokers                   []string
+	RawTopic, QuarantineTopic string
+	// RawTopicPattern is the ingest's produce topic, with {namespace} standing in
+	// for each source's namespace. It is separate from RawTopic because the
+	// consumers of that topic need the concrete name, and one process cannot
+	// treat the same variable as both a pattern and a literal.
+	RawTopicPattern                                                            string
 	EventsTopicPrefix                                                          string
 	DeadLetterTopic                                                            string
 	AnalysisTopic                                                              string
@@ -77,6 +82,7 @@ func Load() (Config, error) {
 	c := Config{
 		Brokers:           brokers,
 		RawTopic:          value("KAFKA_RAW_TOPIC", "tuba.raw.events.v1"),
+		RawTopicPattern:   value("KAFKA_RAW_TOPIC_PATTERN", "tuba.collector.{namespace}.raw.v1"),
 		QuarantineTopic:   value("KAFKA_QUARANTINE_TOPIC", "tuba.quarantine.v1"),
 		EventsTopicPrefix: value("KAFKA_EVENTS_TOPIC_PREFIX", "tuba.events"),
 		DeadLetterTopic:   value("KAFKA_DLQ_TOPIC", "tuba.indexing.dlq.v1"),

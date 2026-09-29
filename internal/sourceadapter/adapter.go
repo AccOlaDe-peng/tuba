@@ -268,7 +268,25 @@ func (a Adapter) deliver(ctx context.Context, message kafka.Message) (permanent 
 		return false, "", nil
 	}
 	_, _ = io.Copy(io.Discard, io.LimitReader(response.Body, 4096))
+	if permanentIngestRejection(response.StatusCode) {
+		return true, fmt.Sprintf("INGEST_REJECTED_%d", response.StatusCode), nil
+	}
 	return false, "", fmt.Errorf("ingest returned status %d; source offset remains uncommitted", response.StatusCode)
+}
+
+// permanentIngestRejection reports whether the ingest examined this event and
+// will never accept it. Retrying such a record holds the source offset forever
+// and stalls every later event on the partition, so it is quarantined instead.
+// Auth, routing and throttling failures are excluded: those are deployment
+// conditions a retry can outlive, and quarantining them would drop the whole
+// stream rather than the one bad record.
+func permanentIngestRejection(status int) bool {
+	switch status {
+	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
+		http.StatusRequestTimeout, http.StatusTooManyRequests:
+		return false
+	}
+	return status >= 400 && status < 500
 }
 
 func validSourceTopic(topic string) bool {

@@ -10,6 +10,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 
 	"tuba/product/internal/rawevent"
@@ -18,22 +19,44 @@ import (
 	"github.com/segmentio/kafka-go"
 )
 
+// Producer writes one batch to an explicit topic. The topic travels with the
+// call because a single ingest serves every namespace, and the raw topic is
+// scoped per namespace.
 type Producer interface {
-	WriteMessages(context.Context, ...kafka.Message) error
+	WriteMessages(context.Context, string, ...kafka.Message) error
 }
 
 type Server struct {
-	RawProducer    Producer
-	RawTopic       string
-	SourceResolver SourceResolver
-	TopicResolver  TopicSourceResolver
-	AdapterToken   string
-	RawReceipts    RawReceiptStore
-	Limiter        *Limiter
-	SourceLimiters *SourceLimiters
-	Metrics        *telemetry.Registry
-	ReadyCheck     func(context.Context) error
-	RequestTimeout time.Duration
+	RawProducer Producer
+	// RawTopicPattern is the physical raw topic, with {namespace} standing in
+	// for the source's namespace (tuba.collector.{namespace}.raw.v1). A pattern
+	// without the placeholder keeps the older fixed-topic behaviour.
+	RawTopicPattern string
+	SourceResolver  SourceResolver
+	TopicResolver   TopicSourceResolver
+	AdapterToken    string
+	RawReceipts     RawReceiptStore
+	Limiter         *Limiter
+	SourceLimiters  *SourceLimiters
+	Metrics         *telemetry.Registry
+	ReadyCheck      func(context.Context) error
+	RequestTimeout  time.Duration
+}
+
+// rawTopicFor resolves the raw topic for one source namespace. Envelopes carry
+// the namespace they were produced under, and each consumer validates against
+// its own, so routing them to a shared topic makes every downstream indexer
+// reject the namespaces it does not own.
+func rawTopicFor(pattern, namespace string) (string, error) {
+	if pattern == "" || namespace == "" {
+		return "", errors.New("raw topic pattern or namespace is empty")
+	}
+	topic := strings.ReplaceAll(pattern, "{namespace}", namespace)
+	// Kafka caps topic names at 249 characters.
+	if len(topic) > 249 {
+		return "", errors.New("resolved raw topic is too long")
+	}
+	return topic, nil
 }
 
 type RawSource struct {
@@ -169,7 +192,12 @@ func (s Server) acceptRaw(w http.ResponseWriter, r *http.Request, source RawSour
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
 		return
 	}
-	if s.RawProducer == nil || s.RawReceipts == nil || s.RawTopic == "" || source.SourceInstanceID == "" || source.SourceContextID == "" || source.VendorName == "" || source.VendorProduct == "" || source.VendorDataset == "" || source.ReleaseID == "" {
+	if s.RawProducer == nil || s.RawReceipts == nil || source.SourceInstanceID == "" || source.SourceContextID == "" || source.VendorName == "" || source.VendorProduct == "" || source.VendorDataset == "" || source.ReleaseID == "" {
+		http.Error(w, "raw ingestion is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	rawTopic, err := rawTopicFor(s.RawTopicPattern, source.Namespace)
+	if err != nil {
 		http.Error(w, "raw ingestion is not configured", http.StatusServiceUnavailable)
 		return
 	}
@@ -218,7 +246,7 @@ func (s Server) acceptRaw(w http.ResponseWriter, r *http.Request, source RawSour
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
 	defer cancel()
-	if err := s.RawProducer.WriteMessages(ctx, kafka.Message{Key: []byte(envelope.Organization.ID + ":" + envelope.SourceInstanceID), Value: encoded}); err != nil {
+	if err := s.RawProducer.WriteMessages(ctx, rawTopic, kafka.Message{Key: []byte(envelope.Organization.ID + ":" + envelope.SourceInstanceID), Value: encoded}); err != nil {
 		if s.Metrics != nil {
 			s.Metrics.Inc("tuba_raw_ingest_kafka_failures_total")
 		}

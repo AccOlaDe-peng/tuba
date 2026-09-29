@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -99,11 +100,99 @@ func (s *memoryRawReceipts) MarkKafkaAcked(_ context.Context, organization, sour
 	return nil
 }
 
-type recordingProducer struct{ messages []kafka.Message }
+type recordingProducer struct {
+	topics   []string
+	messages []kafka.Message
+}
 
-func (p *recordingProducer) WriteMessages(_ context.Context, messages ...kafka.Message) error {
+func (p *recordingProducer) WriteMessages(_ context.Context, topic string, messages ...kafka.Message) error {
+	p.topics = append(p.topics, topic)
 	p.messages = append(p.messages, messages...)
 	return nil
+}
+
+// A raw envelope is only accepted downstream by an indexer whose configured
+// namespace matches the envelope's. Sources in different namespaces therefore
+// have to land on different physical raw topics; one shared topic cannot be
+// consumed by both, and whichever indexer reads it rejects the other tenant.
+func TestAcceptRawRoutesEachNamespaceToItsOwnRawTopic(t *testing.T) {
+	const adapterToken = "test-adapter-token-with-more-than-32-characters"
+	zeekTopic := "tuba.source.ctx_11111111111111111111111111111111.v1"
+	windowsTopic := "tuba.source.ctx_22222222222222222222222222222222.v1"
+	zeekSource := RawSource{
+		OrganizationID: "zeek_ns", Namespace: "zeek_ns", SourceInstanceID: "src_11111111111111111111111111111111",
+		SourceEpoch: "1", VendorName: "zeek", VendorProduct: "zeek", VendorDataset: "zeek.conn",
+		ReleaseID: "release-1", SourceContextID: "ctx_11111111111111111111111111111111",
+	}
+	windowsSource := RawSource{
+		OrganizationID: "tenant_a", Namespace: "tenant_a", SourceInstanceID: "src_22222222222222222222222222222222",
+		SourceEpoch: "1", VendorName: "Microsoft", VendorProduct: "windows", VendorDataset: "windows.security",
+		ReleaseID: "release-2", SourceContextID: "ctx_22222222222222222222222222222222",
+	}
+	producer := &recordingProducer{}
+	server := Server{
+		RawProducer: producer, RawTopicPattern: "tuba.collector.{namespace}.raw.v1",
+		TopicResolver: staticTopicResolver{zeekTopic: zeekSource, windowsTopic: windowsSource},
+		AdapterToken:  adapterToken, RawReceipts: &memoryRawReceipts{}, RequestTimeout: time.Second,
+	}
+	event := []byte(`{"@timestamp":"2026-09-28T10:00:00Z","agent":{"type":"filebeat","version":"8.19.0","id":"beat-a"},"event":{"dataset":"zeek.conn"},"log":{"file":{"device_id":"2053","inode":"8926348","path":"/var/log/conn.log"},"offset":10118640}}`)
+	for i, topic := range []string{zeekTopic, windowsTopic} {
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/ingest/beat-events", bytes.NewReader(event))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Source-Adapter-Token", adapterToken)
+		req.Header.Set("X-Source-Topic", topic)
+		req.Header.Set("X-Source-Partition", "0")
+		req.Header.Set("X-Source-Offset", strconv.Itoa(100+i))
+		response := httptest.NewRecorder()
+		server.Handler().ServeHTTP(response, req)
+		if response.Code != http.StatusAccepted {
+			t.Fatalf("%s: status=%d body=%s", topic, response.Code, response.Body.String())
+		}
+	}
+	want := []string{"tuba.collector.zeek_ns.raw.v1", "tuba.collector.tenant_a.raw.v1"}
+	if len(producer.topics) != len(want) {
+		t.Fatalf("raw writes=%d (%v), want %d", len(producer.topics), producer.topics, len(want))
+	}
+	for i := range want {
+		if producer.topics[i] != want[i] {
+			t.Fatalf("write %d went to %q, want %q", i, producer.topics[i], want[i])
+		}
+	}
+}
+
+// An ingest with no configured raw topic pattern must refuse the event. Falling
+// through would produce to a nameless topic, turning a deployment mistake into
+// silent data loss instead of a loud 503.
+func TestAcceptRawRejectsUnconfiguredTopicPattern(t *testing.T) {
+	const adapterToken = "test-adapter-token-with-more-than-32-characters"
+	topic := "tuba.source.ctx_11111111111111111111111111111111.v1"
+	source := RawSource{
+		OrganizationID: "zeek_ns", Namespace: "zeek_ns", SourceInstanceID: "src_11111111111111111111111111111111",
+		SourceEpoch: "1", VendorName: "zeek", VendorProduct: "zeek", VendorDataset: "zeek.conn",
+		ReleaseID: "release-1", SourceContextID: "ctx_11111111111111111111111111111111",
+	}
+	producer := &recordingProducer{}
+	server := Server{
+		RawProducer: producer, RawTopicPattern: "",
+		TopicResolver: staticTopicResolver{topic: source},
+		AdapterToken:  adapterToken, RawReceipts: &memoryRawReceipts{}, RequestTimeout: time.Second,
+	}
+	event := []byte(`{"@timestamp":"2026-09-28T10:00:00Z","agent":{"type":"filebeat","version":"8.19.0","id":"beat-a"},"event":{"dataset":"zeek.conn"},"log":{"file":{"device_id":"2053","inode":"8926348","path":"/var/log/conn.log"},"offset":10118640}}`)
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/ingest/beat-events", bytes.NewReader(event))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Source-Adapter-Token", adapterToken)
+	req.Header.Set("X-Source-Topic", topic)
+	req.Header.Set("X-Source-Partition", "0")
+	req.Header.Set("X-Source-Offset", "42")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+
+	if response.Code != http.StatusServiceUnavailable {
+		t.Fatalf("status=%d body=%s; want 503", response.Code, response.Body.String())
+	}
+	if len(producer.messages) != 0 || len(producer.topics) != 0 {
+		t.Fatalf("wrote %v despite an unconfigured topic pattern", producer.topics)
+	}
 }
 
 func TestBeatIngressUsesRegisteredTopicBindingAndDeduplicatesReceipt(t *testing.T) {
@@ -116,7 +205,7 @@ func TestBeatIngressUsesRegisteredTopicBindingAndDeduplicatesReceipt(t *testing.
 	}
 	producer := &recordingProducer{}
 	receipts := &memoryRawReceipts{}
-	server := Server{RawProducer: producer, RawTopic: "tuba.collector.raw.v1", TopicResolver: staticTopicResolver{topic: source},
+	server := Server{RawProducer: producer, RawTopicPattern: "tuba.collector.raw.v1", TopicResolver: staticTopicResolver{topic: source},
 		AdapterToken: adapterToken, RawReceipts: receipts, RequestTimeout: time.Second}
 	beatEvent := []byte(`{"@timestamp":"2026-09-28T10:00:00Z","agent":{"type":"filebeat","version":"8.19.0","id":"beat-a"},"event":{"dataset":"zeek.conn"},"log":{"file":{"device_id":"2053","inode":"8926348","path":"/var/log/conn.log"},"offset":10118640},"organization":{"id":"attacker-controlled"}}`)
 	request := func(body []byte, topicValue string, token string, offset string) *httptest.ResponseRecorder {
@@ -189,7 +278,7 @@ func TestWindowsSecurityIngressRequiresStablePositionAndDeduplicatesAcrossOffset
 	}
 	producer := &recordingProducer{}
 	receipts := &memoryRawReceipts{}
-	server := Server{RawProducer: producer, RawTopic: "tuba.collector.raw.v1", TopicResolver: staticTopicResolver{topic: source},
+	server := Server{RawProducer: producer, RawTopicPattern: "tuba.collector.raw.v1", TopicResolver: staticTopicResolver{topic: source},
 		AdapterToken: adapterToken, RawReceipts: receipts, RequestTimeout: time.Second}
 	beatEvent := []byte(`{"@timestamp":"2026-09-29T03:14:15.1234567Z","agent":{"type":"winlogbeat","version":"8.19.0","id":"beat-win139"},"event":{"dataset":"windows.security","original":"<Event/>"},"winlog":{"computer_name":"WIN-139","channel":"Security","record_id":"928144","event_id":"4624"}}`)
 	request := func(body []byte, offset string) *httptest.ResponseRecorder {

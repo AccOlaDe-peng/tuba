@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -16,6 +17,41 @@ import (
 	"tuba/product/internal/pgutil"
 	"tuba/product/internal/telemetry"
 )
+
+// topicWriters hands out one Kafka writer per raw topic. Topics are created on
+// demand because the set of namespaces is data, not configuration: a source
+// registered at runtime brings a namespace with it.
+type topicWriters struct {
+	mu        sync.Mutex
+	transport *kafka.Transport
+	brokers   []string
+	writers   map[string]*kafka.Writer
+}
+
+func newTopicWriters(transport *kafka.Transport, brokers []string) *topicWriters {
+	return &topicWriters{transport: transport, brokers: brokers, writers: map[string]*kafka.Writer{}}
+}
+
+func (t *topicWriters) WriteMessages(ctx context.Context, topic string, messages ...kafka.Message) error {
+	t.mu.Lock()
+	writer, ok := t.writers[topic]
+	if !ok {
+		writer = &kafka.Writer{Transport: t.transport, Addr: kafka.TCP(t.brokers...), Topic: topic,
+			Balancer: &kafka.Hash{}, RequiredAcks: kafka.RequireAll, Async: false, BatchTimeout: 10 * time.Millisecond}
+		t.writers[topic] = writer
+	}
+	t.mu.Unlock()
+	return writer.WriteMessages(ctx, messages...)
+}
+
+func (t *topicWriters) Close() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for _, writer := range t.writers {
+		writer.Close()
+	}
+	t.writers = map[string]*kafka.Writer{}
+}
 
 func main() {
 	c, err := config.Load()
@@ -35,7 +71,7 @@ func main() {
 		log.Fatal(err)
 	}
 	metrics := telemetry.New()
-	rawWriter := &kafka.Writer{Transport: transport, Addr: kafka.TCP(c.Brokers...), Topic: c.RawTopic, Balancer: &kafka.Hash{}, RequiredAcks: kafka.RequireAll, Async: false, BatchTimeout: 10 * time.Millisecond}
+	rawWriter := newTopicWriters(transport, c.Brokers)
 	defer rawWriter.Close()
 	var rawReceipts ingest.RawReceiptStore
 	var sourceResolver ingest.SourceResolver
@@ -71,7 +107,7 @@ func main() {
 		}
 		return conn.Close()
 	}
-	server := &http.Server{Addr: c.Listen, Handler: ingest.Server{RawProducer: rawWriter, RawTopic: c.RawTopic, SourceResolver: sourceResolver, TopicResolver: topicResolver, AdapterToken: os.Getenv("SOURCE_ADAPTER_TOKEN"), RawReceipts: rawReceipts, Limiter: ingest.NewLimiter(c.IngestRate, c.IngestBurst), SourceLimiters: &sourceLimiters, Metrics: metrics, ReadyCheck: readyCheck, RequestTimeout: c.HTTPRequestTimeout}.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.HTTPRequestTimeout, WriteTimeout: c.HTTPRequestTimeout + 5*time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: c.Listen, Handler: ingest.Server{RawProducer: rawWriter, RawTopicPattern: c.RawTopicPattern, SourceResolver: sourceResolver, TopicResolver: topicResolver, AdapterToken: os.Getenv("SOURCE_ADAPTER_TOKEN"), RawReceipts: rawReceipts, Limiter: ingest.NewLimiter(c.IngestRate, c.IngestBurst), SourceLimiters: &sourceLimiters, Metrics: metrics, ReadyCheck: readyCheck, RequestTimeout: c.HTTPRequestTimeout}.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.HTTPRequestTimeout, WriteTimeout: c.HTTPRequestTimeout + 5*time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := lifecycle.NotifyContext(context.Background())
 	defer stop()
 	log.Printf("ingest listening on %s", c.Listen)
