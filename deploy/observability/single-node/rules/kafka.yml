@@ -9,6 +9,22 @@ groups:
         annotations:
           summary: Kafka exporter is unavailable
           description: Verify exporter and the dedicated read-only Kafka principal.
+      - alert: TubaSourceAdapterUnavailable
+        expr: up{job="tuba-source-adapter"} == 0
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: TUBA source adapter metrics endpoint is unavailable
+          description: Check the managed source-adapter process and its supervisor; do not reset source offsets.
+      - alert: TubaSourceAdapterKafkaRetries
+        expr: rate(tuba_source_adapter_kafka_fetch_retries_total[5m]) > 0.2 or rate(tuba_source_adapter_offset_commit_failures_total[5m]) > 0.2
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: TUBA source adapter is retrying Kafka operations
+          description: 'Source adapter Kafka retry rate is {{ $value }} per second. Check broker connectivity and consumer group state.'
       - alert: TubaKafkaConsumerLag
         expr: kafka_consumergroup_lag{consumergroup=~"(tuba-.*-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927)"} > 10000
         for: 10m

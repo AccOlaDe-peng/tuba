@@ -59,7 +59,7 @@ func (unusedDeadLetter) WriteMessages(context.Context, ...kafka.Message) error {
 
 func TestRunRetriesKafkaFetchAndCommitWithoutRedeliveringAcceptedRecord(t *testing.T) {
 	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
-	body := []byte(`{"@timestamp":"2026-09-28T10:00:00Z","agent":{"type":"filebeat","version":"8.19.0","id":"beat-a"},"event":{"dataset":"zeek.conn"}}`)
+	body := []byte(`{"@timestamp":"2026-09-28T10:00:00Z","agent":{"type":"filebeat","version":"8.19.0","id":"beat-a"},"event":{"dataset":"zeek.conn"},"log":{"file":{"device_id":"2053","inode":"8926348","path":"/var/log/conn.log"},"offset":10118640}}`)
 	message := kafka.Message{Topic: topic, Partition: 0, Offset: 42, Value: body}
 	digest := sha256.Sum256(body)
 	var ingestCalls int
@@ -73,7 +73,8 @@ func TestRunRetriesKafkaFetchAndCommitWithoutRedeliveringAcceptedRecord(t *testi
 			"receipt_id":        "raw:accepted-42",
 			"raw_event_id":      "raw:accepted-42",
 			"source_context_id": "ctx_0123456789abcdef0123456789abcdef",
-			"source_position":   "kafka-v1:" + topic + ":0:42",
+			"source_position":   "filebeat-v1:2053:8926348:10118640",
+			"delivery_position": "kafka-v1:" + topic + ":0:42",
 			"payload_hash":      hex.EncodeToString(digest[:]),
 			"status":            "accepted",
 		})

@@ -21,6 +21,7 @@ type Envelope struct {
 	SourceInstanceID string          `json:"source_instance_id"`
 	SourceContextID  string          `json:"source_context_id"`
 	SourcePosition   string          `json:"source_position"`
+	DeliveryPosition string          `json:"delivery_position,omitempty"`
 	SourceEpoch      string          `json:"source_epoch"`
 	Vendor           Vendor          `json:"vendor"`
 	ReceivedAt       time.Time       `json:"received_at"`
@@ -42,6 +43,7 @@ func (e Envelope) MarshalJSON() ([]byte, error) {
 		SourceInstanceID string       `json:"source_instance_id"`
 		SourceContextID  string       `json:"source_context_id"`
 		SourcePosition   string       `json:"source_position"`
+		DeliveryPosition string       `json:"delivery_position,omitempty"`
 		SourceEpoch      string       `json:"source_epoch"`
 		Vendor           Vendor       `json:"vendor"`
 		ReceivedAt       time.Time    `json:"received_at"`
@@ -55,7 +57,7 @@ func (e Envelope) MarshalJSON() ([]byte, error) {
 	head, err := json.Marshal(metadata{
 		SchemaVersion: e.SchemaVersion, RawEventID: e.RawEventID, Organization: e.Organization,
 		Namespace: e.Namespace, SourceInstanceID: e.SourceInstanceID, SourceContextID: e.SourceContextID,
-		SourcePosition: e.SourcePosition, SourceEpoch: e.SourceEpoch, Vendor: e.Vendor,
+		SourcePosition: e.SourcePosition, DeliveryPosition: e.DeliveryPosition, SourceEpoch: e.SourceEpoch, Vendor: e.Vendor,
 		ReceivedAt: e.ReceivedAt, ReleaseID: e.ReleaseID, PayloadHash: e.PayloadHash, Encoding: e.Encoding,
 	})
 	if err != nil {
@@ -80,7 +82,7 @@ func Validate(e Envelope, organizationID, namespace string) error {
 		return errors.New("raw envelope contract or tenant scope mismatch")
 	}
 	if !safeScopeID(e.Organization.ID) || !safeScopeID(e.Namespace) || len(e.SourceInstanceID) == 0 || len(e.SourceInstanceID) > 128 ||
-		!validContextID(e.SourceContextID) || len(e.SourcePosition) == 0 || len(e.SourcePosition) > 512 || len(e.SourceEpoch) == 0 || len(e.SourceEpoch) > 128 ||
+		!validContextID(e.SourceContextID) || len(e.SourcePosition) == 0 || len(e.SourcePosition) > 512 || len(e.DeliveryPosition) > 512 || len(e.SourceEpoch) == 0 || len(e.SourceEpoch) > 128 ||
 		len(e.Vendor.Name) == 0 || len(e.Vendor.Name) > 128 || len(e.Vendor.Product) == 0 || len(e.Vendor.Product) > 128 || len(e.Vendor.Dataset) == 0 || len(e.Vendor.Dataset) > 128 ||
 		len(e.ReleaseID) == 0 || len(e.ReleaseID) > 128 || e.ReceivedAt.IsZero() {
 		return errors.New("raw envelope is missing or exceeds source lineage limits")

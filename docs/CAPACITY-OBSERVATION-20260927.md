@@ -176,3 +176,51 @@ Grafana admin 口令随机生成并保存在 `/opt/tuba/monitoring/secrets.json`
 进一步排查到 source-adapter 与 standard-indexer 会在 Kafka 暂时关闭连接/提交 offset 失败时退出；broker 进程持续运行，故障路径是 worker 返回错误后没有本地自动恢复。已扩展 `/opt/tuba/collector-live/manage_zeek_live_pipeline.py`：单组件恢复及 `--restart start-components ...` 会沿用同一 adapter token 和消费组，通过进程监督器在异常退出 2 秒后重启。六个组件（ingest、source-adapter、raw-indexer、normalizer、quarantine-indexer、standard-indexer）均已迁入监督器；执行时只逐个优雅重启指定 worker，未改 Topic、ACL 或 offset。
 
 积压回放期间，Prometheus consumer lag 峰值约 15,596；source-adapter 在约 119 秒内增加 5,479 条成功回执计数，Normalizer 消费组 lag 在 1 分钟采样中下降约 3,224，Raw-indexer lag=0。随后观测六个进程均为 running，source-adapter `/health/ready` 返回 ready，Kafka exporter 聚合 lag 先为 0、最新为 4 条在途记录。此次不执行 offset reset；少量非零 lag 是采样时仍在处理的新消息，不视为丢失。需在常态运行中继续监视监督器重启次数与 consumer lag。
+
+### 可靠性跟进复核（2026-09-28）
+
+本机代码验证新增了两组故障恢复回归：`internal/sourceadapter/adapter_test.go` 注入一次 Kafka Fetch 失败与一次 offset commit 失败，验证同一事件只调用一次 ingest receipt、重试后再提交 offset；`internal/ingest/server_test.go` 覆盖 Beat Topic 来源绑定、可信上下文、receipt 重复幂等、同 ID 不同正文冲突、无效 token 与未绑定 Topic。`go test ./...`、`go vet ./...`、`git diff --check` 均通过。
+
+248 现场只读复核：Zeek 数据面管理器报告 ingest、source-adapter、raw-indexer、normalizer、quarantine-indexer、standard-indexer 六项均 running；source-adapter `/health/ready` HTTP 200；Prometheus `sum(up)=6`，Kafka consumer lag 聚合值为 0。此前已在 source-adapter 子进程上做受控 SIGKILL，监督器自动拉起新 PID 且 readiness 恢复。没有重置 offset，也没有停止 Kafka、PostgreSQL 或 Elasticsearch。
+
+以上只关闭“单 worker 异常退出恢复”和当前静态积压的验证切片，不代表 COL-07/V02 总体通过。仍待在隔离环境按矩阵覆盖数据面整机重启、网络分区及长时间断连、Collector 本地队列/归档 spool 上限与清理、磁盘满、日志轮转覆盖、Kafka/PG 故障恢复、配置/凭据切换、跨 offset 重复和 Topic 重建；每项需记录确认水位、数据缺口及回放证据。邮件告警仍按用户要求暂缓。
+
+### 21 归档 stage 清理安全复核（2026-09-29）
+
+2026-09-29 在 21 只读确认 TUBA `archive-sync` 与 conn/dns/http/ssl 四个 Filebeat 均 running。`archive/` 文件元数据占用 145,021,139 B，`data/` 目录占用 41,715,613 B。现场脚本当前没有 stage 自动清理，未重启上述进程。读取 registry state 的只读汇总显示 conn 有 7 个、dns 有 5 个归档 stage 的 offset 低于解压文件长度，另有 3 个 dns stage 文件未在可读取快照中匹配；http/ssl 没有同格式的数值快照。该汇总不能证明这些文件是否已被输出端确认，因此只记录为需要调查的缺口，不视为精确 ack 指标。
+
+结论：单凭 stage mtime 超过 6 小时不能安全删除；Filebeat 停机、缓慢读取或输出积压时会丢失尚未确认的数据。未将清理脚本部署到 21。本地归档管理器当前要求显式的 acknowledged stage 集合才会删除过期文件，默认 fail-closed；新增标准库单元测试验证未确认保留、显式确认后删除、成功解压重复跳过、坏 gzip 清理，以及模拟 ENOSPC 时保留源 gzip 并移除 `.partial`。4 项测试在 Windows 工作站与 21 的 Python 3.8.10 临时目录均通过。自动清理仍待接入可信、逐文件且可验证的 Filebeat 输出确认状态，并在隔离流量上演练断网超时、恢复和积压排空后再上线。
+
+### Filebeat 磁盘队列强杀恢复演练（2026-09-29）
+
+在 21 上运行 `scripts/verify_filebeat_diskqueue_recovery.py` 的隔离副本，建立独立 Filebeat 配置、registry/data 目录和临时 Kafka 容器；仅监听 loopback，并使用专用临时 Topic。测试先将 Kafka 输出指向不可达端口，产生 2,000 条带唯一 ID 的合成 Zeek 风格事件，确认持久磁盘队列约 1,919,784 B；随后强制结束测试 Filebeat，再以同一配置和队列状态恢复到临时 Kafka。
+
+验收结果：Filebeat output acked=2,000；Kafka 消费核对 unique=2,000、duplicates=0、malformed=0。演练通过，证明当前 8.19.0 Linux Filebeat 的磁盘队列可在进程 SIGKILL 后恢复并完成输出。测试容器、临时配置/registry/queue、传输 tar 与临时镜像均已清理，21 的生产 Filebeat 配置、进程与 offsets 未更改。
+
+后续将同一脚本扩展为队列接近上限的隔离测试：50,000 条事件、单事件 padding 1,024 B，Kafka 离线时等 16 MiB 队列达到至少 12 MiB 再 SIGKILL。实际队列文件为 15,999,234 B（约 15.3 MiB）；用相同临时配置/registry/data 恢复后 output acked=50,000，Kafka 消费端 unique=50,000、duplicates=0、malformed=0。队列接近上限时 Filebeat 未退出；恢复后成功继续读取原始输入中尚未入队的事件。
+
+再增加真实 Kafka broker 停止/启动场景，发送 100,000 条事件。先确认部分事件已到临时 Kafka，再停止 broker；queue 达 15,999,360 B 后 SIGKILL Filebeat，启动原 Kafka 数据目录及 Filebeat。最终 100,000 个唯一事件齐全，但重复 15 条、malformed=0。说明 Filebeat/Kafka 故障窗口内是 at-least-once，Kafka 已收但 Filebeat 本地队列 ACK 未持久化的记录会重发。现在的 Raw ID 依据 Kafka topic/partition/offset，因此重复落在新 Kafka offset 会被当作新 Raw 记录，并派生新的 UIM event ID；系统尚未做跨 offset 去重。脚本输出将明确标记 `PASS_AT_LEAST_ONCE_DUPLICATES_OBSERVED`，不能误读为无重复。
+
+三次 broker 失败演练的重复数分别为 15、94、65。重复记录的 `log.file.device_id`、`log.file.inode`、`log.offset`、消息 SHA-256、`@timestamp` 与 agent 元数据完全一致，仅 Kafka delivery offset 不同。这确认队列和输入续读没有丢失唯一事件，但跨 Kafka offset 会重复投递，Filebeat/Kafka 这段提供 at-least-once 而非 exactly-once。
+
+本地已实现稳定 Filebeat 源位置 `filebeat-v1:<device_id>:<inode>:<log.offset>`，并将 `kafka-v1:<topic>:<partition>:<offset>` 独立存为 `delivery_position`。Zeek 事件缺少文件身份或 offset 时拒绝接入并保留 Kafka offset；receipt、Raw ID 和 adapter 校验使用稳定源位置，同一源行跨 Kafka offset 重发应复用原 Raw receipt。Raw strict mapping 的兼容字段由 `scripts/migrate_raw_delivery_position_mapping.py` 一次性扩展，默认 dry-run，apply 后读回核验。相关 Go 测试、`go vet`、迁移脚本及 collector 管理器 Python 测试、py_compile、`git diff --check` 均通过。
+
+此实现目前仅在工作区，尚未部署到 248，也未对现存 Raw index 执行 mapping migration；没有完成真实 source-adapter→PG receipt→Raw ES→DIP/UIM ES 的端到端重复对账。部署前必须排空 adapter lag 并优雅停止消费、迁移现存 Raw mappings，再部署新二进制并隔离验证 Raw/domain 唯一数。临时测试容器与数据目录已由 runner 清理；本轮在 21 的测试 tar/脚本副本/日志及未使用测试镜像、71 的临时传输 tar、工作站测试 tar 均已按精确路径清理，71 上预存测试镜像保留。
+
+这些测试仍不证明宿主机掉电/整机重启、文件系统真正满时的恢复、生产归档 stage 的安全回收。生产 spool 仍无可靠 per-file ack 来源，所以不能仅以 TTL 删除归档 stage。剩余 COL-07 重点是空间耗尽保护、宿主机重启恢复、源日志轮转与归档积压回放、跨 offset 重复的线上代码验收，以及从来源 offset 到 ES 的逐段数量和缺口对账。
+
+### 248 数据面当前抽查（2026-09-29）
+
+只读复核 `manage_zeek_live_pipeline.py status` 显示 ingest、normalizer、quarantine-indexer、raw-indexer、source-adapter、standard-indexer 六项均 running，Prometheus `/-/healthy` 返回健康。Prometheus 的连续两次 `kafka_consumergroup_lag > 0` 查询分别看到 TLS=1、随后 network=9；当前事件流仍在到达，lag 是变化中的瞬时值，不能据此宣称持续积压或 lag=0。没有改 offset、重启 worker 或修改配置。后续验收需按时间序列观察 lag 是否持续增长，并把 Raw/indexer/ES 新鲜度纳入同一组对账。
+
+同日后续只读复核：六个数据面组件仍为 running，capacity guard readiness=`ready/normal`，Prometheus healthy；Prometheus 瞬时 `sum(kafka_consumergroup_lag)=0`、`sum(up)=6`。这只说明该采样时刻监控覆盖的目标均 UP、被纳入的消费组无积压，不替代持续稳定性窗口与 source→receipt→Raw→DIP/UIM→ES 数量/新鲜度对账；本次未重启或改动服务、配置、Topic 或 offsets。
+
+### 后续可靠性部署与 Windows shadow（2026-09-29）
+
+本节后续结果更新本文件上面写有“未部署清理逻辑”“只在工作区”的早期状态；早期试验和观察数据仍作为当时的历史证据保留。
+
+- **21 Filebeat 归档确认清理**：工作站脚本解析 Filebeat `registry/filebeat/active.dat`、active snapshot 与 WAL 中的 set/remove 操作，并在读取前后检查文件元数据一致。只有 `meta.source` 指向的 stage 文件且持久 `cursor.offset >= file size` 时才视为确认；registry 不完整、不可读、格式未知或期间变化一律 fail-closed。6 项管理器测试通过。先在 21 临时脚本只读运行 `archive-status`：conn/dns/http/ssl 各 36 个过期文件。生产替换脚本前备份原版、SHA-256 核对并 `py_compile`；只替换 `archive-sync` 子进程，conn/dns/http/ssl 四个 Filebeat 均未重启。首次安全清理仅移除已确认的 conn 18 + dns 18 文件；余下 18 + 18 + 36 + 36 = 108 个，约 16.8 MB，继续等待 registry 确认。恢复后状态显示四个 Filebeat 和新的 archive-sync 均 running。
+- **248 稳定位置/跨 offset 幂等准备**：新增 Filebeat 稳定位置 `filebeat-v1:<device_id>:<inode>:<log.offset>`，Winlogbeat 稳定位置 `winlogbeat-v1:<hex(computer_name)>:<hex(channel)>:<record_id>:<UTC timestamp>`。原 `topic/partition/offset` 另存 delivery position；Windows Security 缺坐标会被拒绝。Raw ES 以严格映射兼容历史版本：delivery position 保存在 PG receipt 与 Raw Kafka envelope，Raw ES 文档序列化时省略该可选字段，不需要管理员迁移既有映射。Go 全量测试、`go vet ./...`、Python archive tests/py_compile 均通过。
+- **248 运行版本滚动**：构建并核验 Linux amd64 `tuba-ingest`、`tuba-source-adapter`、`tuba-raw-indexer`、`tuba-normalizer` 四个 SHA-256 后部署；覆盖前备份旧二进制至 `/opt/tuba/backups/reliability-20260929/`。通过 `--restart start-components` 逐项优雅重启，保留 adapter token、context、group suffix 与 offsets。读回六个组件 running、ingest `/health/ready` 为 200、Prometheus 6/6 target UP；source-adapter 的 offset commit counter 持续增加。两轮各 5 次、间隔 30 秒的 lag 样本总量在 0–10 间波动，最终读数均为 0；短时非零分布在标准 DNS/network、conn source-adapter 与 Raw-indexer。此窗口未显示持续单向增长，但还不能替代更长的稳定性、新鲜度趋势及真实跨 offset 重放统计。
+- **Windows Security shadow**：从官方 Winlogbeat 8.19.0 官方 SHA-512 核验包在 139/169 各运行临时 shadow 配置，限定 Security Event ID、`ignore_older:24h`、`include_xml:true`，仅输出至远端专用临时目录，不连 Kafka、不注册 Windows service；逐机采集后清理目录。两主机均 `test config` 与实读成功：139 为 1,762 条（4719 1,728、4776 34），169 为 111 条（4776 111），shadow 输出事件均可见原生 XML 字段。正式 Winlogbeat Kafka 接入仍需通过现有授权 API 建立各自的来源 context/release、SCRAM 用户与 exact ACL，并更新 adapter allowlist；没有使用 SQL 伪造用户或审计事件。
+- **未完成/安全边界**：SMTP 邮件告警依用户明确要求暂缓。尚未完成 COL-07/V02 的 Topic 重建、目标机掉电/重启、生产源日志覆盖、磁盘满整机恢复、积压换凭据、实流跨 offset 的唯一 Raw/domain 对账以及端到端容量恢复速率。没有指定异机备份目的地，也没有可执行的 B04/V08 restore 验收目标；所以单节点磁盘/整机丢失仍无可承诺的 RPO/RTO。Windows source registration 需要 `source:manage` 有效操作者会话，当前没有可用令牌，正式 Collector 未启动。

@@ -16,6 +16,7 @@ import (
 
 	"github.com/segmentio/kafka-go"
 	"tuba/product/internal/deadletter"
+	"tuba/product/internal/rawevent"
 	"tuba/product/internal/telemetry"
 )
 
@@ -244,21 +245,24 @@ func (a Adapter) deliver(ctx context.Context, message kafka.Message) (permanent 
 			return false, "", errors.New("ingest receipt exceeds 64 KiB")
 		}
 		var receipt struct {
-			ReceiptID       string `json:"receipt_id"`
-			RawEventID      string `json:"raw_event_id"`
-			SourceContextID string `json:"source_context_id"`
-			SourcePosition  string `json:"source_position"`
-			PayloadHash     string `json:"payload_hash"`
-			Status          string `json:"status"`
+			ReceiptID        string `json:"receipt_id"`
+			RawEventID       string `json:"raw_event_id"`
+			SourceContextID  string `json:"source_context_id"`
+			SourcePosition   string `json:"source_position"`
+			DeliveryPosition string `json:"delivery_position"`
+			PayloadHash      string `json:"payload_hash"`
+			Status           string `json:"status"`
 		}
 		if err := json.Unmarshal(body, &receipt); err != nil {
 			return false, "", fmt.Errorf("decode ingest receipt: %w", err)
 		}
 		digest := sha256.Sum256(message.Value)
 		contextID, ok := sourceContextFromTopic(a.Binding.Topic)
-		position := fmt.Sprintf("kafka-v1:%s:%d:%d", a.Binding.Topic, message.Partition, message.Offset)
+		deliveryPosition := fmt.Sprintf("kafka-v1:%s:%d:%d", a.Binding.Topic, message.Partition, message.Offset)
+		position := rawevent.StableBeatPosition(message.Value, deliveryPosition)
 		if !ok || receipt.Status != "accepted" || receipt.ReceiptID == "" || receipt.ReceiptID != receipt.RawEventID ||
-			receipt.SourceContextID != contextID || receipt.SourcePosition != position || receipt.PayloadHash != hex.EncodeToString(digest[:]) {
+			receipt.SourceContextID != contextID || receipt.SourcePosition != position || receipt.DeliveryPosition != deliveryPosition ||
+			receipt.PayloadHash != hex.EncodeToString(digest[:]) {
 			return false, "", errors.New("ingest receipt does not match this source context, position and payload")
 		}
 		return false, "", nil

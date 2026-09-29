@@ -1,0 +1,56 @@
+# Development profile: one Winlogbeat instance per Windows source/context.
+# Start once with TUBA_WIN_INITIAL_CATCHUP=24h to bound the first read, wait
+# until Kafka and TUBA have caught up, stop cleanly, then remove ignore_older
+# for steady-state operation while preserving this instance's path.data.
+
+winlogbeat.event_logs:
+  - name: Security
+    id: tuba-windows-security
+    event_id: 4624,4625,4634,4647,4648,4672,4719,4720,4722,4723,4724,4725,4726,4728,4729,4732,4733,4756,4757,4768,4769,4771,4776,1102
+    include_xml: true
+    ignore_older: ${TUBA_WIN_INITIAL_CATCHUP:24h}
+    tags: [tuba, windows-security]
+    fields_under_root: true
+    fields:
+      event:
+        dataset: windows.security
+      tuba:
+        source_context_id: ${TUBA_SOURCE_CONTEXT_ID}
+
+processors:
+  - add_fields:
+      target: event
+      fields:
+        dataset: windows.security
+
+queue.disk:
+  path: ${path.data}/diskqueue
+  max_size: 256MB
+  segment_size: 16MB
+  read_ahead: 512
+
+winlogbeat.registry_file: ${path.data}/registry
+setup.template.enabled: false
+setup.ilm.enabled: false
+
+output.kafka:
+  enabled: true
+  hosts: ["${TUBA_KAFKA_BROKERS}"]
+  topic: "tuba.source.${TUBA_SOURCE_CONTEXT_ID}.v1"
+  username: "${TUBA_KAFKA_USERNAME}"
+  password: "${TUBA_KAFKA_PASSWORD}"
+  sasl.mechanism: SCRAM-SHA-512
+  security.protocol: SASL_PLAINTEXT
+  version: "2.1.0"
+  required_acks: -1
+  compression: gzip
+  max_message_bytes: 900000
+  bulk_max_size: 128
+
+logging.to_files: true
+logging.files:
+  path: ${path.data}/logs
+  name: winlogbeat
+  keepfiles: 4
+  permissions: 0600
+

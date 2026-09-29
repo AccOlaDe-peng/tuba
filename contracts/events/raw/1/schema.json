@@ -13,6 +13,7 @@
     "source_instance_id": {"type": "string", "minLength": 1, "maxLength": 128},
     "source_context_id": {"type": "string", "pattern": "^ctx_[a-f0-9]{32}$"},
     "source_position": {"type": "string", "minLength": 1, "maxLength": 512},
+    "delivery_position": {"type": "string", "minLength": 1, "maxLength": 512},
     "source_epoch": {"type": "string", "minLength": 1, "maxLength": 128},
     "vendor": {"type": "object", "additionalProperties": false, "required": ["name", "product", "dataset"], "properties": {"name": {"type": "string", "minLength": 1, "maxLength": 128}, "product": {"type": "string", "minLength": 1, "maxLength": 128}, "dataset": {"type": "string", "minLength": 1, "maxLength": 128}}},
     "received_at": {"type": "string", "format": "date-time"},

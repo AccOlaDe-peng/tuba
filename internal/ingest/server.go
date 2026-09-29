@@ -110,7 +110,7 @@ func (s Server) ingestRaw(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "event too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	s.acceptRaw(w, r, source, position, payload)
+	s.acceptRaw(w, r, source, position, "", payload)
 }
 
 func (s Server) ingestBeat(w http.ResponseWriter, r *http.Request) {
@@ -150,11 +150,20 @@ func (s Server) ingestBeat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "event too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	position := fmt.Sprintf("kafka-v1:%s:%d:%d", topic, partition, offset)
-	s.acceptRaw(w, r, source, position, payload)
+	if source.VendorProduct == "zeek" && rawevent.StableBeatPosition(payload, "") == "" {
+		http.Error(w, "Zeek Filebeat event requires stable file device, inode and log offset", http.StatusBadRequest)
+		return
+	}
+	if (source.VendorProduct == "windows" || source.VendorDataset == "windows.security") && rawevent.StableBeatPosition(payload, "") == "" {
+		http.Error(w, "Windows Security Winlogbeat event requires computer, channel, record ID and timestamp", http.StatusBadRequest)
+		return
+	}
+	deliveryPosition := fmt.Sprintf("kafka-v1:%s:%d:%d", topic, partition, offset)
+	position := rawevent.StableBeatPosition(payload, deliveryPosition)
+	s.acceptRaw(w, r, source, position, deliveryPosition, payload)
 }
 
-func (s Server) acceptRaw(w http.ResponseWriter, r *http.Request, source RawSource, position string, payload []byte) {
+func (s Server) acceptRaw(w http.ResponseWriter, r *http.Request, source RawSource, position, deliveryPosition string, payload []byte) {
 	if s.Limiter != nil && !s.Limiter.Allow() {
 		w.Header().Set("Retry-After", "1")
 		http.Error(w, "rate limit exceeded", http.StatusTooManyRequests)
@@ -181,6 +190,7 @@ func (s Server) acceptRaw(w http.ResponseWriter, r *http.Request, source RawSour
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
+	envelope.DeliveryPosition = deliveryPosition
 	candidate, err := rawevent.Marshal(envelope)
 	if err != nil {
 		http.Error(w, "could not encode raw event", http.StatusInternalServerError)
@@ -203,7 +213,7 @@ func (s Server) acceptRaw(w http.ResponseWriter, r *http.Request, source RawSour
 		if s.Metrics != nil {
 			s.Metrics.Inc("tuba_raw_ingest_accepted_total")
 		}
-		writeAccepted(w, envelope)
+		writeAccepted(w, envelope, deliveryPosition)
 		return
 	}
 	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
@@ -224,17 +234,21 @@ func (s Server) acceptRaw(w http.ResponseWriter, r *http.Request, source RawSour
 	if s.Metrics != nil {
 		s.Metrics.Inc("tuba_raw_ingest_accepted_total")
 	}
-	writeAccepted(w, envelope)
+	writeAccepted(w, envelope, deliveryPosition)
 }
 
-func writeAccepted(w http.ResponseWriter, envelope rawevent.Envelope) {
+func writeAccepted(w http.ResponseWriter, envelope rawevent.Envelope, deliveryPosition string) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusAccepted)
-	_ = json.NewEncoder(w).Encode(map[string]any{
+	receipt := map[string]any{
 		"receipt_id": envelope.RawEventID, "raw_event_id": envelope.RawEventID,
 		"source_context_id": envelope.SourceContextID, "source_position": envelope.SourcePosition,
 		"payload_hash": envelope.PayloadHash, "accepted_at": envelope.ReceivedAt, "status": "accepted",
-	})
+	}
+	if deliveryPosition != "" {
+		receipt["delivery_position"] = deliveryPosition
+	}
+	_ = json.NewEncoder(w).Encode(receipt)
 }
 
 func isJSONContentType(value string) bool {

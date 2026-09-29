@@ -28,6 +28,7 @@ type receiptMetadata struct {
 	SourceInstanceID string                `json:"source_instance_id"`
 	SourceContextID  string                `json:"source_context_id"`
 	SourcePosition   string                `json:"source_position"`
+	DeliveryPosition string                `json:"delivery_position,omitempty"`
 	SourceEpoch      string                `json:"source_epoch"`
 	Vendor           rawevent.Vendor       `json:"vendor"`
 	ReceivedAt       time.Time             `json:"received_at"`
@@ -37,7 +38,7 @@ type receiptMetadata struct {
 }
 
 func metadataFor(e rawevent.Envelope) receiptMetadata {
-	return receiptMetadata{e.SchemaVersion, e.RawEventID, e.Organization, e.Namespace, e.SourceInstanceID, e.SourceContextID, e.SourcePosition, e.SourceEpoch, e.Vendor, e.ReceivedAt, e.ReleaseID, e.PayloadHash, e.Encoding}
+	return receiptMetadata{e.SchemaVersion, e.RawEventID, e.Organization, e.Namespace, e.SourceInstanceID, e.SourceContextID, e.SourcePosition, e.DeliveryPosition, e.SourceEpoch, e.Vendor, e.ReceivedAt, e.ReleaseID, e.PayloadHash, e.Encoding}
 }
 
 func (s PostgresRawReceipts) GetOrCreate(ctx context.Context, organization, sourceID, rawID, payloadHash, contextID string, candidate []byte) ([]byte, bool, error) {
@@ -86,7 +87,8 @@ func (s PostgresRawReceipts) GetOrCreate(ctx context.Context, organization, sour
 	envelope := rawevent.Envelope{
 		SchemaVersion: meta.SchemaVersion, RawEventID: meta.RawEventID, Organization: meta.Organization, Namespace: meta.Namespace,
 		SourceInstanceID: meta.SourceInstanceID, SourceContextID: meta.SourceContextID, SourcePosition: meta.SourcePosition,
-		SourceEpoch: meta.SourceEpoch, Vendor: meta.Vendor, ReceivedAt: meta.ReceivedAt, ReleaseID: meta.ReleaseID,
+		DeliveryPosition: meta.DeliveryPosition,
+		SourceEpoch:      meta.SourceEpoch, Vendor: meta.Vendor, ReceivedAt: meta.ReceivedAt, ReleaseID: meta.ReleaseID,
 		PayloadHash: meta.PayloadHash, Payload: candidateEnvelope.Payload, Encoding: meta.Encoding,
 	}
 	encoded, err := rawevent.Marshal(envelope)

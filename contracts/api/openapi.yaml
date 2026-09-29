@@ -42,6 +42,7 @@ paths:
                   raw_event_id: {type: string}
                   source_context_id: {type: string, pattern: '^ctx_[a-f0-9]{32}$'}
                   source_position: {type: string, minLength: 1, maxLength: 512}
+                  delivery_position: {type: string, minLength: 1, maxLength: 512}
                   payload_hash: {type: string, pattern: '^[a-f0-9]{64}$'}
                   accepted_at: {type: string, format: date-time}
                   status: {type: string, const: accepted}
@@ -70,17 +71,18 @@ paths:
             schema: {$ref: "#/components/schemas/BeatIngressEvent"}
       responses:
         "202":
-          description: Raw event durably accepted; adapter verifies the returned context, topic position and payload hash before committing Kafka offset.
+          description: Raw event durably accepted; adapter verifies the registered context, stable source position, current Kafka delivery position and payload hash before committing Kafka offset.
           content:
             application/json:
               schema:
                 type: object
-                required: [receipt_id, raw_event_id, source_context_id, source_position, payload_hash, accepted_at, status]
+                required: [receipt_id, raw_event_id, source_context_id, source_position, delivery_position, payload_hash, accepted_at, status]
                 properties:
                   receipt_id: {type: string}
                   raw_event_id: {type: string}
                   source_context_id: {type: string, pattern: '^ctx_[a-f0-9]{32}$'}
-                  source_position: {type: string, pattern: '^kafka-v1:tuba\.source\.ctx_[a-f0-9]{32}\.v1:[0-9]+:[0-9]+$'}
+                  source_position: {type: string, minLength: 1, maxLength: 512, description: Stable source record position; for Filebeat file events this is derived from device_id, inode and log.offset.}
+                  delivery_position: {type: string, pattern: '^kafka-v1:tuba\.source\.ctx_[a-f0-9]{32}\.v1:[0-9]+:[0-9]+$'}
                   payload_hash: {type: string, pattern: '^[a-f0-9]{64}$'}
                   accepted_at: {type: string, format: date-time}
                   status: {type: string, const: accepted}

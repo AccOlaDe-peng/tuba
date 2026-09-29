@@ -106,10 +106,13 @@ func normalizeWindows(raw rawevent.Envelope, in map[string]any) (map[string]any,
 	if winlog == nil {
 		return nil, errors.New("DIP_WINDOWS_WINLOG_MISSING")
 	}
-	if !strings.EqualFold(stringValue(winlog["provider_name"]), "Microsoft-Windows-Security-Auditing") || !strings.EqualFold(stringValue(winlog["channel"]), "Security") {
+	code := stringValue(winlog["event_id"])
+	provider := stringValue(winlog["provider_name"])
+	securityProvider := strings.EqualFold(provider, "Microsoft-Windows-Security-Auditing")
+	logClearProvider := code == "1102" && strings.EqualFold(provider, "Microsoft-Windows-Eventlog")
+	if (!securityProvider && !logClearProvider) || !strings.EqualFold(stringValue(winlog["channel"]), "Security") {
 		return nil, ErrUnsupported
 	}
-	code := stringValue(winlog["event_id"])
 	if code == "" {
 		return nil, errors.New("DIP_WINDOWS_EVENT_ID_MISSING")
 	}
@@ -133,7 +136,7 @@ func normalizeWindows(raw rawevent.Envelope, in map[string]any) (map[string]any,
 	user := map[string]any{}
 	group := map[string]any{}
 	warnings := []string{}
-	targetPrimary := code == "4624" || code == "4625" || code == "4634" || code == "4647" || code == "4768" || code == "4769" || code == "4771" || code == "4776"
+	targetPrimary := code == "4624" || code == "4625" || code == "4634" || code == "4723" || code == "4724" || code == "4768" || code == "4769" || code == "4771" || code == "4776"
 	actorName, actorID := stringValue(data["SubjectUserName"]), stringValue(data["SubjectUserSid"])
 	targetName, targetID := stringValue(data["TargetUserName"]), stringValue(data["TargetUserSid"])
 	if targetID == "" {
@@ -213,6 +216,10 @@ func windowsSemantics(code string, data map[string]any) (domain, category, actio
 		return "authentication", "authentication", "logon-success", "success", "authentication.logon-success", true
 	case "4625":
 		return "authentication", "authentication", "logon-failure", "failure", "authentication.logon-failure", true
+	case "4672":
+		return "authentication", "authentication", "special-privileges-assigned", "success", "authentication.special-privileges-assigned", true
+	case "4719":
+		return "iam", "iam", "audit-policy-change", "success", "iam.audit-policy-change", true
 	case "4634", "4647":
 		return "session", "session", "logoff", "success", "session.logoff", true
 	case "4648":
@@ -224,6 +231,12 @@ func windowsSemantics(code string, data map[string]any) (domain, category, actio
 	case "4720", "4722", "4725", "4726":
 		actions := map[string]string{"4720": "user-create", "4722": "user-enable", "4725": "user-disable", "4726": "user-delete"}
 		return "iam", "iam", actions[code], "success", "iam." + actions[code], true
+	case "4723", "4724":
+		action := "password-change"
+		if code == "4724" {
+			action = "password-reset"
+		}
+		return "iam", "iam", action, "success", "iam." + action, true
 	case "4728", "4729", "4732", "4733", "4756", "4757":
 		verb := "remove"
 		if code == "4728" || code == "4732" || code == "4756" {
@@ -237,6 +250,8 @@ func windowsSemantics(code string, data map[string]any) (domain, category, actio
 		return "authentication", "authentication", "credential-validation", "failure", "authentication.credential-validation", true
 	case "4771":
 		return "authentication", "authentication", "kerberos-preauth-failure", "failure", "authentication.kerberos-preauth-failure", true
+	case "1102":
+		return "iam", "iam", "security-log-cleared", "success", "iam.security-log-cleared", true
 	default:
 		return "", "", "", "", "", false
 	}

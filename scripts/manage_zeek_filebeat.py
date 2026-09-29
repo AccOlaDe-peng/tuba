@@ -21,6 +21,7 @@ DATA = os.path.join(ROOT, "data")
 ARCHIVE_DATA = os.path.join(ROOT, "archive")
 ARCHIVE_SOURCE = "/opt/zeek/logs"
 ARCHIVE_STAGE_RETENTION_SECONDS = 6 * 60 * 60
+REGISTRY_ROOT_NAME = "registry/filebeat"
 SECRETS = os.path.join(ROOT, "secrets.json")
 STATE = os.path.join(RUN, "processes.json")
 FILEBEAT = "/usr/share/filebeat/bin/filebeat"
@@ -136,20 +137,136 @@ def prepare_instance(dataset, context, user):
     return config_path, data_path, log_path
 
 
-def sync_archives_once():
-    now = time.time()
+def cleanup_expired_archive_stages(destination_dir, now, acknowledged_stages=None):
+    os.makedirs(destination_dir, mode=0o750, exist_ok=True)
+    acknowledged_stages = {os.path.realpath(path) for path in (acknowledged_stages or set())}
+    for name in os.listdir(destination_dir):
+        staged = os.path.join(destination_dir, name)
+        try:
+            if os.path.isfile(staged) and now - os.stat(staged).st_mtime > ARCHIVE_STAGE_RETENTION_SECONDS:
+                if os.path.realpath(staged) not in acknowledged_stages:
+                    print("archive cleanup deferred until Filebeat confirms %s" % staged, flush=True)
+                    continue
+                os.remove(staged)
+                print("removed expired archive stage %s" % staged, flush=True)
+        except OSError as error:
+            print("archive cleanup pending %s: %s" % (staged, error), flush=True)
+
+
+def _read_stable_registry(registry_root):
+    """Read a consistent Filebeat 8.x snapshot plus its write-ahead log."""
+    registry_root = os.path.realpath(registry_root)
+    active_path = os.path.join(registry_root, "active.dat")
+    log_path = os.path.join(registry_root, "log.json")
+    last_error = None
+    for _ in range(2):
+        try:
+            with open(active_path, "rb") as handle:
+                active_before = handle.read().decode("utf-8").strip()
+            snapshot_path = os.path.realpath(active_before)
+            if os.path.commonpath([registry_root, snapshot_path]) != registry_root:
+                raise ValueError("registry active snapshot escaped registry root")
+            tracked = (active_path, log_path, snapshot_path)
+            before = [os.stat(path) for path in tracked]
+            with open(snapshot_path, "r") as handle:
+                states = json.load(handle)
+            if not isinstance(states, list):
+                raise ValueError("registry snapshot is not a state list")
+            indexed = {}
+            for item in states:
+                key = item.get("_key")
+                if not isinstance(key, str):
+                    raise ValueError("registry snapshot contains an invalid key")
+                indexed[key] = item
+            pending = None
+            with open(log_path, "r") as handle:
+                for line in handle:
+                    record = json.loads(line)
+                    if "op" in record:
+                        if pending is not None or record.get("op") not in ("set", "remove"):
+                            raise ValueError("registry log has an unsupported operation sequence")
+                        pending = record["op"]
+                        continue
+                    if pending is None or not isinstance(record.get("k"), str):
+                        raise ValueError("registry log contains a state without an operation")
+                    if pending == "set":
+                        value = record.get("v")
+                        if not isinstance(value, dict):
+                            raise ValueError("registry set operation has no state")
+                        value = dict(value)
+                        value["_key"] = record["k"]
+                        indexed[record["k"]] = value
+                    else:
+                        indexed.pop(record["k"], None)
+                    pending = None
+            if pending is not None:
+                raise ValueError("registry log ended with an incomplete operation")
+            after = [os.stat(path) for path in tracked]
+            with open(active_path, "rb") as handle:
+                active_after = handle.read().decode("utf-8").strip()
+            if active_before != active_after or any(
+                left.st_size != right.st_size or left.st_mtime_ns != right.st_mtime_ns
+                for left, right in zip(before, after)
+            ):
+                raise RuntimeError("registry changed during read")
+            return list(indexed.values())
+        except (OSError, ValueError, TypeError, RuntimeError) as error:
+            last_error = error
+    raise RuntimeError("Filebeat registry cannot prove an acknowledged cursor: %s" % last_error)
+
+
+def acknowledged_archive_stages(data_root, archive_root, now):
+    """Return expired stages whose persisted Filebeat cursor reached EOF."""
+    expired = set()
     for dataset in CONTEXTS:
-        destination_dir = os.path.join(ARCHIVE_DATA, dataset)
-        os.makedirs(destination_dir, mode=0o750, exist_ok=True)
-        for name in os.listdir(destination_dir):
-            staged = os.path.join(destination_dir, name)
+        stage_dir = os.path.join(archive_root, dataset)
+        try:
+            for name in os.listdir(stage_dir):
+                path = os.path.join(stage_dir, name)
+                if os.path.isfile(path) and now - os.stat(path).st_mtime > ARCHIVE_STAGE_RETENTION_SECONDS:
+                    expired.add(os.path.realpath(path))
+        except OSError:
+            continue
+    if not expired:
+        return set()
+
+    acknowledged = set()
+    for dataset in CONTEXTS:
+        registry_root = os.path.join(data_root, dataset, REGISTRY_ROOT_NAME)
+        try:
+            states = _read_stable_registry(registry_root)
+        except (OSError, RuntimeError, ValueError, TypeError):
+            continue
+        for state in states:
+            meta = state.get("meta")
+            cursor = state.get("cursor")
+            if not isinstance(meta, dict) or not isinstance(cursor, dict):
+                continue
+            source = meta.get("source")
+            offset = cursor.get("offset")
+            if not isinstance(source, str) or isinstance(offset, bool) or not isinstance(offset, (int, float)):
+                continue
+            if not float(offset).is_integer() or offset < 0:
+                continue
+            source_path = os.path.realpath(source)
+            if source_path not in expired:
+                continue
             try:
-                if os.path.isfile(staged) and now - os.stat(staged).st_mtime > ARCHIVE_STAGE_RETENTION_SECONDS:
-                    os.remove(staged)
-                    print("removed expired archive stage %s" % staged, flush=True)
-            except OSError as error:
-                print("archive cleanup pending %s: %s" % (staged, error), flush=True)
-        pattern = os.path.join(ARCHIVE_SOURCE, "*", dataset + ".*.log.gz")
+                if os.path.getsize(source_path) <= int(offset):
+                    acknowledged.add(source_path)
+            except OSError:
+                continue
+    return acknowledged
+
+
+def sync_archives_once(archive_source=None, archive_root=None, now=None, acknowledged_stages=None):
+    archive_source = archive_source or ARCHIVE_SOURCE
+    archive_root = archive_root or ARCHIVE_DATA
+    now = time.time() if now is None else now
+    for dataset in CONTEXTS:
+        destination_dir = os.path.join(archive_root, dataset)
+        cleanup_expired_archive_stages(destination_dir, now, acknowledged_stages)
+        pattern = os.path.join(archive_source, "*", dataset + ".*.log.gz")
         for source in glob.glob(pattern):
             try:
                 details = os.stat(source)
@@ -160,7 +277,9 @@ def sync_archives_once():
                 marker = destination + ".source.json"
                 identity = {"path": source, "size": details.st_size, "mtime_ns": details.st_mtime_ns}
                 if os.path.exists(destination) and os.path.exists(marker):
-                    if json.load(open(marker, "r")) == identity:
+                    with open(marker, "r") as handle:
+                        previous_identity = json.load(handle)
+                    if previous_identity == identity:
                         continue
                 temporary = destination + ".partial"
                 try:
@@ -186,8 +305,34 @@ def sync_archives_once():
 
 def sync_archives_loop():
     while True:
-        sync_archives_once()
+        now = time.time()
+        acknowledged = acknowledged_archive_stages(DATA, ARCHIVE_DATA, now)
+        sync_archives_once(now=now, acknowledged_stages=acknowledged)
         time.sleep(30)
+
+
+def archive_status():
+    now = time.time()
+    acknowledged = acknowledged_archive_stages(DATA, ARCHIVE_DATA, now)
+    result = {}
+    for dataset in CONTEXTS:
+        stage_dir = os.path.join(ARCHIVE_DATA, dataset)
+        expired = []
+        try:
+            for name in os.listdir(stage_dir):
+                path = os.path.join(stage_dir, name)
+                if os.path.isfile(path) and now - os.stat(path).st_mtime > ARCHIVE_STAGE_RETENTION_SECONDS:
+                    expired.append(os.path.realpath(path))
+        except OSError:
+            pass
+        reclaimed = [path for path in expired if path in acknowledged]
+        result[dataset] = {
+            "expired_files": len(expired),
+            "acknowledged_files": len(reclaimed),
+            "pending_files": len(expired) - len(reclaimed),
+            "pending_bytes": sum(os.path.getsize(path) for path in expired if path not in acknowledged and os.path.exists(path)),
+        }
+    print(json.dumps(result, sort_keys=True))
 
 
 def validate_instance(dataset, config_path, data_path, log_path):
@@ -303,13 +448,15 @@ def status():
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("action", choices=("test", "start", "stop", "status", "sync-archives"))
+    parser.add_argument("action", choices=("test", "start", "stop", "status", "sync-archives", "archive-status"))
     args = parser.parse_args()
     try:
         if args.action == "test":
             test()
         elif args.action == "sync-archives":
             sync_archives_loop()
+        elif args.action == "archive-status":
+            archive_status()
         elif args.action == "start":
             start()
         elif args.action == "stop":

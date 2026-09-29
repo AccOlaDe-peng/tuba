@@ -347,7 +347,13 @@ func (s *Elasticsearch) PutRaw(ctx context.Context, envelope rawevent.Envelope) 
 	if err := enc.Encode(map[string]any{"create": map[string]string{"_index": index, "_id": envelope.RawEventID}}); err != nil {
 		return err
 	}
-	raw, err := rawevent.Marshal(envelope)
+	// delivery_position is receipt/transport metadata persisted in PostgreSQL.
+	// Older retained Raw indices use dynamic=strict without this optional field;
+	// keep the ES document backward compatible while preserving the complete
+	// envelope in the Raw Kafka topic and receipt store.
+	esEnvelope := envelope
+	esEnvelope.DeliveryPosition = ""
+	raw, err := rawevent.Marshal(esEnvelope)
 	if err != nil {
 		return err
 	}
@@ -397,7 +403,7 @@ func (s *Elasticsearch) ensureRawIndex(ctx context.Context, index, alias string)
 	if _, ok := s.rawIndices.Load(index); ok {
 		return nil
 	}
-	body := []byte(`{"settings":{"number_of_shards":1,"number_of_replicas":0},"mappings":{"dynamic":"strict","properties":{"schema_version":{"type":"keyword"},"raw_event_id":{"type":"keyword"},"organization":{"properties":{"id":{"type":"keyword"}}},"namespace":{"type":"keyword"},"source_instance_id":{"type":"keyword"},"source_context_id":{"type":"keyword"},"source_position":{"type":"keyword"},"source_epoch":{"type":"keyword"},"vendor":{"properties":{"name":{"type":"keyword"},"product":{"type":"keyword"},"dataset":{"type":"keyword"}}},"received_at":{"type":"date"},"release_id":{"type":"keyword"},"payload_hash":{"type":"keyword"},"payload":{"type":"flattened"},"encoding":{"type":"keyword"}}},"aliases":{"` + alias + `":{}}}`)
+	body := []byte(`{"settings":{"number_of_shards":1,"number_of_replicas":0},"mappings":{"dynamic":"strict","properties":{"schema_version":{"type":"keyword"},"raw_event_id":{"type":"keyword"},"organization":{"properties":{"id":{"type":"keyword"}}},"namespace":{"type":"keyword"},"source_instance_id":{"type":"keyword"},"source_context_id":{"type":"keyword"},"source_position":{"type":"keyword"},"delivery_position":{"type":"keyword"},"source_epoch":{"type":"keyword"},"vendor":{"properties":{"name":{"type":"keyword"},"product":{"type":"keyword"},"dataset":{"type":"keyword"}}},"received_at":{"type":"date"},"release_id":{"type":"keyword"},"payload_hash":{"type":"keyword"},"payload":{"type":"flattened"},"encoding":{"type":"keyword"}}},"aliases":{"` + alias + `":{}}}`)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, s.URL+"/"+url.PathEscape(index), bytes.NewReader(body))
 	if err != nil {
 		return err

@@ -59,7 +59,7 @@ adapter 在 receipt 确认后提交接入 offset；崩溃重读通过 receipt �
 - 来源事件位置：文件身份/代次＋字节位置，或原 Windows 主机/频道/代次/RecordID；用于识别同一真实记录。不能只用文件路径、正文 hash 或 RecordID。
 - 投递位置：接入流实例 ID＋Topic＋partition＋offset。Topic 重建必须创建新流实例和上下文。它可保证 adapter 重读同一 Kafka 消息的幂等，不保证 Beat 重发到不同 offset 时去重。
 
-首批必须验证锁定 Beat 版本能否导出稳定来源位置，或在入持久队列前生成并在重试中保留投递 ID。若做不到，仅允许按传输位置幂等的开发验证，不宣称端到端去重已通过，不关闭 COL-03/COL-07。不能每次发送重新生成随机 ID。新增字段与 source_position 编码需在 COL-01 同步合同，现有 Raw 合同不被本文自动修改。
+2026-09-29 的 21 隔离 Kafka 故障实测证明：Filebeat 8.19.0 重启重放会产生 at-least-once duplicates；重复 Beat 记录的 `log.file.device_id`、`log.file.inode`、`log.offset` 和消息正文稳定。现合同定义 Filebeat 行位置为 `filebeat-v1:<device_id>:<inode>:<log.offset>`；Windows 位置为 `winlogbeat-v1:<hex(computer_name)>:<hex(channel)>:<record_id>:<UTC timestamp>`，避免 RecordID 在日志清空后重用导致身份冲突。Raw ID 依据稳定源位置；Kafka 的 `kafka-v1:<topic>:<partition>:<offset>` 单独放入 `delivery_position`。Zeek 缺少文件坐标、Windows 缺 computer/channel/RecordID/time 时接入拒绝并保留 Kafka offset。adapter 对 receipt 校验当前投递位置、context 与 payload hash；同一源事件跨 offset 重发复用原 receipt。新版本已部署到 248 的 ingest、adapter、Raw indexer、normalizer，原 consumer group 与 offsets 保留。由于当前旧 Raw ES 日索引的 `dynamic:strict` mapping 不包含 `delivery_position`，完整投递坐标保存在 PostgreSQL receipt 与 Raw Kafka，Raw ES serializer 省略这个可选字段，无需管理员原地修改历史 mapping。单元和全量 Go 测试通过；仍需在隔离主题完成真实跨 offset source→receipt→Raw→UIM 唯一性对账，完成前不关闭 COL-03/COL-07。
 
 Filebeat 保留原 message、编码、多行边界与来源元数据；Winlogbeat 启用并验证原生 XML 保留。原生证据与 Beat 规范化字段分别保存，不能把 ECS 文档冒充原始字节。无法取得原生证据的 API 来源记录其证据等级。DIP/UIM 仍由 TUBA 执行，不依赖 Elastic ingest pipeline 自动在 Kafka 路径生效。
 
@@ -68,12 +68,15 @@ Filebeat 保留原 message、编码、多行边界与来源元数据；Winlogbea
 | 来源 | 采集方案 | 接入包必须声明 |
 | --- | --- | --- |
 | Zeek 21 | 新的 TUBA 专用 Filebeat 实例采 conn/dns/http/ssl JSONL | 路径、轮转方式、dataset、字段样例、位置与原文映射 |
+| Windows 139/169 | 每台主机独立 Winlogbeat Security channel、独立 registry/queue/context/凭据 | 24 个 Event ID 白名单、XML、computer/channel/RecordID/time、log-clear 1102 与日志覆盖缺口 |
 
 Zeek 开发配置模板为 `deploy/components/zeek-filebeat.example.yml`：conn/dns/http/ssl 各运行一个独立 Filebeat 进程，分别使用 source context/Topic、精确 Kafka 写入凭据及 data/registry 目录。2026-09-27 在 21 用独立管理器 `scripts/manage_zeek_filebeat.py` 部署验证；活动日志从 `/opt/zeek/spool/zeek/<dataset>.log` 读取，最近 90 分钟的每小时 gzip 归档由同一管理器启动的 `archive-sync` 进程解压到 TUBA 私有 spool，再由 Filebeat 读取。归档先写临时文件，gzip 校验成功后原子改名，Filebeat 不会读到半个归档。该步骤是必要的：21 的 Filebeat 8.19.0 filestream 不解压 gzip，最初误将压缩字节作为日志发送，DIP 隔离了这些记录；修正后抽样确认 source Topic 中的归档行是有效 JSON，`event.original` 与 `message` 一致。管理器不调用 systemd；原有 systemd Filebeat 配置、registry 和进程保持不动。原始 Beat 包装与 JSON 行共同进入 Raw；Zeek DIP 校验可信 `event.dataset` 与原始事件。
 
 真实闭环快照：21 的四路独立 Filebeat → 248 隔离 SCRAM/ACL Kafka → source-adapter receipt/offset commit → Raw → DIP/UIM → 四个 ES domain alias 均有数据。修正后的归档消息继续由 Raw 保留；首轮压缩字节仍保留在 Raw 与 quarantine 作为故障证据。无 SNI 的 TLS、缺 query 的 DNS、缺 host 的 HTTP 依据现行 UIM 合同进入 quarantine。A03 已将每路 disk queue 定为 256 MB、解压 stage 定为 6h、Kafka 定为 24h、ES 定为 7 日；stage 过期清理已进入管理脚本，部署与故障演练归 COL-07/O05。
 
 Filebeat 的 `message_max_bytes` 会截断超过上限的行，因此模板没有设置较低的自定义值。默认读取上限、Kafka `max_message_bytes`、broker 消息上限与 adapter 的 1 MiB Raw 合同仍需统一预算并用超大行验证；当前模板不能承诺所有超大行均完整进入接入 DLQ。
+
+Windows 模板见 `deploy/components/windows-security-winlogbeat.example.yml`，Event ID 为 4624、4625、4634、4647、4648、4672、4719、4720、4722、4723、4724、4725、4726、4728、4729、4732、4733、4756、4757、4768、4769、4771、4776、1102。8.19.0 官方包已核验；139/169 的临时 24h shadow 读取均配置 `include_xml:true` 并成功产出带 XML 事件，结果只输出按 ID 的数量。当前 scope 实测 139 为 1,762 条（4719=1,728、4776=34），169 为 111 条（4776=111）。尚未启动正式 Kafka 输出：需要通过有权 `source:manage` 的 API 操作者建立每台来源登记/context/release，随后创建独立 SCRAM 写入用户和 exact Topic ACL，并更新 adapter topic allowlist。不能复用 Zeek 用户或绕过 API 身份审计。
 | Windows Security | Winlogbeat 本地读取；按范围配置 Event ID | 权限、频道、XML、bookmark、清空/覆盖缺口；WEF 必须保留原发出主机 |
 | Syslog | rsyslog/syslog-ng 网关持久落盘后 Filebeat 读取 | RFC3164/5424、framing、时区、多行、大小与设备绑定；UDP 为尽力交付，不承诺无损 |
 | JumpServer | 文件/Syslog 采集运行事件；审计 API 用连接器 | 实际版本、登录/资产访问/命令审计覆盖；录像和文件证据保存受控引用 |

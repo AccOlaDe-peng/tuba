@@ -26,6 +26,7 @@ API/ingest 请求默认由 `HTTP_REQUEST_TIMEOUT=30s` 限时，HTTP server 的�
 | `tuba_source_adapter_events_accepted_total` | Source adapter 收到服务端成功回执的事件 |
 | `tuba_source_adapter_events_rejected_total` | Source adapter 收到永久拒绝并写入本地 DLQ 的事件 |
 | `tuba_source_adapter_delivery_retries_total` | Source adapter 可重试投递次数 |
+| `tuba_source_adapter_kafka_fetch_retries_total` | Source adapter Kafka Fetch 短断重试次数 |
 | `tuba_source_adapter_dlq_write_failures_total` | Source adapter 本地 DLQ 持久化失败 |
 | `tuba_source_adapter_offset_commit_failures_total` | Source adapter 提交来源 offset 失败 |
 | `tuba_raw_indexer_indexed_total` / `tuba_raw_indexer_index_failed_total` | Raw 索引写入成功 / 失败 |

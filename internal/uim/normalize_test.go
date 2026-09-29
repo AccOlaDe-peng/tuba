@@ -196,3 +196,63 @@ func TestNormalizeZeekBeatRejectsMismatchedDatasetAndEvidence(t *testing.T) {
 		})
 	}
 }
+
+func TestNormalizeWindowsSecurityCollectorEventScope(t *testing.T) {
+	tests := []struct {
+		id, route, action string
+	}{
+		{"4624", "authentication", "logon-success"}, {"4625", "authentication", "logon-failure"},
+		{"4634", "session", "logoff"}, {"4647", "session", "logoff"},
+		{"4648", "authentication", "explicit-credentials-use"}, {"4672", "authentication", "special-privileges-assigned"},
+		{"4719", "iam", "audit-policy-change"}, {"4720", "iam", "user-create"}, {"4722", "iam", "user-enable"},
+		{"4723", "iam", "password-change"}, {"4724", "iam", "password-reset"}, {"4725", "iam", "user-disable"},
+		{"4726", "iam", "user-delete"}, {"4728", "directory", "group-member-add"},
+		{"4729", "directory", "group-member-remove"}, {"4732", "directory", "group-member-add"}, {"4733", "directory", "group-member-remove"},
+		{"4756", "directory", "group-member-add"}, {"4757", "directory", "group-member-remove"},
+		{"4768", "authentication", "credential-validation"}, {"4769", "authentication", "credential-validation"},
+		{"4771", "authentication", "kerberos-preauth-failure"}, {"4776", "authentication", "credential-validation"},
+		{"1102", "iam", "security-log-cleared"},
+	}
+	for _, test := range tests {
+		t.Run(test.id, func(t *testing.T) {
+			provider := "Microsoft-Windows-Security-Auditing"
+			if test.id == "1102" {
+				provider = "Microsoft-Windows-Eventlog"
+			}
+			payload := map[string]any{
+				"@timestamp": "2026-09-29T03:14:15.1234567Z",
+				"event":      map[string]any{"dataset": "windows.security", "original": "<Event/>"},
+				"winlog": map[string]any{
+					"provider_name": provider, "channel": "Security", "event_id": test.id,
+					"computer_name": "WIN-139", "record_id": "12345",
+					"event_data": map[string]any{"SubjectUserName": "operator", "SubjectUserSid": "S-1-5-21-1000", "TargetUserName": "target", "TargetUserSid": "S-1-5-21-2000", "Status": "0x0", "IpAddress": "192.0.2.5"},
+				},
+			}
+			body, err := json.Marshal(payload)
+			if err != nil {
+				t.Fatal(err)
+			}
+			raw, err := rawevent.New(rawevent.TrustedSource{
+				OrganizationID: "tenant_a", Namespace: "tenant_a", SourceInstanceID: "windows-139",
+				SourceContextID: "ctx_0123456789abcdef0123456789abcdef", SourceEpoch: "epoch-1",
+				VendorName: "Microsoft", VendorProduct: "windows", VendorDataset: "windows.security", ReleaseID: "windows-security-v1",
+			}, "winlog:"+test.id+":12345", body, time.Date(2026, 9, 29, 3, 14, 15, 123456700, time.UTC))
+			if err != nil {
+				t.Fatal(err)
+			}
+			event, err := Normalize(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := stringValue(object(object(event["ueba"])["route"])["domain"]); got != test.route {
+				t.Fatalf("route.domain=%q want %q", got, test.route)
+			}
+			if got := stringValue(object(event["event"])["action"]); got != test.action {
+				t.Fatalf("event.action=%q want %q", got, test.action)
+			}
+			if got := object(object(event["ueba"])["quality"])["status"]; got != "qualified" {
+				t.Fatalf("quality.status=%v", got)
+			}
+		})
+	}
+}

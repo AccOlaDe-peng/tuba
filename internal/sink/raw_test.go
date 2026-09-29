@@ -17,15 +17,23 @@ import (
 func TestPutRawMappingIncludesEveryTrustedEnvelopeField(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
-		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/tuba-v1-raw-"):
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/tuba-v1-raw-") && !strings.HasSuffix(r.URL.Path, "/_mapping"):
 			body, _ := io.ReadAll(r.Body)
-			if !strings.Contains(string(body), `"source_context_id":{"type":"keyword"}`) {
-				t.Errorf("raw mapping omits source_context_id: %s", body)
+			if !strings.Contains(string(body), `"source_context_id":{"type":"keyword"}`) || !strings.Contains(string(body), `"delivery_position":{"type":"keyword"}`) {
+				t.Errorf("raw mapping omits trusted fields: %s", body)
 			}
 			w.WriteHeader(http.StatusOK)
 		case r.Method == http.MethodPost && r.URL.Path == "/_aliases":
 			io.WriteString(w, `{"acknowledged":true}`)
 		case r.Method == http.MethodPost && r.URL.Path == "/_bulk":
+			lines := strings.Split(strings.TrimSpace(readBody(t, r)), "\n")
+			var document map[string]any
+			if err := json.Unmarshal([]byte(lines[1]), &document); err != nil {
+				t.Fatal(err)
+			}
+			if _, exists := document["delivery_position"]; exists {
+				t.Error("optional delivery_position should remain in receipt/Kafka metadata, not strict-mapped Raw ES documents")
+			}
 			io.WriteString(w, `{"items":[{"create":{"status":201}}]}`)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
@@ -35,13 +43,64 @@ func TestPutRawMappingIncludesEveryTrustedEnvelopeField(t *testing.T) {
 	defer server.Close()
 
 	event := rawevent.Envelope{
-		RawEventID:  "raw-test-id",
-		ReceivedAt:  time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC),
-		PayloadHash: "payload-hash",
-		Payload:     []byte(`{"ts":"2026-09-26T00:00:00Z"}`),
+		RawEventID:       "raw-test-id",
+		DeliveryPosition: "kafka-v1:topic:0:42",
+		ReceivedAt:       time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC),
+		PayloadHash:      "payload-hash",
+		Payload:          []byte(`{"ts":"2026-09-26T00:00:00Z"}`),
 	}
 	if err := New(server.URL, "limited", "tenant_a").PutRaw(context.Background(), event); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestPutRawDuplicateFromDifferentDeliveryOffsetKeepsStableDocumentID(t *testing.T) {
+	bulkCalls := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodPut && strings.HasPrefix(r.URL.Path, "/tuba-v1-raw-"):
+			w.WriteHeader(http.StatusOK)
+		case r.Method == http.MethodPost && r.URL.Path == "/_aliases":
+			io.WriteString(w, `{"acknowledged":true}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/_bulk":
+			bulkCalls++
+			lines := strings.Split(strings.TrimSpace(readBody(t, r)), "\n")
+			var metadata map[string]map[string]string
+			if err := json.Unmarshal([]byte(lines[0]), &metadata); err != nil {
+				t.Fatal(err)
+			}
+			if metadata["create"]["_id"] != "raw:stable-source-record" {
+				t.Errorf("Raw document ID changed across Kafka redelivery: %s", lines[0])
+			}
+			if bulkCalls == 1 {
+				io.WriteString(w, `{"items":[{"create":{"status":201}}]}`)
+			} else {
+				io.WriteString(w, `{"items":[{"create":{"status":409,"error":{"type":"version_conflict_engine_exception","reason":"document already exists"}}}]}`)
+			}
+		case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/_doc/raw:stable-source-record"):
+			io.WriteString(w, `{"_source":{"payload_hash":"same-source-payload"}}`)
+		default:
+			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
+			http.Error(w, "unexpected request", http.StatusNotFound)
+		}
+	}))
+	defer server.Close()
+
+	indexer := New(server.URL, "limited", "tenant_a")
+	event := rawevent.Envelope{
+		RawEventID: "raw:stable-source-record", SourcePosition: "filebeat-v1:2053:8926348:10118640",
+		DeliveryPosition: "kafka-v1:topic:0:42", ReceivedAt: time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC),
+		PayloadHash: "same-source-payload", Payload: []byte(`{"message":"zeek record"}`),
+	}
+	if err := indexer.PutRaw(context.Background(), event); err != nil {
+		t.Fatal(err)
+	}
+	event.DeliveryPosition = "kafka-v1:topic:0:43"
+	if err := indexer.PutRaw(context.Background(), event); err != nil {
+		t.Fatalf("same source record redelivered at a new Kafka offset should verify as idempotent: %v", err)
+	}
+	if bulkCalls != 2 {
+		t.Fatalf("bulk calls=%d, want 2", bulkCalls)
 	}
 }
 
