@@ -95,8 +95,8 @@ func Validate(e Envelope, organizationID, namespace string) error {
 	if e.RawEventID != wantID {
 		return errors.New("raw_event_id does not match source position")
 	}
-	digest := sha256.Sum256(e.Payload)
-	if e.PayloadHash != hex.EncodeToString(digest[:]) {
+	payloadHash, hashErr := CanonicalPayloadHash(e.Payload)
+	if hashErr != nil || e.PayloadHash != payloadHash {
 		return errors.New("payload_hash mismatch")
 	}
 	return nil
@@ -138,12 +138,15 @@ func New(src TrustedSource, position string, payload []byte, now time.Time) (Env
 	}
 	id := StableID(src.OrganizationID, src.SourceInstanceID, src.VendorDataset, src.SourceEpoch, position)
 	payloadCopy := append(json.RawMessage(nil), payload...)
-	hash := sha256.Sum256(payloadCopy)
+	payloadHash, hashErr := CanonicalPayloadHash(payloadCopy)
+	if hashErr != nil {
+		return Envelope{}, errors.New("payload must be a JSON object")
+	}
 	return Envelope{
 		SchemaVersion: "1.0.0", RawEventID: id, Organization: Organization{ID: src.OrganizationID}, Namespace: src.Namespace,
 		SourceInstanceID: src.SourceInstanceID, SourceContextID: src.SourceContextID, SourcePosition: position, SourceEpoch: src.SourceEpoch,
 		Vendor:     Vendor{Name: src.VendorName, Product: src.VendorProduct, Dataset: src.VendorDataset},
-		ReceivedAt: now.UTC(), ReleaseID: src.ReleaseID, PayloadHash: hex.EncodeToString(hash[:]),
+		ReceivedAt: now.UTC(), ReleaseID: src.ReleaseID, PayloadHash: payloadHash,
 		Payload: payloadCopy, Encoding: "json",
 	}, nil
 }

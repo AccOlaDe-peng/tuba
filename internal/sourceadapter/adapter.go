@@ -256,13 +256,18 @@ func (a Adapter) deliver(ctx context.Context, message kafka.Message) (permanent 
 		if err := json.Unmarshal(body, &receipt); err != nil {
 			return false, "", fmt.Errorf("decode ingest receipt: %w", err)
 		}
-		digest := sha256.Sum256(message.Value)
+		// The receipt carries the canonical hash, so the check has to recompute
+		// it the same way rather than over the raw bytes.
+		payloadHash, hashErr := rawevent.CanonicalPayloadHash(message.Value)
+		if hashErr != nil {
+			return false, "", errors.New("source event is not valid JSON")
+		}
 		contextID, ok := sourceContextFromTopic(a.Binding.Topic)
 		deliveryPosition := fmt.Sprintf("kafka-v1:%s:%d:%d", a.Binding.Topic, message.Partition, message.Offset)
 		position := rawevent.StableBeatPosition(message.Value, deliveryPosition)
 		if !ok || receipt.Status != "accepted" || receipt.ReceiptID == "" || receipt.ReceiptID != receipt.RawEventID ||
 			receipt.SourceContextID != contextID || receipt.SourcePosition != position || receipt.DeliveryPosition != deliveryPosition ||
-			receipt.PayloadHash != hex.EncodeToString(digest[:]) {
+			receipt.PayloadHash != payloadHash {
 			return false, "", errors.New("ingest receipt does not match this source context, position and payload")
 		}
 		return false, "", nil

@@ -46,6 +46,15 @@ func StableBeatPosition(payload []byte, deliveryPosition string) string {
 	if !deviceOK || !inodeOK || !offsetOK || offset < 0 || strings.ContainsAny(device+inode, ":\r\n") {
 		return deliveryPosition
 	}
+	// Prefer the file fingerprint when the collector supplies one. Device and
+	// inode are reused once a rotated file is deleted, so two unrelated files
+	// can present the same cursor and the later record is rejected as a
+	// position conflict instead of being indexed. coordinateString already
+	// rejects an empty value.
+	if fingerprint, ok := coordinateString(fileFields["fingerprint"]); ok &&
+		!strings.ContainsAny(fingerprint, ":\r\n") {
+		return fmt.Sprintf("filebeat-v2:%s:%d", fingerprint, offset)
+	}
 	return fmt.Sprintf("filebeat-v1:%s:%s:%d", device, inode, offset)
 }
 

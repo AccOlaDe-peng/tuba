@@ -23,6 +23,41 @@ processors:
       fields:
         dataset: windows.security
 
+  # Windows resolves task/opcode/keyword names, and renders the <RenderingInfo>
+  # block, from the provider's message resources. Those strings are not stable
+  # across reads of the same record: the same event rendered twice can carry
+  # "Logon" one time and "Credential Validation" the next, which changes the
+  # bytes the platform hashes for de-duplication and turns a re-read into a
+  # rejection. The raw values are already inside event.original as <Task>,
+  # <Opcode> and <Keywords>, so the derived copies are removed and the block
+  # itself is stripped, leaving the system and event data the platform maps.
+  - script:
+      lang: javascript
+      id: tuba_strip_rendering_info
+      source: >-
+        function process(event) {
+          var original = event.Get("event.original");
+          if (original === null || original === undefined) return;
+          var start = original.indexOf("<RenderingInfo");
+          if (start < 0) return;
+          var end = original.indexOf("</RenderingInfo>");
+          if (end < 0) return;
+          event.Put("event.original", original.substring(0, start) + original.substring(end + 16));
+        }
+
+  # agent.ephemeral_id is minted per process start and event.created records the
+  # moment the event was processed, so both change on every restart even though
+  # the underlying record did not.
+  - drop_fields:
+      fields:
+        - agent.ephemeral_id
+        - event.created
+        - event.action
+        - winlog.task
+        - winlog.opcode
+        - winlog.keywords
+      ignore_missing: true
+
 queue.disk:
   path: ${path.data}/diskqueue
   max_size: 256MB
@@ -30,6 +65,13 @@ queue.disk:
   read_ahead: 512
 
 winlogbeat.registry_file: ${path.data}/registry
+# The default 5s flush interval means an abrupt stop loses up to five seconds of
+# the event-log bookmark, and the next start re-reads those records. A re-read
+# carries the same source position but not the same bytes, because Windows
+# renders the localized task/opcode names inside event.original non-
+# deterministically, so the re-read is rejected as a position conflict instead
+# of being recognised as a duplicate. One second bounds how much can be re-read.
+winlogbeat.registry_flush: 1s
 setup.template.enabled: false
 setup.ilm.enabled: false
 

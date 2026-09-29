@@ -77,6 +77,13 @@ def yaml_config(dataset, context, username, password):
       - "%s"
       - "%s"
     ignore_older: 90m
+    # Track files by a hash of their own prefix instead of device+inode. A
+    # rotated log is deleted and its inode can be reused by an unrelated file,
+    # which makes two different records claim the same source position; the
+    # second is then rejected as a conflict and never indexed. The fingerprint
+    # survives inode reuse, and StableBeatPosition prefers it when present.
+    file_identity.fingerprint: ~
+    prospector.scanner.fingerprint.enabled: true
     prospector.scanner:
       check_interval: 10s
       symlinks: true
