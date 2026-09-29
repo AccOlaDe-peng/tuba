@@ -26,6 +26,18 @@ const (
 
 var contextIDPattern = regexp.MustCompile(`^ctx_[a-f0-9]{32}$`)
 var principalPattern = regexp.MustCompile(`^User:[A-Za-z0-9._-]{1,128}$`)
+var groupSuffixPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,62}$`)
+
+// adapterGroupID derives the consumer group the source adapter actually joins.
+// The adapter appends SOURCE_ADAPTER_CONSUMER_GROUP_SUFFIX to the topic-derived
+// name, so a group ACL issued for the unsuffixed name leaves the running
+// adapter unauthorized even though the topic ACLs look correct.
+func adapterGroupID(topic, suffix string) (string, error) {
+	if suffix != "" && !groupSuffixPattern.MatchString(suffix) {
+		return "", errors.New("group suffix must be a lowercase slug")
+	}
+	return sourceadapter.GroupID(topic, suffix), nil
+}
 
 type sourcePlan struct {
 	SourceContextID  string `json:"source_context_id"`
@@ -51,10 +63,14 @@ func run() error {
 	contextID := flag.String("context", "", "registered immutable source context ID")
 	sourcePrincipal := flag.String("source-principal", "", "Kafka principal for one Beat source, e.g. User:zeek-conn")
 	adapterPrincipal := flag.String("adapter-principal", "", "Kafka principal for the source adapter")
+	groupSuffix := flag.String("group-suffix", "", "consumer group suffix the adapter runs with, e.g. zeeklive20260927r2; must match its SOURCE_ADAPTER_CONSUMER_GROUP_SUFFIX")
 	apply := flag.Bool("apply", false, "create the topic and exact ACLs; default prints the plan only")
 	flag.Parse()
 	if !contextIDPattern.MatchString(*contextID) || !principalPattern.MatchString(*sourcePrincipal) || !principalPattern.MatchString(*adapterPrincipal) || *sourcePrincipal == *adapterPrincipal {
 		return errors.New("provide a canonical context ID and two distinct User:<name> Kafka principals")
+	}
+	if *groupSuffix != "" && !groupSuffixPattern.MatchString(*groupSuffix) {
+		return errors.New("group suffix must be a lowercase slug")
 	}
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -67,7 +83,7 @@ func run() error {
 		return errors.New("source registry connection unavailable")
 	}
 	defer pool.Close()
-	plan, err := loadPlan(ctx, pool, *contextID, *sourcePrincipal, *adapterPrincipal)
+	plan, err := loadPlan(ctx, pool, *contextID, *sourcePrincipal, *adapterPrincipal, *groupSuffix)
 	if err != nil {
 		return err
 	}
@@ -111,13 +127,17 @@ func run() error {
 	return nil
 }
 
-func loadPlan(ctx context.Context, pool *pgxpool.Pool, contextID, sourcePrincipal, adapterPrincipal string) (sourcePlan, error) {
+func loadPlan(ctx context.Context, pool *pgxpool.Pool, contextID, sourcePrincipal, adapterPrincipal, groupSuffix string) (sourcePlan, error) {
 	plan := sourcePlan{
 		SourceContextID: contextID, Topic: "tuba.source." + contextID + ".v1",
 		SourcePrincipal: sourcePrincipal, AdapterPrincipal: adapterPrincipal,
 		RetentionHours: 24, MaxMessageBytes: 2097152,
 	}
-	plan.GroupID = sourceadapter.GroupID(plan.Topic)
+	groupID, e := adapterGroupID(plan.Topic, groupSuffix)
+	if e != nil {
+		return sourcePlan{}, e
+	}
+	plan.GroupID = groupID
 	err := pool.QueryRow(ctx, `
 		SELECT si.id,sc.organization_slug,sc.namespace,sc.vendor_dataset
 		FROM source_contexts sc JOIN source_instances si ON si.id=sc.source_instance_id

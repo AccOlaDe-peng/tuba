@@ -27,12 +27,31 @@ EVENT_PREFIX = "tuba.collector." + NAMESPACE + ".events"
 QUARANTINE_TOPIC = "tuba.collector." + NAMESPACE + ".quarantine.v1"
 DLQ_TOPIC = "tuba.collector." + NAMESPACE + ".dlq.v1"
 ADAPTER_DLQ_TOPIC = "tuba.collector." + NAMESPACE + ".source-adapter.dlq.v1"
-CONTEXTS = (
-	"ctx_9173765dafede7b01176206fc49f70d9",
-	"ctx_df595c138c0ecac68cf9e8af95b7b881",
-	"ctx_5abc8a06f8a0088878248d4504d22a62",
-	"ctx_5fadf1a689e7900ff74af27b5674c1c5",
-)
+PSQL = os.environ.get("TUBA_PSQL", "/opt/adms/postgresql/bin/psql")
+
+
+def enabled_source_contexts(database_url):
+    """Topic bindings, read from the source registry instead of a fixed list.
+
+    The registry is the same authority ingest resolves topics against, so
+    registering a source through the API is enough to have the adapter consume
+    it. A hardcoded list here silently drops any source registered elsewhere as
+    soon as the pipeline is restarted, which is exactly the failure this
+    replaces. One instance keeps every context it has ever had, because contexts
+    are immutable and a reset mints a new one, so only the newest is live.
+    """
+    query = ("SELECT DISTINCT ON (si.id) sc.id FROM source_contexts sc "
+             "JOIN source_instances si ON si.id = sc.source_instance_id "
+             "WHERE si.enabled = true ORDER BY si.id, sc.created_at DESC")
+    result = subprocess.run([PSQL, database_url, "-Atc", query],
+                            stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            universal_newlines=True, timeout=60)
+    if result.returncode:
+        raise RuntimeError("could not read enabled source contexts: " + result.stdout.strip()[-200:])
+    contexts = [line.strip() for line in result.stdout.splitlines() if line.strip()]
+    if not contexts:
+        raise RuntimeError("source registry has no enabled source contexts")
+    return contexts
 SERVICE_ROLES = {
     "tuba-ingest": "ingest",
     "tuba-raw-indexer": "raw-indexer",
@@ -191,7 +210,8 @@ def start():
     token = secrets.token_urlsafe(48)
     config = {
         "ingest_url": "http://127.0.0.1:8080/api/v1/internal/ingest/beat-events",
-        "bindings": [{"topic": "tuba.source." + context + ".v1"} for context in CONTEXTS],
+        "bindings": [{"topic": "tuba.source." + context + ".v1"}
+                     for context in enabled_source_contexts(base["DATABASE_URL"])],
     }
     with open(CONFIG, "w") as handle:
         json.dump(config, handle, indent=2)
