@@ -2,9 +2,9 @@
 
 ## 处理边界
 
-Python worker 消费标准化认证事件 topic，按事件时间维护有界实体状态，并将版本化分析结果发布到结果 topic。Go analysis sink 校验租户、合同和结果 ID 后写入 Elasticsearch。
+Python worker 消费标准化领域事件 topic，按事件时间维护有界实体状态，并将版本化 feature、baseline、anomaly 和 risk contribution 结果发布到结果 topic。Go analysis sink 校验租户、合同、generation、revision 和结果 ID 后写入 Elasticsearch。
 
-Kafka 消费组是消费位置的第一权威。PostgreSQL 额外保存运行元数据、处理状态和处理 checkpoint，用于重启恢复、迟到数据重算和运营观测。
+PostgreSQL 的 inbox、业务状态、checkpoint 和 outbox 是业务恢复权威；Kafka committed offset 是运输水位，必须与 PG checkpoint 对账。两者不一致时从 PG checkpoint 安全重读，不自动跳到 Kafka latest。完整事务协议见 [产品详细设计基线](DESIGN-BASELINE.md)。
 
 ## 规则 Registry
 
@@ -27,7 +27,7 @@ worker 为每个 Kafka partition 保存独立的处理状态：
 - 事件时间早于当前 watermark 的输入标记为迟到数据。
 - 状态仅保留 `lookback + allowed_lateness` 内的实体事件，避免无界内存增长。
 
-普通事件只发布由当前事件触发的新结果。迟到事件会重算该用户保留窗口内的结果，并使用相同业务结果 ID 覆盖既有异常，同时将 `analysis.reprocessed` 标记为 `true`。
+普通事件只发布由当前事件触发的新结果。迟到但仍在保留边界内的事件重算同一窗口，使用相同业务结果 ID 和递增 revision 发布修订；失效结果发布 `retracted`，不原地覆盖历史。超出边界的数据只能通过受控回填进入新 generation。
 
 ## 持久化与恢复
 
@@ -40,14 +40,14 @@ Migration `00005_analysis_runtime.sql` 和 `00006_analysis_feedback_context.sql`
 | `analysis_processor_states` | 可恢复的实体窗口状态 |
 | `analysis_feedback` | 人工真阳性、误报、漏报和不确定反馈 |
 
-每条消息按以下顺序处理：
+每条消息或有界批次按以下协议处理：
 
-1. 计算分析结果。
-2. 将结果写入 Kafka 并等待 broker 确认。
-3. 保存处理状态和 checkpoint。
-4. 提交 Kafka offset。
+1. 在一个 PostgreSQL 事务内写 inbox 去重、处理状态、checkpoint 和 outbox。
+2. outbox publisher 按聚合键顺序发布结果并等待 Kafka broker 确认。
+3. 标记 outbox 已发送，再提交不早于 PG checkpoint 的 Kafka offset。
+4. 崩溃重发依赖稳定 message/result ID、revision 和 sink 幂等处理。
 
-进程在任一步骤崩溃时，重启后可能重复处理消息，但稳定结果 ID 和 Elasticsearch upsert 不会产生重复异常。若状态写在 Kafka 提交之前，重复输入也会被状态中的事件 ID 去重。
+进程在任一步骤崩溃时可能重复读取或发布，但不会跳过未提交业务状态。Elasticsearch 按业务 ID 和 revision 拒绝旧值覆盖；同 revision 不同内容进入冲突隔离。
 
 ## 回放与评估
 

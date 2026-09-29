@@ -1,15 +1,19 @@
 # 备份与灾难恢复
 
+状态：设计定版，环境目标与恢复演练待配置和验收。详细边界见 [产品详细设计基线](DESIGN-BASELINE.md)。
+
 ## 目标
 
 | 数据 | 备份 | RPO | RTO |
 | --- | --- | --- | --- |
 | PostgreSQL 控制面 | 每日全量 + WAL/PITR | 15 分钟 | 2 小时 |
 | Elasticsearch | 每日 snapshot + 定期恢复演练 | 24 小时 | 4 小时 |
-| Kafka | 多副本 + topic 保留 + 重放能力 | 由 topic 保留决定 | 2 小时 |
-| Vault 密钥 | Vault 自身 snapshot | 15 分钟 | 1 小时 |
+| Kafka | 单 broker 24h 保留，不作为备份；用 checkpoint、Raw/ES snapshot 重建 | 不单独承诺 | 不单独承诺 |
+| Keycloak | 专用 PostgreSQL 每日全量 + WAL/PITR | 15 分钟 | 2 小时 |
+| 发布包/配置/审计清单 | 每日复制到异故障域、对象版本不可覆盖 | 24 小时 | 4 小时 |
 
-实际目标需按业务批准值和受管服务 SLA 调整。
+这些是生产设计目标。当前未指定异机接收端，因此运行状态必须报告 `backup_not_configured`，不能对磁盘或整机损失承诺 RPO/RTO。
+备份目标必须是不同故障域的 S3 兼容对象存储或受控备份主机；同一根盘上的目录、卷或容器 snapshot 不构成备份。
 
 ## PostgreSQL
 
@@ -20,7 +24,8 @@
 .\scripts\restore_postgres.ps1 -BackupFile output\backups\postgres-....dump -Database tuba_restore_test
 ```
 
-生产使用 `backup.postgres.enabled=true` 创建 CronJob，并要求底层 PVC 或对象存储开启加密、版本控制和跨故障域复制。
+生产由 Launcher 管理的备份任务执行每日 base backup 和连续 WAL 归档。目标存储必须开启传输/静态加密和对象版本控制；
+凭据通过受限环境文件注入，不写入任务参数、日志或发布包。
 
 恢复顺序：
 
@@ -32,7 +37,7 @@
 
 ## Elasticsearch
 
-生产必须提前配置共享 snapshot repository，例如 S3、GCS 或受管对象存储。`backup.elasticsearch.enabled=true` 的 CronJob 只负责创建 snapshot，不负责创建存储凭据。
+生产必须提前配置异故障域 snapshot repository。Launcher 管理的备份任务只负责创建、校验和按策略清理 snapshot，不负责生成存储凭据。
 
 恢复演练必须在独立集群执行，禁止直接覆盖生产索引：
 
@@ -52,5 +57,5 @@
 - 每日自动备份并记录成功/失败指标。
 - 每月在隔离环境恢复 PostgreSQL 最新备份。
 - 每季度恢复 Elasticsearch snapshot 并重放一个 Kafka 时间窗口。
-- 每半年执行 PostgreSQL 主备切换、Keycloak 不可用和完整区域切换演练。
+- 每半年执行整机丢失恢复、Keycloak 不可用和版本升级/回滚演练；当前单节点版本不宣称主备或区域切换能力。
 - 演练报告必须包含实际 RPO、实际 RTO、缺失数据范围、修复项和责任人。

@@ -1,5 +1,7 @@
 # Zeek 输入容量观察（2026-09-27）
 
+> 本文是带日期的现场证据，其中“A03 未关闭”“Windows 范围未定”等表述只代表记录当时状态。当前设计决策以 [产品详细设计基线](DESIGN-BASELINE.md) 和 [实施 TODO](IMPLEMENTATION-TODO.md) 顶部状态覆盖说明为准。
+
 采集时间：2026-09-27 08:42–08:44（Asia/Shanghai）  
 来源：`10.6.69.21`，Zeek 日志目录 `/opt/zeek/logs` 和活动 spool `/opt/zeek/spool/zeek`。仅读取文件元数据和逐行长度/数量；没有输出日志内容。
 

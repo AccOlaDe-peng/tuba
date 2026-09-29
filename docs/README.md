@@ -6,6 +6,7 @@
 
 - [TARGET-ARCHITECTURE.md](TARGET-ARCHITECTURE.md)：单节点目标架构、组件边界、数据流、安全、存储、恢复和扩展决策。
 - [IMPLEMENTATION-TODO.md](IMPLEMENTATION-TODO.md)：按依赖排序的实现、迁移、运维和验收任务；未勾选项不代表已交付。
+- [DESIGN-BASELINE.md](DESIGN-BASELINE.md)：完整单节点范围的详细设计定版；补齐来源、质量、实体、分析、查询、部署、灾备与验收决策，不代表实现完成。
 - [COLLECTOR-DESIGN.md](COLLECTOR-DESIGN.md)：采集设计 v2：Filebeat/Winlogbeat、Syslog/API 连接器、TUBA 管理与可信适配、确认边界及旧路径迁移。
 - [采集与索引数据流图](diagrams/collector-v4.html)：来源、受管采集、来源 Kafka、可信 Raw、DIP/UIM 与 Elasticsearch 的主流程；已通过 showcase 结构和桌面视口检查。
 - [COLLECTOR-CONTROL-PLANE.md](COLLECTOR-CONTROL-PLANE.md)：远程注册、身份凭据、心跳、版本化配置、OTA 目标、Kafka 单节点/集群取舍及当前实现边界。

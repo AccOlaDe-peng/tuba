@@ -31,7 +31,7 @@ Keycloak token 必须校验签名、issuer、audience、有效期和允许算法
 - Kafka ACL 限制具体 topic 和 consumer group；Python worker不能消费 raw 凭据 topic，也不能写事件 topic。
 - ES 写入身份按索引类型隔离；API 查询身份只允许所需 data stream/index alias。普通用户不获得任何共享 ES 凭据。
 - PostgreSQL 连接必须 TLS；数据库角色分 migration、application 和只读运维用途。
-- 密钥由 Vault/部署平台注入，日志、trace、错误、DLQ 和审计记录不得包含 secret/token。
+- 密钥由受限权限的环境文件或部署平台注入；Vault 仅是后续可选实现，不是当前依赖。日志、trace、错误、DLQ 和审计记录不得包含 secret/token。
 
 ## 审计
 

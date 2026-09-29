@@ -1,6 +1,6 @@
 # TUBA 采集管理面与组件发布
 
-版本：2.0｜日期：2026-09-27｜状态：待实现；替代旧自研 Collector 管理设计
+版本：2.1｜日期：2026-09-29｜状态：设计定版、待实现；替代旧自研 Collector 管理设计
 
 数据流及可靠性合同见 [采集体系设计](COLLECTOR-DESIGN.md)。现有 API 和数据库表可复用，当前 ZIP 程序仍是旧自研采集器；Filebeat/Winlogbeat 管理客户端、来源适配服务和升级闭环尚未实现。历史见 [旧管理设计](history/COLLECTOR-CONTROL-PLANE-20260926.md)。
 

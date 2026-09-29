@@ -7,6 +7,7 @@ TUBA 是面向 Windows Security 与 Zeek 等来源的 UEBA 平台。本仓库正
 - [文档索引与权威顺序](docs/README.md)
 - [目标架构](docs/TARGET-ARCHITECTURE.md)
 - [实施 TODO 与当前代码切片](docs/IMPLEMENTATION-TODO.md)
+- [产品详细设计基线](docs/DESIGN-BASELINE.md)
 - [运行环境 248 盘点](docs/ENVIRONMENT-248-REPORT.md)
 - [Collector 设计](docs/COLLECTOR-DESIGN.md) 与 [Collector 控制面](docs/COLLECTOR-CONTROL-PLANE.md)
 - [本地开发](docs/DEVELOPMENT.md)

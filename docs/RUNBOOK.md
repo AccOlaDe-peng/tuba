@@ -1,11 +1,14 @@
 # TUBA 运维手册
 
+> 当前产品是单节点、单实例、由产品 Launcher/CLI 管理的部署。下列步骤不得使用历史 Helm/Kubernetes 操作替代。
+> 命令的确切安装路径以部署 manifest 为准；设计及恢复边界见 [产品详细设计基线](DESIGN-BASELINE.md)。
+
 ## 通用排障顺序
 
 1. 确认影响范围：接入、索引、分析、API、身份或前端。
-2. 查看 Grafana 的请求率、错误率、Kafka lag、watermark 和 ES bulk 指标。
-3. 使用 `kubectl get pod -n tuba` 和 `kubectl describe pod` 检查探针、重启和调度。
-4. 用 `kubectl logs deployment/<name> -n tuba --since=30m` 读取结构化日志。
+2. 查看 Grafana 的请求率、错误率、Kafka lag、watermark、磁盘水位和 ES bulk 指标。
+3. 使用 `tuba-launcher status -manifest <manifest>` 检查组件状态，再访问各组件 loopback readiness；不得只以 PID 存在判定健康。
+4. 从 Launcher 配置的私有轮转日志目录读取结构化日志；操作前核对目录权限和剩余空间。
 5. 任何处置都记录开始时间、影响租户、命令、结果和后续任务。
 
 ## TubaKafkaLag
@@ -13,9 +16,9 @@
 症状：`kafka_consumergroup_lag` 持续超过 10000。
 
 1. 确认 Lag 属于 `tuba-raw-indexer-*`、`tuba-standard-indexer-*`、`tuba-quarantine-indexer-*`、`tuba-analysis-*` 还是 `tuba-analysis-sink-*`。
-2. 检查对应 Pod CPU、内存、重启和 HPA 当前副本。
-3. 若 ES 正常，扩容消费者或临时提高 HPA 上限。
-4. 若 ES 出现 `429`、bulk 拒绝或高延迟，先保护 ES，不要继续无限扩容。
+2. 检查对应 Launcher 组件的 CPU、内存、重启次数、readiness 和最近错误。
+3. 当前单实例版本不通过临时增加消费者处理故障；若 ES 正常，先确认组件存活、凭据、offset、批量预算和限流状态。
+4. 若 ES 出现 `429`、bulk 拒绝或高延迟，先保护 ES，不要扩大读取批量。
 5. Lag 下降且 watermark 恢复后关闭事件。
 
 ## TubaIndexerFailures
@@ -67,7 +70,7 @@
 
 ## 发布回滚
 
-1. 若新版本健康探针失败，`helm upgrade --atomic` 通常会自动回滚。
-2. 手动回滚执行 `helm rollback tuba <revision> --namespace tuba --wait`。
-3. 检查 API、ingest、indexer、analysis worker 和分析 sink。
-4. 数据库只做前向兼容回滚，禁止直接执行不确定的破坏性 SQL。
+1. Agent/安装器先验签并将新版本安装到独立版本目录，停止旧组件后原子切换 `current`。
+2. readiness 在 5 分钟观察窗内失败时，回切上一版本目录；registry/data 目录不得随二进制回滚。
+3. 检查 API、ingest、adapter、normalizer、全部 indexer、control/analysis worker 和 analysis sink，并核对 lag 与新鲜度。
+4. 数据库采用 expand/migrate/contract，只做前向兼容恢复，禁止直接执行不确定的破坏性 SQL。

@@ -1,8 +1,10 @@
 # TUBA 采集体系设计
 
-版本：2.0｜日期：2026-09-27｜状态：用户已确认的待实现基线
+版本：2.1｜日期：2026-09-29｜状态：设计定版，待实现与验收
 
 本方案替代从零开发文件与 Windows Event Log 采集器的路线。Collector 是 TUBA 管理下的采集体系总称，不再表示一个自研程序读取所有来源。现有代码尚未完成此替换。任务以 [实施 TODO](IMPLEMENTATION-TODO.md) 的 COL-01–COL-15 为准；[旧设计及验收记录](history/COLLECTOR-DESIGN-20260926.md) 保留作迁移依据。
+
+来源生命周期、Windows Event ID、质量、过滤、Agent 安全、升级和恢复的最终细则见 [产品详细设计基线](DESIGN-BASELINE.md)。
 
 数据流图：[采集与索引数据流](diagrams/collector-v4.html)。图通过 showcase 结构校验及 1440×900、1600×1000、1920×1080、2048×1320 自动浏览器视口检查；旧版 [collector.html](diagrams/collector.html) 只作历史记录。
 

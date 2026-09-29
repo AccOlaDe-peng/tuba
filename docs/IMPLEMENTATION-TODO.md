@@ -6,6 +6,8 @@
 
 状态覆盖说明：A03 已于 2026-09-28 定版并关闭。下方较早验收记录中“待 A03”“A03 未定”或旧 7d/14d Kafka 目标仅保留当时背景，不再表示当前状态；当前权威边界是 Kafka 24h、ES 7 日、Zeek 四类来源以及根盘 70/75/80% 水位。
 
+设计状态说明（2026-09-29）：完整单节点范围内此前开放的产品设计选择已在 [产品详细设计基线](DESIGN-BASELINE.md) 定版，包括 Windows Security 范围、UIM 质量边界、来源生命周期、过滤、任务一致性、实体归因、特征/基线/风险、SPL、导出、管理界面、生产传输、备份恢复、回放切换与验收证据。下列未勾选项继续表示代码、迁移、部署或实际验收未完成；不得因设计定版而勾选。备份接收端、证书 CA、告警 receiver 等是环境配置输入，缺失时必须 fail closed，不再作为设计开放问题。
+
 ## 当前代码切片（未等同于阶段验收）
 
 - Raw：`internal/rawevent`、`internal/ingest`、`internal/rawindexer` 和 `internal/sink/raw.go` 已有可信单事件 envelope、PostgreSQL receipt、Kafka 确认后 202、按 UTC 接收日写 Raw ES。
