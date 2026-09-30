@@ -109,13 +109,28 @@ func run() error {
 		if !validGroupSuffix(groupSuffix) {
 			return errors.New("SOURCE_ADAPTER_CONSUMER_GROUP_SUFFIX must contain only letters, numbers, underscore or hyphen")
 		}
-		reader := kafka.NewReader(kafka.ReaderConfig{
-			Dialer: dialer, Brokers: brokers, Topic: binding.Topic,
-			GroupID:        sourceadapter.GroupID(binding.Topic, groupSuffix),
-			CommitInterval: 0, StartOffset: kafka.FirstOffset, MinBytes: 1, MaxBytes: 2 << 20,
-		})
+		newReader := func() *kafka.Reader {
+			return kafka.NewReader(kafka.ReaderConfig{
+				Dialer: dialer, Brokers: brokers, Topic: binding.Topic,
+				GroupID:        sourceadapter.GroupID(binding.Topic, groupSuffix),
+				CommitInterval: 0, StartOffset: kafka.FirstOffset, MinBytes: 1, MaxBytes: 2 << 20,
+			})
+		}
+		reader := newReader()
 		readers = append(readers, reader)
-		adapter := sourceadapter.Adapter{Binding: binding, IngestURL: cfg.IngestURL, AdapterToken: adapterToken, Consumer: reader, DeadLetter: dlq, HTTPClient: client, Metrics: metrics}
+		adapter := sourceadapter.Adapter{
+			Binding: binding, IngestURL: cfg.IngestURL, AdapterToken: adapterToken,
+			Consumer: reader, DeadLetter: dlq, HTTPClient: client, Metrics: metrics,
+			Probe: sourceadapter.TopicProber{
+				Topic:          binding.Topic,
+				ReadPartitions: kafkaPartitionsFunc(dialer, brokers),
+			},
+			NewConsumer: func(context.Context) (sourceadapter.Consumer, error) {
+				fresh := newReader()
+				log.Printf("source adapter topic=%s re-creating Kafka reader after topic deletion", binding.Topic)
+				return fresh, nil
+			},
+		}
 		go func(topic string, worker sourceadapter.Adapter) {
 			log.Printf("source adapter consuming topic=%s", topic)
 			errCh <- worker.Run(ctx)
@@ -145,6 +160,32 @@ func run() error {
 			return err
 		}
 		return nil
+	}
+}
+
+// kafkaPartitionsFunc reads partition metadata for a topic, trying each broker
+// until one answers. A definitive UnknownTopicOrPartition stops the loop early
+// because that answer, not reachability, is what the prober acts on.
+func kafkaPartitionsFunc(dialer *kafka.Dialer, brokers []string) func(context.Context, string) ([]kafka.Partition, error) {
+	return func(ctx context.Context, topic string) ([]kafka.Partition, error) {
+		var lastErr error
+		for _, broker := range brokers {
+			conn, err := dialer.DialContext(ctx, "tcp", broker)
+			if err != nil {
+				lastErr = err
+				continue
+			}
+			partitions, err := conn.ReadPartitions(topic)
+			_ = conn.Close()
+			if err == nil {
+				return partitions, nil
+			}
+			lastErr = err
+			if errors.Is(err, kafka.UnknownTopicOrPartition) {
+				return nil, err
+			}
+		}
+		return nil, lastErr
 	}
 }
 

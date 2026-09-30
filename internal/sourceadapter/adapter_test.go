@@ -111,7 +111,7 @@ func TestProcessUntilCommittedQuarantinesIngestRejectedEvent(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	_ = adapter.processUntilCommitted(ctx, message)
+	_ = adapter.processUntilCommitted(ctx, consumer, message)
 
 	if calls != 1 {
 		t.Fatalf("ingest calls=%d, want 1: a permanent rejection must not be retried", calls)
@@ -149,7 +149,7 @@ func TestProcessUntilCommittedQuarantinesARevokedSource(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	_ = adapter.processUntilCommitted(ctx, message)
+	_ = adapter.processUntilCommitted(ctx, consumer, message)
 
 	if calls != 1 {
 		t.Fatalf("ingest calls=%d, want 1: a revoked source must not be retried", calls)
@@ -183,7 +183,7 @@ func TestProcessUntilCommittedRetriesIngestServerError(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	_ = adapter.processUntilCommitted(ctx, message)
+	_ = adapter.processUntilCommitted(ctx, consumer, message)
 
 	if calls < 2 {
 		t.Fatalf("ingest calls=%d, want repeated retries for a 5xx", calls)

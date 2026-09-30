@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -42,6 +43,39 @@ type Writer interface {
 	WriteMessages(context.Context, ...kafka.Message) error
 }
 
+// Prober reports whether the binding's source topic definitively does not
+// exist in the broker metadata. It must return nil unless a broker answered
+// UnknownTopicOrPartition — reachability problems are not proof of deletion
+// and swapping the consumer cannot fix them.
+type Prober interface {
+	Probe(ctx context.Context) error
+}
+
+// TopicProber confirms a source topic was deleted by asking the broker
+// metadata. It reports an error only on a definitive UnknownTopicOrPartition
+// answer; reachability problems return nil because replacing the consumer
+// cannot fix them and must not be triggered by a transient broker hiccup.
+type TopicProber struct {
+	Topic          string
+	ReadPartitions func(ctx context.Context, topic string) ([]kafka.Partition, error)
+}
+
+func (p TopicProber) Probe(ctx context.Context) error {
+	if p.ReadPartitions == nil {
+		return nil
+	}
+	_, err := p.ReadPartitions(ctx, p.Topic)
+	if errors.Is(err, kafka.UnknownTopicOrPartition) {
+		return err
+	}
+	return nil
+}
+
+// ConsumerFactory builds a fresh consumer for the same binding. The adapter
+// uses it to replace a consumer whose topic was deleted underneath it, which
+// mirrors the process-restart recovery path without a restart.
+type ConsumerFactory func(ctx context.Context) (Consumer, error)
+
 type Adapter struct {
 	Binding      Binding
 	IngestURL    string
@@ -51,6 +85,15 @@ type Adapter struct {
 	HTTPClient   *http.Client
 	RetryBackoff time.Duration
 	Metrics      *telemetry.Registry
+	// Probe, NewConsumer and the stall knobs detect and recover from the
+	// kafka-go reader going permanently silent after its topic is deleted:
+	// FetchMessage then returns neither a message nor an error, so nothing
+	// retries, logs or reconnects until the process is restarted.
+	Probe            Prober
+	NewConsumer      ConsumerFactory
+	StallWatchdog    time.Duration
+	StallLogInterval time.Duration
+	Logf             func(format string, args ...any)
 }
 
 func (c Config) Validate() error {
@@ -87,19 +130,33 @@ func (a Adapter) Run(ctx context.Context) error {
 	if a.RetryBackoff <= 0 {
 		a.RetryBackoff = 200 * time.Millisecond
 	}
+	if a.StallWatchdog <= 0 {
+		a.StallWatchdog = time.Minute
+	}
+	if a.StallLogInterval <= 0 {
+		a.StallLogInterval = time.Minute
+	}
+	if a.Logf == nil {
+		a.Logf = log.Printf
+	}
+	consumer := a.Consumer
 	for ctx.Err() == nil {
-		message, err := a.fetchUntilAvailable(ctx)
+		message, current, err := a.fetchUntilAvailable(ctx, consumer)
 		if err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
 			return err
 		}
+		// The consumer may have been replaced while recovering from a deleted
+		// topic; the offset has to be committed through the reader that fetched
+		// the message, because kafka-go ties commit state to the reader.
+		consumer = current
 		a.inc("tuba_source_adapter_events_fetched_total")
 		if message.Topic != "" && message.Topic != a.Binding.Topic {
 			return errors.New("consumer returned a message outside its source topic binding")
 		}
-		if err := a.processUntilCommitted(ctx, message); err != nil {
+		if err := a.processUntilCommitted(ctx, consumer, message); err != nil {
 			if ctx.Err() != nil {
 				return nil
 			}
@@ -109,7 +166,7 @@ func (a Adapter) Run(ctx context.Context) error {
 	return nil
 }
 
-func (a Adapter) processUntilCommitted(ctx context.Context, message kafka.Message) error {
+func (a Adapter) processUntilCommitted(ctx context.Context, consumer Consumer, message kafka.Message) error {
 	for attempt := 1; ctx.Err() == nil; attempt++ {
 		permanent, code, err := a.deliver(ctx, message)
 		if err == nil {
@@ -124,7 +181,7 @@ func (a Adapter) processUntilCommitted(ctx context.Context, message kafka.Messag
 				}
 				a.inc("tuba_source_adapter_dlq_written_total")
 			}
-			if commitErr := a.commitUntilSuccessful(ctx, message); commitErr != nil {
+			if commitErr := a.commitUntilSuccessful(ctx, consumer, message); commitErr != nil {
 				return commitErr
 			}
 			a.inc("tuba_source_adapter_offsets_committed_total")
@@ -147,29 +204,163 @@ func (a Adapter) processUntilCommitted(ctx context.Context, message kafka.Messag
 	return ctx.Err()
 }
 
-func (a Adapter) fetchUntilAvailable(ctx context.Context) (kafka.Message, error) {
-	delay := a.RetryBackoff
-	for ctx.Err() == nil {
-		message, err := a.Consumer.FetchMessage(ctx)
-		if err == nil {
-			return message, nil
-		}
-		if ctx.Err() != nil {
-			return kafka.Message{}, ctx.Err()
-		}
-		a.inc("tuba_source_adapter_kafka_fetch_retries_total")
-		if err := waitRetry(ctx, delay); err != nil {
-			return kafka.Message{}, err
-		}
-		delay = nextRetryDelay(delay)
-	}
-	return kafka.Message{}, ctx.Err()
+type fetchResult struct {
+	message kafka.Message
+	err     error
 }
 
-func (a Adapter) commitUntilSuccessful(ctx context.Context, message kafka.Message) error {
+// fetchAsync runs a blocking FetchMessage in the background so the caller can
+// also watch the clock: after a topic deletion kafka-go can block here forever
+// without ever returning an error, and a plain retry loop around FetchMessage
+// never gets a chance to notice.
+func fetchAsync(ctx context.Context, consumer Consumer) <-chan fetchResult {
+	result := make(chan fetchResult, 1)
+	go func() {
+		message, err := consumer.FetchMessage(ctx)
+		result <- fetchResult{message: message, err: err}
+	}()
+	return result
+}
+
+type stallTracker struct {
+	active  bool
+	since   time.Time
+	lastLog time.Time
+}
+
+// fetchUntilAvailable waits for the next message and recovers from a deleted
+// source topic at runtime. A deleted topic shows up in two shapes: fetch
+// errors (UnknownTopicOrPartition) or a fetch that returns nothing at all.
+// The watchdog catches the silent shape, the probe confirms the topic is
+// really gone (an idle topic must not trigger anything), and the consumer is
+// then closed and only re-created once the probe sees the topic again — a
+// reader that joins the group while the topic is absent gets a zero-partition
+// assignment that nothing rebalances, so the replacement has to wait for the
+// recreate, after which it starts at FirstOffset like a process restart.
+func (a Adapter) fetchUntilAvailable(ctx context.Context, consumer Consumer) (kafka.Message, Consumer, error) {
+	delay := a.RetryBackoff
+	awaitingReturn := false
+	var stall stallTracker
+	result := fetchAsync(ctx, consumer)
+	watchdog := time.NewTimer(a.StallWatchdog)
+	defer watchdog.Stop()
+	for ctx.Err() == nil {
+		select {
+		case <-ctx.Done():
+			return kafka.Message{}, nil, ctx.Err()
+		case res := <-result:
+			if res.err == nil {
+				if stall.active {
+					a.logf("source adapter topic=%s consumption recovered after %s stalled", a.Binding.Topic, time.Since(stall.since).Round(time.Second))
+				}
+				return res.message, consumer, nil
+			}
+			if ctx.Err() != nil {
+				return kafka.Message{}, nil, ctx.Err()
+			}
+			a.inc("tuba_source_adapter_kafka_fetch_retries_total")
+			a.noteStall(&stall, fmt.Sprintf("fetch error: %v", res.err))
+			if errors.Is(res.err, kafka.UnknownTopicOrPartition) {
+				a.dropMissingTopicConsumer(consumer, &awaitingReturn)
+			}
+			if err := waitRetry(ctx, delay); err != nil {
+				return kafka.Message{}, nil, err
+			}
+			delay = nextRetryDelay(delay)
+			if awaitingReturn {
+				result = nil
+			} else {
+				result = fetchAsync(ctx, consumer)
+			}
+			resetTimer(watchdog, a.StallWatchdog)
+		case <-watchdog.C:
+			if a.Probe != nil {
+				probeCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+				probeErr := a.Probe.Probe(probeCtx)
+				cancel()
+				if probeErr != nil {
+					a.inc("tuba_source_adapter_topic_missing_events_total")
+					a.noteStall(&stall, fmt.Sprintf("topic does not exist in broker metadata: %v", probeErr))
+					a.dropMissingTopicConsumer(consumer, &awaitingReturn)
+				} else if awaitingReturn {
+					if next, ok := a.recreateConsumer(ctx, &stall); ok {
+						consumer = next
+						awaitingReturn = false
+						result = fetchAsync(ctx, consumer)
+					}
+				}
+			}
+			watchdog.Reset(a.StallWatchdog)
+		}
+	}
+	return kafka.Message{}, nil, ctx.Err()
+}
+
+// dropMissingTopicConsumer closes the reader whose topic was deleted so its
+// blocked FetchMessage returns, once per stall. No fetch runs while the topic
+// is missing; the watchdog keeps probing the metadata instead.
+func (a Adapter) dropMissingTopicConsumer(consumer Consumer, awaitingReturn *bool) {
+	if *awaitingReturn {
+		return
+	}
+	if closer, ok := consumer.(io.Closer); ok {
+		_ = closer.Close()
+	}
+	*awaitingReturn = true
+	a.logf("source adapter topic=%s consumer closed; probing broker metadata until the topic is recreated", a.Binding.Topic)
+}
+
+// recreateConsumer builds the replacement reader once the topic exists again.
+// Because KRaft deleted the group's committed offsets together with the topic,
+// the fresh reader starts at FirstOffset exactly like a restarted process.
+func (a Adapter) recreateConsumer(ctx context.Context, stall *stallTracker) (Consumer, bool) {
+	if a.NewConsumer == nil {
+		return nil, false
+	}
+	fresh, err := a.NewConsumer(ctx)
+	if err != nil {
+		a.logf("source adapter topic=%s cannot replace stalled consumer: %v", a.Binding.Topic, err)
+		return nil, false
+	}
+	a.inc("tuba_source_adapter_consumer_replacements_total")
+	a.logf("source adapter topic=%s topic is back; consumer replaced after %s stalled, resuming at FirstOffset", a.Binding.Topic, time.Since(stall.since).Round(time.Second))
+	return fresh, true
+}
+
+func (a Adapter) noteStall(stall *stallTracker, reason string) {
+	now := time.Now()
+	if !stall.active {
+		stall.active, stall.since, stall.lastLog = true, now, now
+		a.inc("tuba_source_adapter_stall_events_total")
+		a.logf("source adapter topic=%s consumption stalled: %s", a.Binding.Topic, reason)
+		return
+	}
+	if now.Sub(stall.lastLog) >= a.StallLogInterval {
+		stall.lastLog = now
+		a.logf("source adapter topic=%s consumption stalled: %s, waiting %s", a.Binding.Topic, reason, now.Sub(stall.since).Round(time.Second))
+	}
+}
+
+func resetTimer(timer *time.Timer, delay time.Duration) {
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+	timer.Reset(delay)
+}
+
+func (a Adapter) logf(format string, args ...any) {
+	if a.Logf != nil {
+		a.Logf(format, args...)
+	}
+}
+
+func (a Adapter) commitUntilSuccessful(ctx context.Context, consumer Consumer, message kafka.Message) error {
 	delay := a.RetryBackoff
 	for ctx.Err() == nil {
-		if err := a.Consumer.CommitMessages(ctx, message); err == nil {
+		if err := consumer.CommitMessages(ctx, message); err == nil {
 			return nil
 		}
 		a.inc("tuba_source_adapter_offset_commit_failures_total")
