@@ -209,9 +209,15 @@ func (s Server) ingestBeat(w http.ResponseWriter, r *http.Request) {
 		// until retention deletes it.
 		http.Error(w, "source has been revoked", http.StatusForbidden)
 		return
+	case errors.Is(err, ErrSourcePaused):
+		// Same retryable status as an unknown topic, but not the same message. The
+		// topic *is* bound — telling the operator it is "not currently bound" when
+		// an operator has deliberately paused it sends them looking for a binding
+		// problem that does not exist.
+		http.Error(w, "source is paused", http.StatusServiceUnavailable)
+		return
 	case err != nil:
-		// Unknown or paused. An unknown topic may simply be mid-registration, and
-		// a paused one is expected to resume, so both keep the offset.
+		// Unknown. The topic may simply be mid-registration, so the offset is kept.
 		http.Error(w, "source topic is not currently bound to an active source", http.StatusServiceUnavailable)
 		return
 	}

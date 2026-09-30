@@ -124,7 +124,7 @@
   - **2026-09-30 按用户决定实施（取「分开两种认识状态」的方向）**：`403` 现在是真的了。来源生命周期由布尔 `enabled` 改为三态 `active`/`paused`/`revoked`（迁移 `00014_source_lifecycle_state.sql`；`enabled` 保留并由 CHECK 约束与 `state` 保持一致，使旧二进制仍可运行且二者不会漂移）；resolver 不再在 SQL 里过滤状态，而是**读出来分类**（`ErrSourceRevoked` / `ErrSourcePaused` / `ErrSourceUnauthorized`）；ingest 两条路由把撤销映射为 **403**、暂停与未知映射为 503（未知在可信路由上仍是 401）；adapter 的 `permanentIngestRejection` **把 403 移出可重试类**，改为隔离并提交。
     理由与实证：撤销是确定性拒绝，重试不会改变答案，扣住 offset 只会把记录交给 topic 保留期且不留被拒证据——2026-09-30 采集端那个 ACL 被撤销的实例重试三天、49,144 条授权错误即同一形态。`paused` 与 `revoked` 的区分正是为此：前者保留 offset，后者隔离并前进。
     三条新测试均做**变异验证**：把 403 放回可重试类 → adapter 报 `ingest calls=9, want 1`；把两处 403 改成 503 → ingest 报 `want 403`。`go test ./...` 26 包 ok、0 FAIL，`go vet ./...` 干净。
-    **尚未部署**：迁移会改线上库 schema，且按滚动部署约束 ingest 与 adapter 必须同批上线（403 若只有一侧生效，行为会介于新旧之间），等待用户窗口。
+    **已于 2026-09-30 上线到 248**（用户说明 248 是开发服务器、可直连、可直接停），现场验收见下节。
   - 就绪与可靠性两项其实已有证据：`TestReadinessTracksDependencyRecovery` 覆盖依赖断开/恢复的 200→503→200；可靠性验收由 COL-07/V02 非破坏性子集四项覆盖。
 - [ ] I03（G/O）按 [COLLECTOR-DESIGN.md](COLLECTOR-DESIGN.md) 交付 Filebeat/Winlogbeat＋TUBA 管理和可信适配链路；按 COL-01–COL-15 的对应来源和迁移任务验收，不以设计文档代替实现。
 - [ ] I04（G/D）实现 Raw 索引分支、原文 hash、按固定采集日期写入、访问控制和归档就绪状态。
@@ -506,6 +506,30 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 修复只重启了 `archive-sync`，四个采集器的 pid 全部不变（正好用上新部署的单数据集启停）。
 
 **一处运维要点**：`archive-sync` 是长驻进程，**替换管理器文件不会影响正在运行的它**——清理逻辑的变更必须重启 `archive-sync` 才生效。这一条已写入 RUNBOOK。
+
+### 2026-09-30 来源生命周期三态上线（248），并纠正迁移状态不受管的问题
+
+**上线内容**：迁移 `00014` + 新 `tuba-api` / `tuba-ingest` / `tuba-source-adapter`（ingest 与 adapter 按滚动部署约束同批重启）。
+
+**现场验收（真实环境，非 mock）**：
+
+| 场景 | 结果 |
+| --- | --- |
+| 被撤销来源的 topic 投递 | **HTTP 403** `source has been revoked` |
+| 临时改为 `paused` 的同一来源 | **HTTP 503** `source is paused` |
+| 不存在的 context | **HTTP 503** `source topic is not currently bound to an active source` |
+| 活跃来源的 topic | **HTTP 202 accepted**（无回归） |
+
+回填结果：6 条 `active` / 4 条 `revoked`，被标为 revoked 的正是那四个退役的 Zeek r1 来源（conn/dns/http/ssl）。一致性约束的**拒绝能力也现场验证过**：写 `enabled=false` 而 `state='active'` 直接报 `violates check constraint source_instances_enabled_matches_state`。上线后 20 秒采样：adapter `fetched` +60、raw 文档 +273、7 个组件存活、ES green、`rejected`/`dlq` 计数归零且无增长。
+
+**过程中发现并纠正的一件事：248 的迁移状态此前不受管。**
+
+- **没有任何迁移台账**（`public.tuba_schema_migrations` 不存在），主机上的 `migrations/` 目录**只到 00006**，而线上 schema 里 00007–00013 的表全都在——说明那七个迁移是从别处手工执行的，主机既没有台账也没有脚本。
+- 这是个陷阱：直接跑仓库的迁移工具会从 00001 重放，撞上已存在的对象。
+- 处理方式不是继续手工 psql，而是把它做成受管状态：**逐条核实**每个迁移创建的对象是否真的存在（00001–00006 在主机文件上核、00007–00013 用仓库文件核，合计 33 张表逐一确认）→ 用**主机上的实际字节**算出 00001–00013 的校验和补进台账 → 把脚本放到正确层级（`scripts/` 下，因为 `root="$(dirname $0)/.."`）→ 用工具应用 00014，输出逐条 `Skipping already applied` + `Migration state verified: 00014`。
+- 另发现两处与设计不符、已记录待决：**运行时角色 `tuba` 是 schema owner，可以 DDL**（README 要求"应用账号只有 DML、迁移用独立 DDL 身份"，248 上从未实现）；`/opt/tuba/bin/` 堆着陈旧与重复制品（9/25 的 `tuba-ingest` 与在用那份 md5 不同、多个 `tuba-api.bak-*`），且 `run/` 里 ingest/indexer/analysis-sink 的 pidfile 是死的——**此时跑 `start.sh` 会把旧二进制拉起来**。
+
+**同时实测确认了 O01 的两条不成立**（此前只能推断）：所有 TUBA 组件**以 root 运行**；启动方式是 `start.sh` 的 `nohup` 加 Python 监督脚本，**没有任何 systemd 单元、也没有 `tuba-launcher` 在跑**。
 
 ## 后续多节点（P2；本轮不要求实施）
 
