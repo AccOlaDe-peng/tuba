@@ -451,6 +451,33 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 
 **代价（已量化，未处理）**：归档数据在 source topic 里翻倍。按 ssl 每小时约 770 条、四个数据集计，每小时约 3,200 条额外消息；下游去重能吸收，但 adapter、ingest、receipt 都要多处理一遍。不是正确性问题，在当前量级下也不是容量问题，属**可优化的浪费**。要消除需确认 Filebeat 的 registry 是否按 path+fingerprint 双键记账——若 archive 副本出现时能命中同一 fingerprint 而不重新收割，即可省掉这一次整份重发。
 
+### 2026-09-30 COL-07/V02 非破坏性子集（4/4）：归档 spool 回放与确认水位 —— 通过，并修掉两个缺陷
+
+**要验的不变量**：归档 stage **只在 Filebeat 证明读到 EOF 之后**才回收；不得仅凭"文件超过 N 小时"删除未确认输入。
+
+**核对方法**：把 ssl 的 stage 文件年龄与合并后 registry 的游标逐条对列，而不是只看汇总计数。
+
+**闸门本身是正确的**：目录里的 6 个 `.log`（08:00–14:00）年龄 0.4–5.4 小时、**未到 6 小时阈值**，而其注册表游标**全部 `offset == size`**（已完整读完）。即"未过期不动、过期且确认才回收"，行为符合设计。既有 6 个单元测试也逐条覆盖该不变量（仅有年龄不得删除、游标未到 EOF 必须保留、未被跟踪必须保留、registry 不可读时 fail closed、解压中途磁盘满保留源文件），全部通过。
+
+**核对中发现并修复的两个真缺陷**
+
+1. **http 的 registry 从未写过快照，导致它的归档 stage 永远无法被确认、永不回收。** conn/dns/ssl 的 registry 目录都有 `<txid>.json` + `active.dat`，**http 只有 `log.json`**。对比退出日志：ssl 有 `Loading data file ... succeeded`，http 没有这一行——Filebeat 自己就是靠事务日志加载的。而 `_read_stable_registry` 硬要求 `active.dat`，对 http 抛 `RuntimeError`，于是 `archive-status` 里 http 恒为 `acknowledged_files: 0`，18–36 个 stage 长期滞留（14.5 MB，按约 10 MB/天增长，**无界**）。**修法有原则依据**：`active.dat` **不存在**时按"空快照 + 只读事务日志"处理（事务日志记录的是完整状态，Filebeat 自身就这么加载）；`active.dat` **存在但读不了**仍 fail closed——那才是真正的不一致信号。修复后 http registry 由"不可读"变为可读 25 条。
+2. **`.source.json` 标记永不被回收，并污染状态输出。** `archive_status` 统计目录下**所有**文件，而标记永远不会"被确认"（注册表跟踪的是 `.log`），于是每个数据集恒报 `acknowledged_files: 0` 与一个永不下降的 pending——运维会把这条读成"闸门坏了"，而它其实只是把标记算进去了。stage 回收时标记也被留下成为孤儿。修复：状态只统计 `.log` stage；回收 stage 时一并删除其标记；标记的 stage 已不存在时按残留清除。
+
+**部署后现场验证**：
+
+| 指标 | 修复前 | 修复后 |
+| --- | --- | --- |
+| 孤儿标记 | 96 | **24**（清除 72，日志逐条 `removed orphaned archive marker`） |
+| stage `.log` | 42 | **24** |
+| 私有 spool 体积 | 49 MB | **34 MB** |
+| `archive-status` | http 恒 0 确认、pending 不降 | 四路均 `expired=0 / pending=0` |
+| http registry | 不可读 | **可读 25 条** |
+
+修复只重启了 `archive-sync`，四个采集器的 pid 全部不变（正好用上新部署的单数据集启停）。
+
+**一处运维要点**：`archive-sync` 是长驻进程，**替换管理器文件不会影响正在运行的它**——清理逻辑的变更必须重启 `archive-sync` 才生效。这一条已写入 RUNBOOK。
+
 ## 后续多节点（P2；本轮不要求实施）
 
 - [ ] X01 Kafka 多 broker/控制器、Topic 副本/ISR、分区迁移与故障演练。

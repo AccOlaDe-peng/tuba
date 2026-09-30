@@ -171,6 +171,115 @@ class ArchiveStageTests(unittest.TestCase):
         self.assertFalse(os.path.exists(destination + ".partial"))
 
 
+class RegistryWithoutSnapshotTests(ArchiveStageTests):
+    """A registry that has never written a snapshot must still be readable.
+
+    The http input has been in exactly that state since 2026-09-27: Filebeat
+    loads it from the transaction log alone, and it never wrote active.dat. The
+    manager required active.dat, so every http archive stage stayed permanently
+    unacknowledgeable and could never be reclaimed.
+    """
+
+    def test_transaction_log_alone_proves_eof(self):
+        now = 1_790_000_000
+        data_root = os.path.join(self.temp.name, "data")
+        body = b"one\ntwo\n"
+        stage = os.path.join(self.stage_root, "http", "http.09-10.log")
+        os.makedirs(os.path.dirname(stage))
+        with open(stage, "wb") as handle:
+            handle.write(body)
+        old = now - MANAGER.ARCHIVE_STAGE_RETENTION_SECONDS - 10
+        os.utime(stage, (old, old))
+
+        for dataset in MANAGER.CONTEXTS:
+            registry = os.path.join(data_root, dataset, MANAGER.REGISTRY_ROOT_NAME)
+            os.makedirs(registry)
+            with open(os.path.join(registry, "log.json"), "w") as handle:
+                if dataset == "http":
+                    handle.write(json.dumps({"op": "set", "id": 7}) + "\n")
+                    handle.write(json.dumps({"k": "http-stage", "v": {
+                        "meta": {"source": stage}, "cursor": {"offset": len(body)}}}) + "\n")
+
+        acknowledged = MANAGER.acknowledged_archive_stages(data_root, self.stage_root, now)
+        self.assertEqual(acknowledged, {os.path.realpath(stage)},
+                         "a registry with no snapshot must still be able to prove EOF")
+
+    def test_transaction_log_alone_still_refuses_a_partial_cursor(self):
+        now = 1_790_000_000
+        data_root = os.path.join(self.temp.name, "data")
+        body = b"one\ntwo\n"
+        stage = os.path.join(self.stage_root, "http", "http.09-10.log")
+        os.makedirs(os.path.dirname(stage))
+        with open(stage, "wb") as handle:
+            handle.write(body)
+        old = now - MANAGER.ARCHIVE_STAGE_RETENTION_SECONDS - 10
+        os.utime(stage, (old, old))
+
+        for dataset in MANAGER.CONTEXTS:
+            registry = os.path.join(data_root, dataset, MANAGER.REGISTRY_ROOT_NAME)
+            os.makedirs(registry)
+            with open(os.path.join(registry, "log.json"), "w") as handle:
+                if dataset == "http":
+                    handle.write(json.dumps({"op": "set", "id": 7}) + "\n")
+                    handle.write(json.dumps({"k": "http-stage", "v": {
+                        "meta": {"source": stage}, "cursor": {"offset": len(body) - 1}}}) + "\n")
+
+        self.assertEqual(MANAGER.acknowledged_archive_stages(data_root, self.stage_root, now), set(),
+                         "dropping the snapshot must not weaken the EOF requirement")
+
+
+class ArchiveMarkerTests(ArchiveStageTests):
+    """Markers must not outlive their stage, and must not pollute the status."""
+
+    def _expire(self, path, now):
+        old = now - MANAGER.ARCHIVE_STAGE_RETENTION_SECONDS - 10
+        os.utime(path, (old, old))
+
+    def test_reclaiming_a_stage_removes_its_marker(self):
+        now = 1_790_000_000
+        stage_dir = os.path.join(self.stage_root, "conn")
+        os.makedirs(stage_dir)
+        stage = os.path.join(stage_dir, "conn.09-10.log")
+        for path in (stage, stage + ".source.json"):
+            with open(path, "wb") as handle:
+                handle.write(b"x")
+            self._expire(path, now)
+
+        MANAGER.cleanup_expired_archive_stages(stage_dir, now, {stage})
+
+        self.assertFalse(os.path.exists(stage))
+        self.assertFalse(os.path.exists(stage + ".source.json"), "the marker goes with its stage")
+
+    def test_marker_whose_stage_is_already_gone_is_removed(self):
+        now = 1_790_000_000
+        stage_dir = os.path.join(self.stage_root, "dns")
+        os.makedirs(stage_dir)
+        marker = os.path.join(stage_dir, "dns.09-10.log.source.json")
+        with open(marker, "wb") as handle:
+            handle.write(b"{}")
+        self._expire(marker, now)
+
+        MANAGER.cleanup_expired_archive_stages(stage_dir, now, set())
+
+        self.assertFalse(os.path.exists(marker), "a marker whose stage is gone is residue")
+
+    def test_marker_of_a_live_stage_is_kept(self):
+        now = 1_790_000_000
+        stage_dir = os.path.join(self.stage_root, "ssl")
+        os.makedirs(stage_dir)
+        stage = os.path.join(stage_dir, "ssl.09-10.log")
+        marker = stage + ".source.json"
+        for path in (stage, marker):
+            with open(path, "wb") as handle:
+                handle.write(b"x")
+            self._expire(path, now)
+
+        MANAGER.cleanup_expired_archive_stages(stage_dir, now, set())
+
+        self.assertTrue(os.path.exists(stage), "an unacknowledged stage must not be reclaimed")
+        self.assertTrue(os.path.exists(marker), "nor its marker")
+
+
 class LifecycleTests(unittest.TestCase):
     """start/stop have to be usable per dataset.
 

@@ -151,10 +151,23 @@ def cleanup_expired_archive_stages(destination_dir, now, acknowledged_stages=Non
         staged = os.path.join(destination_dir, name)
         try:
             if os.path.isfile(staged) and now - os.stat(staged).st_mtime > ARCHIVE_STAGE_RETENTION_SECONDS:
+                if name.endswith(".source.json"):
+                    # Nothing can ever acknowledge a marker — Filebeat tracks the
+                    # stage file, not the marker — so a marker whose stage is
+                    # already gone is pure residue. Leaving it behind makes the
+                    # status report a backlog that can never clear.
+                    if not os.path.exists(staged[:-len(".source.json")]):
+                        os.remove(staged)
+                        print("removed orphaned archive marker %s" % staged, flush=True)
+                    continue
                 if os.path.realpath(staged) not in acknowledged_stages:
                     print("archive cleanup deferred until Filebeat confirms %s" % staged, flush=True)
                     continue
                 os.remove(staged)
+                try:
+                    os.remove(staged + ".source.json")
+                except OSError:
+                    pass
                 print("removed expired archive stage %s" % staged, flush=True)
         except OSError as error:
             print("archive cleanup pending %s: %s" % (staged, error), flush=True)
@@ -168,23 +181,34 @@ def _read_stable_registry(registry_root):
     last_error = None
     for _ in range(2):
         try:
-            with open(active_path, "rb") as handle:
-                active_before = handle.read().decode("utf-8").strip()
-            snapshot_path = os.path.realpath(active_before)
-            if os.path.commonpath([registry_root, snapshot_path]) != registry_root:
-                raise ValueError("registry active snapshot escaped registry root")
-            tracked = (active_path, log_path, snapshot_path)
+            # A registry that has never written a snapshot is still complete:
+            # the transaction log records whole states, and Filebeat itself loads
+            # such a registry from the log alone (its http input has done exactly
+            # that since 2026-09-27). Requiring active.dat made those stages
+            # permanently unacknowledgeable, so the archives behind them could
+            # never be reclaimed. A present-but-unreadable active.dat still fails
+            # closed, which is the case that actually signals an inconsistency.
+            active_before = ""
+            snapshot_path = ""
+            if os.path.exists(active_path):
+                with open(active_path, "rb") as handle:
+                    active_before = handle.read().decode("utf-8").strip()
+                snapshot_path = os.path.realpath(active_before)
+                if os.path.commonpath([registry_root, snapshot_path]) != registry_root:
+                    raise ValueError("registry active snapshot escaped registry root")
+            tracked = (log_path, snapshot_path) if snapshot_path else (log_path,)
             before = [os.stat(path) for path in tracked]
-            with open(snapshot_path, "r") as handle:
-                states = json.load(handle)
-            if not isinstance(states, list):
-                raise ValueError("registry snapshot is not a state list")
             indexed = {}
-            for item in states:
-                key = item.get("_key")
-                if not isinstance(key, str):
-                    raise ValueError("registry snapshot contains an invalid key")
-                indexed[key] = item
+            if snapshot_path:
+                with open(snapshot_path, "r") as handle:
+                    states = json.load(handle)
+                if not isinstance(states, list):
+                    raise ValueError("registry snapshot is not a state list")
+                for item in states:
+                    key = item.get("_key")
+                    if not isinstance(key, str):
+                        raise ValueError("registry snapshot contains an invalid key")
+                    indexed[key] = item
             pending = None
             with open(log_path, "r") as handle:
                 for line in handle:
@@ -209,8 +233,10 @@ def _read_stable_registry(registry_root):
             if pending is not None:
                 raise ValueError("registry log ended with an incomplete operation")
             after = [os.stat(path) for path in tracked]
-            with open(active_path, "rb") as handle:
-                active_after = handle.read().decode("utf-8").strip()
+            active_after = ""
+            if snapshot_path:
+                with open(active_path, "rb") as handle:
+                    active_after = handle.read().decode("utf-8").strip()
             if active_before != active_after or any(
                 left.st_size != right.st_size or left.st_mtime_ns != right.st_mtime_ns
                 for left, right in zip(before, after)
@@ -327,6 +353,11 @@ def archive_status():
         expired = []
         try:
             for name in os.listdir(stage_dir):
+                # Only stages count. A .source.json marker can never be
+                # acknowledged, so including them made every dataset report
+                # acknowledged_files=0 and a pending backlog that never moved.
+                if not name.endswith(".log"):
+                    continue
                 path = os.path.join(stage_dir, name)
                 if os.path.isfile(path) and now - os.stat(path).st_mtime > ARCHIVE_STAGE_RETENTION_SECONDS:
                     expired.append(os.path.realpath(path))
