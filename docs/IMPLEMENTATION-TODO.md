@@ -401,7 +401,7 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 
 另验冲突分支：**同位置、改一个字段**再投 → **HTTP 409** `source position was already used for a different payload`，不产生新事件。这正是 2026-09-29/30 那批 DLQ 的来源类别（当时是采集端重读时来源字段渲染不稳定所致），现在确认它在 ingest 侧被正确拒绝而不是静默接受。
 
-**结论与机制**：去重键是 `RawEventID`（由**稳定位置**推出，Windows 是 computer/channel/recordID/timestamp，Zeek 是文件指纹+偏移）加 `PayloadHash`，**不含投递位置**。所以采集端强杀后重读、或消费组回退 offset 导致同一记录从新 offset 再来时，会收敛到同一条原始事件——这正是"强杀重读"能够安全的前提，也在契约层面解释了为什么位置稳定性（[[beat_position]] 的指纹方案与规范化哈希）是必需的而不是优化。
+**结论与机制**：去重键是 `RawEventID`（由**稳定位置**推出，Windows 是 computer/channel/recordID/timestamp，Zeek 是文件指纹+偏移）加 `PayloadHash`，**不含投递位置**。所以采集端强杀后重读、或消费组回退 offset 导致同一记录从新 offset 再来时，会收敛到同一条原始事件——这正是"强杀重读"能够安全的前提，也在契约层面解释了为什么位置稳定性（`internal/rawevent/beat_position.go` 的指纹方案与 `canonical.go` 的规范化哈希）是必需的而不是优化。
 
 **过程中修正的一处判据错误**：本测试第一版把"raw topic 末位不得增长"当作判据，**该判据无效**——raw topic 同时在接收实时业务流量（测试期间 tenant_a +4、Zeek +121），无法区分是我的投递还是生产写入。已改为统计 `raw_event_id` 在 raw topic 中的出现次数，对实时流量免疫。
 
