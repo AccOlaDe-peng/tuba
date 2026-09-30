@@ -128,6 +128,33 @@ A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写
 4. 前置条件：该命名空间的 Source Topic、raw/events/quarantine/dlq Topic 与服务身份 ACL 必须已就绪，否则消费组会静默空转。
 5. 启动后核对四个组件的 lag，以及对应 ES alias 是否开始出现文档。
 
+## Launcher 管理数据面（248 现状）
+
+248 的 11 个数据面服务由产品 Launcher 统一管理，**不注册 systemd**。清单 `/etc/tuba/tuba-services.json`（0600 root），密钥 `/etc/tuba/tuba.env`（0600 root），状态与日志分别在 `/var/lib/tuba/launcher` 与 `/var/log/tuba`。
+
+```
+tuba-launcher status  --manifest /etc/tuba/tuba-services.json
+tuba-launcher logs    --manifest /etc/tuba/tuba-services.json --service zeek-raw-indexer --tail 100
+sudo tuba-launcher restart --manifest /etc/tuba/tuba-services.json
+```
+
+- `status` 里的 `restarts` 是自本次 `start` 以来的累计重启次数，`backoff` 表示该服务在指数退避中（默认 1s 起、上限 30s）。`backoff` 一定伴随日志里的真实退出原因，先看 `logs` 再动手。
+- Launcher 以 root 运行（`/opt/tuba/collector-live` 为 `0700 root`）；`command` 必须是可执行文件本身，**不能**写成 `python3 <binary>`。
+- 服务环境只来自清单显式字段与 0600 环境文件；子进程只额外继承 `PATH/HOME/USER/LANG` 等基础变量。**清单里没有的变量，服务就看不到**，且 Launcher 读环境文件时会 `TrimSpace`，值不能带首尾空白。
+- `restart` 会先 `stop`（写 `stop.request`，runner 轮询到后向**整个进程组**发 SIGTERM，10 秒后强杀）再 `start`，因此是一次全量重启；`stop` 用 `LoadManifestForControl`，不读环境文件、不校验二进制，环境文件损坏时仍可停。
+
+**回滚到旧监督器**（保留的退路，切换前形态）：
+
+```
+tuba-launcher stop --manifest /etc/tuba/tuba-services.json
+python3 /opt/tuba/collector-live/manage_zeek_live_pipeline.py start   # 6 个 zeek 服务
+python3 /opt/tuba/collector-live/tenant_a_chain.py start              # 4 个 tenant_a 服务
+```
+
+监督器的 `start` 会去 `/proc` 里找**正在运行的 `tuba-api`** 取环境基座，所以顺序必须是"先 api、后监督器"；api 若没起来，监督器会直接报 `source registry has no enabled source contexts` 或取不到环境。旧监督器的 `stop` **不完整**（实测 6 个 zeek 子进程只回收 2 个，其余成为孤儿继续消费），所以回滚或重切之前务必用 `pgrep -af collector-live/pipeline/bin` 核对没有残留进程——两名消费者在同一消费组内会导致索引重复写入。
+
+**重启 248 不会自动拉起数据面**（不注册 systemd 是设计决定）。主机重启后需由受控运维入口或后续 Management Agent 调用 Launcher；Launcher 的 state 带 `runner_identity`（boot ID + 启动时刻），重启后 PID 被复用也不会被误判为"已在运行"。
+
 ## 滚动部署约束
 
 **共享 `rawevent` 语义的二进制必须同批部署**：`payload_hash` 由 ingest 计算、由 raw-indexer 与 normalizer 校验，adapter 另有一处比对 receipt。只更新其中一部分时，新版生产者产出的信封会被旧版消费者判为 `payload_hash mismatch`，**整条原始流进 DLQ**（2026-09-30 实际发生过约 11 分钟）。当前信封里的 `schema_version` 不区分哈希方案，运行期无法识别混版，只能靠部署纪律避免。
