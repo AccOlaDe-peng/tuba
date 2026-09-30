@@ -33,10 +33,26 @@ def request(url, method="GET", body=None):
 
 
 def apply_es_watermarks(es_url):
+    """Push the disk watermarks into Elasticsearch.
+
+    These are deliberately not the same numbers as the A03 reporting levels in
+    check_once(). On a single data node, the low watermark stops every new shard
+    from being allocated -- not just replicas -- because
+    cluster.routing.allocation.disk.watermark.enable_for_single_data_node
+    defaults to true. Setting it to A03's 70% warning line therefore made 70% a
+    hard ceiling rather than a warning: this node runs at 70%, so index creation
+    and snapshot restores failed intermittently, with no error logged and with
+    an allocation/explain that blamed the restore itself (measured 2026-09-30).
+
+    What the policy actually asks for is: warn at 70, call it critical at 75,
+    stop writing at 80. So the low watermark sits on the critical line and the
+    flood stage keeps the stop-writing line unchanged; 70% stays a reporting
+    level and is reported by this process, not enforced by Elasticsearch.
+    """
     request(es_url.rstrip("/") + "/_cluster/settings", "PUT", {"persistent": {
         "cluster.routing.allocation.disk.threshold_enabled": True,
-        "cluster.routing.allocation.disk.watermark.low": "70%",
-        "cluster.routing.allocation.disk.watermark.high": "75%",
+        "cluster.routing.allocation.disk.watermark.low": "75%",
+        "cluster.routing.allocation.disk.watermark.high": "78%",
         "cluster.routing.allocation.disk.watermark.flood_stage": "80%",
     }})
 

@@ -349,7 +349,7 @@ exceeded flood-stage watermark, index has read-only-allow-delete block
 
 修复即上文的架构改动：仓库移出本机根盘，快照不再经过本机磁盘。脚本前置两项检查——`ES_REPO_PATH` 必须是**独立挂载点**（否则拒绝运行，退出码 5），仓库文件系统占用不得超过 90%（退出码 4）；另有 `--check-only` 供窗口前预检。挂载点之下的目录已设为 root 只读，即使挂载缺失 ES 也只会报权限错，不会静默写满根盘。
 
-**本轮发现并已修复（严重）：70% 实际是本节点的分配硬上限**
+**本轮发现并已修复（严重）：config 里的 70% 报警线成了本节点的分配硬上限**
 
 `cluster.routing.allocation.disk.watermark.enable_for_single_data_node=true`（默认）使 **low 水位阻止一切新分片分配**，不只是副本。而 248 的常态占用恰好就是 70%，于是**索引创建与恢复时好时坏**，且 ES **不报任何错**：恢复在几十毫秒内以 `state [FAILURE]` 结束、**没有任何分片启动**，日志无分片级错误也无异常。本轮 4 分片的恢复测试失败 1–3 个、**每次失败的索引都不同**，正是这个原因；`_cluster/allocation/explain?include_yes_decisions=true` 在这种状态下还会误导——只给出 `restore_in_progress NO - shard has failed to be restored`，看起来像备份损坏。开 `org.elasticsearch.cluster.routing.allocation: TRACE` 才看得到真因：
 
@@ -359,14 +359,16 @@ less than the required 13976562892 free bytes threshold (11.7gb free), preventin
 AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 ```
 
-`13976562892` 恰为文件系统总量的 30%，即 low 水位。**A03 里写的"根盘 70% warning"在本环境实际是硬上限，不是告警档位**；这一条已写入 RUNBOOK。
+`13976562892` 恰为文件系统总量的 30%，即当时的 low 水位。**A03 的"根盘 70% warning"曾被直接用作 ES 的 low 水位，于是实际成了硬上限，不是告警档位。**
+
+已按用户决定修复：`scripts/tuba_capacity_guard.py` 现在向 ES 写入 **low=75% / high=78% / flood=80%**，把告警档位与分配水位解耦——80% 仍是 A03 的停止写入线，新分片分配停在 75%（critical 线），70% 只作为上报档位由 `tuba_capacity_level` 指标承担。守卫已重启并生效。**验收：同一磁盘占用（71%）下重跑同样的 4 索引恢复演练，4/4 分片成功、文档数逐项 MATCH；改动前同一操作为 1–3 个失败。**
 
 **未通过的部分（因此 B04 不勾选、V08 未通过）**
 
 1. **未做全量恢复演练，且在本节点做不到。** 全量恢复要在线上数据之外再放一份完整证据库（4.9 GB），会把节点推到 80% 以上并再次触发分配失败——正是本轮踩到并查清的坑。本轮做的是**有代表性的子集演练**（含 1.4 GB 的大分片），文档数逐项相符；全量演练需要在空节点或独立实例上进行。
 2. **未核对 Raw/标准/派生/案件水位，未实测 RPO/RTO。**
 3. **PG 恢复演练无法执行**：TUBA 数据库身份没有 CREATEDB 权限，恢复需独立实例或具备建库权限的运维身份。
-4. **节点常态占用 70% 与分配阈值重合，是待决策项。** 要么把常态占用压到 70% 以下（VG 已无空闲 extent，扩容只能加盘），要么调整 ES 的水位使行为与 A03 本意一致（当前 low=70/high=75/flood=80 使 70% 成为硬上限）。在此之前，**每日新分区与任何索引创建都可能因余量不足而延迟**。
+4. **节点剩下的分配余量很薄，仍未解决。** 水位解耦把可用区间从 0 个点扩到 4 个点（71% 常态 → 75% 才停分配），但 VG 已无空闲 extent，扩容只能加盘。占用一旦持续超过 75%，**新分区与索引创建会再次延迟**。加盘仍未做。
 3. **PG 恢复演练无法执行**：TUBA 数据库身份没有 CREATEDB 权限，恢复需独立实例或具备建库权限的运维身份。
 4. 未核对 Raw/标准/派生/案件水位，未实测 RPO/RTO。
 

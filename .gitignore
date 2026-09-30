@@ -28,3 +28,8 @@ __pycache__/
 
 # Claude Code 会话状态(计划任务的锁文件,非项目内容)
 .claude/scheduled_tasks.lock
+
+# 本机凭据与项目说明(含多台主机明文口令)。RUNBOOK「凭据轮转」要求它不得入库:
+# 曾被提交到公开仓库,其中凭据在轮换前一律视为已泄露。
+claude.md
+CLAUDE.md

@@ -79,7 +79,9 @@
 
 A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写入；Kafka 各 Topic 保留 24 小时，ES Raw/domain/Quarantine 最多 7 个 UTC 日分区。
 
-**这三个数不只是告警档位，它们被同时写进了 ES 的分配水位（low/high/flood = 70/75/80），在单节点上后果比字面严重**：`cluster.routing.allocation.disk.watermark.enable_for_single_data_node=true`（默认）会让 **low 水位阻止一切新分片分配**，不只是副本。也就是说，**占用一到 70%，本节点就再也建不出新索引**——包括每日新分区和任何恢复。2026-09-30 实测节点常态就在 70%，于是索引创建与恢复时好时坏，且 ES 不报任何错（诊断方法见「异机备份与恢复」）。因此 70% 实际上是本环境的**硬上限**，不是"warning"。要留出可用余量，要么把常态占用压到 70% 以下，要么调整这三个水位使 ES 的行为与 A03 的本意一致。
+**告警档位与 ES 的分配水位已刻意分开，改动前它们曾被写成同一组数。** 单节点上 `cluster.routing.allocation.disk.watermark.enable_for_single_data_node=true`（默认）会让 **low 水位阻止一切新分片分配**，不只是副本——所以把 A03 的 70% warning 线直接用作 low 水位，等于把"70% 告警"变成了"70% 之后再也建不出新索引"。本节点常态就压在 70%，2026-09-30 实测后果是索引创建与恢复**时好时坏、ES 不报任何错**（诊断见「异机备份与恢复」）。
+
+因此 `scripts/tuba_capacity_guard.py` 现在写入 ES 的是 **low=75% / high=78% / flood=80%**：80% 仍是 A03 的停止写入线，新分片分配停在 75%（A03 的 critical 线）；**70% 只是上报档位**，由容量守卫的 `tuba_capacity_level` 指标和 Grafana 承担，不再由 ES 强制执行。改动后同一磁盘占用（71%）下 4/4 分片恢复成功，改动前是 1–3 个失败。
 
 1. 先分清哪一层在涨。Kafka 与 ES 各有保留期、会自行封顶；**只有 `ingest_receipts` 会无限增长**（每个接入事件一行，约 1.5 KB/行）。2026-09-30 实测：该表 2,511 MB 时为根盘增长主因，写入约 0.5 GB/天。
 2. `SELECT pg_size_pretty(pg_total_relation_size('ingest_receipts')), count(*) FROM ingest_receipts;` 确认表状态与最早一行时间。
@@ -161,7 +163,7 @@ exceeded flood-stage watermark, index has read-only-allow-delete block
 
 若 21 重建过、仓库内容需要从别处搬回：注销仓库（`DELETE /_snapshot/tuba_offsite`）→ **清空** `/var/lib/elasticsearch/backups` → 拷入备份 → 重新注册（`path.repo` 已声明，无需重启）。"清空"不可省：`index-N` 是仓库世代号，ES 只读最高的那个；把备份叠加到已被改动的目录上，更新的空世代会遮蔽备份中的快照，表现为 `_verify` 通过却列出 0 个快照。
 
-**恢复要求节点有分配余量，这是单节点的硬约束。** `cluster.routing.allocation.disk.watermark.enable_for_single_data_node=true`（默认）会让 **low 水位（本环境 70%）阻止新分片分配**——不只是副本。节点的常态占用恰好就是 70%，于是恢复**时好时坏**：磁盘读数略高于 70% 时，恢复在几十毫秒内以 `state [FAILURE]` 结束、**没有任何分片启动**，日志里既没有分片级错误也没有异常。诊断要开 `org.elasticsearch.cluster.routing.allocation: TRACE`，日志才会出现：
+**恢复要求节点有分配余量，这是单节点的硬约束。** `cluster.routing.allocation.disk.watermark.enable_for_single_data_node=true`（默认）会让 **low 水位阻止新分片分配**——不只是副本。本环境该水位现为 **75%**（曾误设为 70%，而节点常态就在 70%，于是恢复**时好时坏**）：磁盘读数越过它时，恢复在几十毫秒内以 `state [FAILURE]` 结束、**没有任何分片启动**，日志里既没有分片级错误也没有异常。诊断要开 `org.elasticsearch.cluster.routing.allocation: TRACE`，日志才会出现：
 
 ```
 DiskThresholdDecider: node [...] has 72.9% used disk
@@ -169,7 +171,7 @@ less than the required 13976562892 free bytes threshold (11.7gb free), preventin
 AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 ```
 
-`GET /_cluster/allocation/explain?include_yes_decisions=true` 在这种状态下**会误导**：它只给出 `restore_in_progress NO - shard has failed to be restored`，看起来像备份损坏。要做恢复演练，先确认 `df` 明显低于 70%。
+`GET /_cluster/allocation/explain?include_yes_decisions=true` 在这种状态下**会误导**：它只给出 `restore_in_progress NO - shard has failed to be restored`，看起来像备份损坏。要做恢复演练，先确认 `df` 明显低于 75%。
 
 ### 恢复 PostgreSQL
 
