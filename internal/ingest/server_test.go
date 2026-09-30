@@ -195,6 +195,44 @@ func TestAcceptRawRejectsUnconfiguredTopicPattern(t *testing.T) {
 	}
 }
 
+// COL-03 的五个验收场景之一是“超大消息”。上限必须按大小拒绝，而不是截断
+// 成一次成功：截断后的正文仍然会进 Raw，等于悄悄改了证据。
+func TestBeatIngressRejectsAnOversizedPayload(t *testing.T) {
+	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
+	const adapterToken = "test-adapter-token-with-more-than-32-characters"
+	source := RawSource{
+		OrganizationID: "tenant-a", Namespace: "tenant-a", SourceInstanceID: "src_0123456789abcdef0123456789abcdef",
+		SourceEpoch: "epoch-1", VendorName: "zeek", VendorProduct: "zeek", VendorDataset: "zeek.conn",
+		ReleaseID: "release-1", SourceContextID: "ctx_0123456789abcdef0123456789abcdef",
+	}
+	producer := &recordingProducer{}
+	server := Server{RawProducer: producer, RawTopicPattern: "tuba.collector.raw.v1", TopicResolver: staticTopicResolver{topic: source},
+		AdapterToken: adapterToken, RawReceipts: &memoryRawReceipts{}, RequestTimeout: time.Second}
+
+	// Padded inside a string value so the body is over the ceiling *and* still
+	// well-formed: a malformed body would be rejected for the other reason.
+	body := []byte(`{"@timestamp":"2026-09-28T10:00:00Z","agent":{"type":"filebeat","version":"8.19.0","id":"beat-a"},"event":{"dataset":"zeek.conn"},"log":{"file":{"device_id":"2053","inode":"8926348","path":"/var/log/conn.log"},"offset":10118640},"pad":"` +
+		strings.Repeat("a", rawevent.MaxPayloadBytes) + `"}`)
+	if len(body) <= rawevent.MaxPayloadBytes {
+		t.Fatalf("test body is %d bytes, not over the %d byte ceiling", len(body), rawevent.MaxPayloadBytes)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/ingest/beat-events", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Source-Adapter-Token", adapterToken)
+	req.Header.Set("X-Source-Topic", topic)
+	req.Header.Set("X-Source-Partition", "0")
+	req.Header.Set("X-Source-Offset", "43")
+	response := httptest.NewRecorder()
+	server.Handler().ServeHTTP(response, req)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("oversized status=%d body=%s; want 413", response.Code, response.Body.String())
+	}
+	if len(producer.messages) != 0 {
+		t.Fatalf("oversized payload produced %d Kafka writes; it must not be truncated into a success", len(producer.messages))
+	}
+}
+
 func TestBeatIngressUsesRegisteredTopicBindingAndDeduplicatesReceipt(t *testing.T) {
 	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
 	const adapterToken = "test-adapter-token-with-more-than-32-characters"
