@@ -183,6 +183,12 @@ check_kafka() {
     record FAIL kafka "KAFKA_BROKERS is not set"
     return
   fi
+  # Without `timeout` every probe below would hang or fail, which would read as
+  # "no broker is reachable" — a misleading refusal. Say what is actually wrong.
+  if ! command -v timeout >/dev/null 2>&1; then
+    record WARN kafka "timeout is not available; skipping the broker reachability probe"
+    return
+  fi
   # Reachability only. An authenticated admin call would prove the SASL
   # credentials work, but the only client that does so creates topics — and this
   # preflight is read-only. Authentication is exercised by the initializer's own
