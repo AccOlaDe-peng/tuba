@@ -37,8 +37,34 @@ APPLY="${APPLY:-false}"
 VACUUM_FULL="${VACUUM_FULL:-false}"
 PSQL="${PSQL:-psql}"
 
+# A scheduled run has no environment of its own, and copying the DSN to disk
+# just to reach the scheduler would put the database credential somewhere the
+# deployment never intended it. Read it from the running API instead, the same
+# way the deployment scripts do; if the API is down nothing is being ingested,
+# so there is nothing to prune.
 if [[ -z "${DATABASE_URL:-}" ]]; then
-  echo "DATABASE_URL is required" >&2
+  DATABASE_URL="$("${PYTHON:-python3}" - <<'READ_DSN'
+import os
+for entry in os.listdir("/proc"):
+    if not entry.isdigit():
+        continue
+    try:
+        if b"/opt/tuba/bin/tuba-api" not in open("/proc/%s/cmdline" % entry, "rb").read():
+            continue
+        environ = dict(item.split(b"=", 1)
+                       for item in open("/proc/%s/environ" % entry, "rb").read().split(b"\x00")
+                       if b"=" in item)
+        value = environ.get(b"DATABASE_URL", b"").decode()
+        if value:
+            print(value)
+            break
+    except (OSError, PermissionError):
+        continue
+READ_DSN
+)"
+fi
+if [[ -z "${DATABASE_URL:-}" ]]; then
+  echo "DATABASE_URL is not set and could not be read from the running tuba-api" >&2
   exit 2
 fi
 if ! [[ "$RETENTION_DAYS" =~ ^[0-9]+$ ]] || (( RETENTION_DAYS < 1 )); then
@@ -90,9 +116,12 @@ while :; do
     echo "stopped after ${MAX_ITERATIONS} batches with rows still eligible; inspect before retrying" >&2
     exit 1
   fi
+  # psql -c also prints a command tag ("DELETE 0"), so the count takes only the
+  # RETURNING rows. Counting every output line made an empty batch look like one
+  # deleted row and the loop never terminated.
   # ctid bounds each statement to one batch, so no single transaction holds
   # locks across the whole table while ingestion is writing to it.
-  n=$(query "WITH doomed AS (SELECT ctid FROM ingest_receipts WHERE received_at < ${CUTOFF} LIMIT ${BATCH_SIZE}) DELETE FROM ingest_receipts WHERE ctid IN (SELECT ctid FROM doomed) RETURNING 1;" | wc -l)
+  n=$(query "WITH doomed AS (SELECT ctid FROM ingest_receipts WHERE received_at < ${CUTOFF} LIMIT ${BATCH_SIZE}) DELETE FROM ingest_receipts WHERE ctid IN (SELECT ctid FROM doomed) RETURNING 1;" | grep -c '^1$' || true)
   n=${n//[[:space:]]/}
   if [[ -z "$n" || "$n" == "0" ]]; then
     break
