@@ -148,7 +148,7 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
 - [ ] COL-12（G/O，P1）核对 JumpServer 实际版本和审计接口，交付文件/Syslog＋必要 API 连接器；登录/资产访问/命令审计逐项标明覆盖，录像/文件证据仅存受控引用。
 - [ ] COL-13（G/O，P1）核对 Keycloak 版本，配置用户与管理员事件及 listener，交付 Filebeat 或 API 接入包；验收登录成功/失败/登出/管理操作，不把服务运行日志当完整审计。
 - [ ] COL-14（G，P1）建立专用连接器框架：API 分页/限流/重叠补采/持久游标、Webhook 验证/持久确认、DB 增量边界；以一个真实来源验证幂等与重启恢复。
-- [ ] COL-15（G/O，P0）迁移旧自研路径：冻结 reader/spool/Sender 新功能，盘点未确认队列、排空并记录切换水位；新方案隔离验收后退役旧进程，保留历史证据和回滚窗口。验收：同来源不向同一生产代次双写；不影响其他链路。
+- [ ] COL-15（G/O，P0）迁移旧自研路径：冻结 reader/spool/Sender 新功能，盘点未确认队列、排空并记录切换水位；新方案隔离验收后退役旧进程，保留历史证据和回滚窗口。验收：同来源不向同一生产代次双写；不影响其他链路。2026-09-30 现场处置：21 上被取代的 Zeek 采集代 r1（`collector-live/filebeat/config/*`，4 进程）自 2026-09-27 起持续以 401 失败——其 `source_instances` 已 disabled、写 ACL 已撤销，累计 **49,144 条 `not authorized`**（conn 13,276 / dns 12,655 / http 10,660 / ssl 12,553），日志约 71 MB 且持续增长；它正确地不推进 registry 并无限重试，即永远不可能成功。已按 PID 精确 SIGTERM 停用，约 2 秒优雅退出，**registry 原样保留**作为回滚位置（`collector-live/filebeat/data/*/registry`，冻结于 2026-09-27 18:13）。活跃代 r2 与别的产品的 `filebeat.service`（systemd，pid 2458981）均未受影响：停后 r2 源 topic 仍 +122/30s、Zeek raw 文档 +313/30s。**顺带发现两处待修**：(1) `collector-live/filebeat/manage_zeek_filebeat.py` 的 status/stop 依赖 `run/` 下的状态文件，该文件已丢失，于是 status 误报 `stopped`、stop 空转——停用必须按 PID 核对 cmdline 后执行；(2) 日志里 `"file.line":401` 会被宽泛的 `401` 正则误计为授权错误，统计授权错误只应匹配 `not authorized`。
 
 执行顺序以“当前阶段与 Zeek 闭环后续顺序”为准；COL-01/02/03 持续补齐，COL-04 已完成真实 Zeek 接入，COL-05 扩展 Windows 来源，COL-06/07 完成过滤与可靠性，COL-08/09 支撑统一部署，COL-11–14 扩展来源，最后按 COL-15 完成来源切换。未勾选条目仍待实现或验收，文档改版不视为采集程序已替换。
 
