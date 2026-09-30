@@ -18,6 +18,7 @@
 **先分清这个数是谁的。** 监控只抓一份组白名单（`MONITORED_CONSUMER_GROUPS`，见下），因为**退役代次会留下一批"有已提交 offset、没有成员"的消费组**——它们的 lag 冻结在某个值上永远不动，`TubaKafkaConsumerInactiveWithBacklog`（"有积压且无成员"）会在它们身上常驻触发。2026-09-30 实测：`tuba-normalizer-…-zeeklive20260927`、`tuba-raw-indexer-…-zeeklive20260927` 与三个无后缀的 `tuba-source-adapter-<hash>` 都是这类孤儿，lag 分别冻在 2060 / 1682 / 14176 等值上。**用 `--all-groups` 排查时它们一定会出现，别当成真积压。**
 
 1. 用 `kafka-consumer-groups.sh --describe --group <组>` 确认 **`CONSUMER-ID` / `HOST` 是否为 `-`**。为 `-` 就是无成员：要么是孤儿（对比组名代次后缀），要么是组件真的没起来——后者才是故障。
+   - 248 本机实操（2026-09-30）：248 的 Kafka 只监听 `10.6.68.248:29292`（不监听 loopback），本机查组须显式用该地址 + `/opt/tuba/collector-live/kafka/admin.properties`，且 PATH 中无 java，需 `JAVA_HOME=/opt/adms/adms-jdk`。
 2. 确认 Lag 属于 `tuba-raw-indexer-*`、`tuba-standard-indexer-*`、`tuba-quarantine-indexer-*`、`tuba-analysis-*` 还是 `tuba-analysis-sink-*`。
 3. 检查对应 Launcher 组件的 CPU、内存、重启次数、readiness 和最近错误。
 4. 当前单实例版本不通过临时增加消费者处理故障；若 ES 正常，先确认组件存活、凭据、offset、批量预算和限流状态。
@@ -153,7 +154,7 @@ python3 /opt/tuba/collector-live/tenant_a_chain.py start              # 4 个 te
 
 监督器的 `start` 会去 `/proc` 里找**正在运行的 `tuba-api`** 取环境基座，所以顺序必须是"先 api、后监督器"；api 若没起来，监督器会直接报 `source registry has no enabled source contexts` 或取不到环境。旧监督器的 `stop` **不完整**（实测 6 个 zeek 子进程只回收 2 个，其余成为孤儿继续消费），所以回滚或重切之前务必用 `pgrep -af collector-live/pipeline/bin` 核对没有残留进程——两名消费者在同一消费组内会导致索引重复写入。
 
-**重启 248 不会自动拉起数据面**（不注册 systemd 是设计决定）。主机重启后需由受控运维入口或后续 Management Agent 调用 Launcher；Launcher 的 state 带 `runner_identity`（boot ID + 启动时刻），重启后 PID 被复用也不会被误判为"已在运行"。
+**开机恢复：cron `@reboot` 受控入口**（2026-09-30 安装，不注册 systemd 仍是设计决定）。root crontab 有一行 `@reboot /opt/tuba/bin/tuba-boot`；该脚本（0700 root）向 `/var/log/tuba/boot.log` 写带时间戳的日志后调用 `tuba-launcher start --manifest /etc/tuba/tuba-services.json`。脚本幂等：先用 `status` 探测，Launcher 已在运行则不动作、退出 0（launcher 的 `start` 在已运行时会以 `already running` 退出 1，不能直接当幂等用）。Launcher 的 state 带 `runner_identity`（boot ID + 启动时刻），重启后 PID 被复用也不会被误判为"已在运行"。**注意：该入口未经真实重启验收**（用户决定本轮不做目标机重启测试），只做过手动执行的静态验证；监控栈（prometheus/grafana/exporter）不在 Launcher 清单内，重启后仍不会自动恢复。
 
 **不要执行 `/opt/tuba/start.sh`**：那是 M1 遗留脚本，会 source `/etc/tuba/tuba.env`。该文件在切换后语义已变——从"api 的完整环境文件"变成"Launcher 的密钥文件"，只含密钥。照旧执行会拉起一个**缺 `ES_URL`** 的 api，症状是日志里的 `ES_URL and ES_API_KEY are required`，而在同一个端口上掩盖掉正常运行的 api。数据面的启停一律经 `tuba-launcher`；`start.sh` 已于 2026-09-30 废止——改名为 `/opt/tuba/start.sh.retired`（0600 root，不可执行，仅留档）。
 
