@@ -8,6 +8,7 @@ bootstrap:
 
 contracts:
 	python3 scripts/validate_contracts.py
+	python3 scripts/validate_openapi.py
 	python3 scripts/generate_es_templates.py
 
 helm-check:

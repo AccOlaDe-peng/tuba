@@ -8,6 +8,7 @@
 - Go 1.27.1。`go` 命令可根据 `go.mod` 的 toolchain 指令自动获取该版本。
 - uv 0.12.17；uv 根据 `.python-version` 获取 CPython 3.14.7。
 - Node.js 24.14.1 和 Corepack；前端固定 pnpm 12.6.0。
+- PyYAML，供 `make contracts` 的 OpenAPI 门禁（`scripts/validate_openapi.py`）解析 YAML 与 `$ref`。零依赖的基线校验器 `scripts/validate_contracts.py` 不需要它；两者分开正是为了让最小环境仍能跑基线。
 - Docker Engine 与 Docker Compose V2，用于 Kafka、PostgreSQL、Elasticsearch 和可选 Keycloak。
 
 不要把本地开发密码用于共享或生产环境。真实凭据只通过未提交的 `.env` 或密钥系统提供。
@@ -65,7 +66,7 @@ uv run --project python python scripts\load_test.py --events 1000 --concurrency 
 
 | 命令 | 用途 |
 | --- | --- |
-| `make contracts` | 检查 JSON Schema、示例和 OpenAPI 基线 |
+| `make contracts` | 校验 JSON Schema、示例与 UIM 用例（零依赖基线），并解析 OpenAPI：解析整个文档、递归解析全部 `$ref`（含外部 schema 文件并复跑同一套 schema 校验）、检查每个 path 的方法与 responses |
 | `make go-check` | Go 测试和 vet |
 | `make python-check` | Python 分析测试 |
 | `make web-check` | TypeScript 检查和前端测试 |
