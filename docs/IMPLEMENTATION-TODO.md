@@ -431,6 +431,26 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 
 **局限**：本次强杀的重读窗口只有 ≤1 秒（配置决定），按当时 12 条/分的速率命中概率约 20%，因此**"重读不产生重复"这一半不是靠这次强杀证明的**，而是在上一项用 ingest 层的确定性重复投递证明的；本次证明的是"不丢"与"无冲突"。
 
+### 2026-09-30 COL-07/V02 非破坏性子集（3/4）：日志轮转不丢记录 —— 通过，并查清一处每小时发生的整份重读
+
+**要验的不变量**：轮转（live spool → 小时归档）不得丢记录，也不得产生重复文档。
+
+**方法**：`sync-archives` 每小时把 Zeek 的压缩归档解压安装为 `archive/<dataset>/<dataset>.HH:00:00-HH:00:00.log`。借刚发生的 14:00 轮转做回溯核对：取 `ssl.13:00:00-14:00:00.log` 的**每一行**，与 ssl 源 topic 中已发布消息的 `event.original` 逐行比对（按行哈希，不用 uid——uid 在 Zeek 里不是唯一标识，一条 TLS 连接可写多条 ssl 记录）。
+
+| 观测量 | 值 |
+| --- | --- |
+| 归档文件行数（去重后仍同值，文件内无重复行） | 770 |
+| 在 topic 中找到的行数 | **770 / 770，丢失 0** |
+| 边界连续性 | 轮转前文件止于 ts 1790747991.78，新 spool 起于 1790748001.71，**无重叠、无空洞** |
+
+**同时查清一处每小时系统性发生的整份重读（比测试本身更重要）**：这 770 行**每一行都被发布了两次**——一次 `log.file.path` 为 `/opt/zeek/spool/zeek/ssl.log`，一次为 `/opt/tuba/collector-live/filebeat-r2/archive/ssl/ssl.13:00:00-14:00:00.log`。即 `sync-archives` 把整点归档解压进 archive 目录后，**Filebeat 把整整一小时的文件完整重发了一遍**——每小时、每个数据集都如此。
+
+**正确性未受影响**：抽查 272 条重读记录，**每一行只对应一个 `source_position` 和一个 `raw_event_id`**。指纹身份是内容前缀哈希，spool 与 archive 两份内容逐行相同故指纹相同，稳定位置一致，第二份被 receipt 去重吸收，**ES 无重复文档**。
+
+**这条发现解释了此前的 DLQ 缺口**：重读不是"强杀才发生"的稀有事件，而是**每小时系统性发生**。所以当时任何 payload 不稳定（Windows 任务名渲染、`log.file.path`/inode 差异）都会在这一次整份重读中**批量**触发 `payload_hash mismatch` 冲突——这正是起初那批 DLQ 有数千条而非几条的原因，也从机制上确认了当时"把 collector 传输元数据排除出规范化哈希"的修复方向是对的。
+
+**代价（已量化，未处理）**：归档数据在 source topic 里翻倍。按 ssl 每小时约 770 条、四个数据集计，每小时约 3,200 条额外消息；下游去重能吸收，但 adapter、ingest、receipt 都要多处理一遍。不是正确性问题，在当前量级下也不是容量问题，属**可优化的浪费**。要消除需确认 Filebeat 的 registry 是否按 path+fingerprint 双键记账——若 archive 副本出现时能命中同一 fingerprint 而不重新收割，即可省掉这一次整份重发。
+
 ## 后续多节点（P2；本轮不要求实施）
 
 - [ ] X01 Kafka 多 broker/控制器、Topic 副本/ISR、分区迁移与故障演练。
