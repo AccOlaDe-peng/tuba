@@ -79,13 +79,15 @@
 
 A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写入；Kafka 各 Topic 保留 24 小时，ES Raw/domain/Quarantine 最多 7 个 UTC 日分区。
 
+**这三个数不只是告警档位，它们被同时写进了 ES 的分配水位（low/high/flood = 70/75/80），在单节点上后果比字面严重**：`cluster.routing.allocation.disk.watermark.enable_for_single_data_node=true`（默认）会让 **low 水位阻止一切新分片分配**，不只是副本。也就是说，**占用一到 70%，本节点就再也建不出新索引**——包括每日新分区和任何恢复。2026-09-30 实测节点常态就在 70%，于是索引创建与恢复时好时坏，且 ES 不报任何错（诊断方法见「异机备份与恢复」）。因此 70% 实际上是本环境的**硬上限**，不是"warning"。要留出可用余量，要么把常态占用压到 70% 以下，要么调整这三个水位使 ES 的行为与 A03 的本意一致。
+
 1. 先分清哪一层在涨。Kafka 与 ES 各有保留期、会自行封顶；**只有 `ingest_receipts` 会无限增长**（每个接入事件一行，约 1.5 KB/行）。2026-09-30 实测：该表 2,511 MB 时为根盘增长主因，写入约 0.5 GB/天。
 2. `SELECT pg_size_pretty(pg_total_relation_size('ingest_receipts')), count(*) FROM ingest_receipts;` 确认表状态与最早一行时间。
 3. 日常清理由 `scripts/prune_ingest_receipts.sh` 每日 03:17 执行（保留 2 天）。手动核对先不带 `APPLY=true` 试跑，确认待删行数再执行。
 4. 保留期不得随意放大：可重投窗口由 Kafka 保留期（24 小时）与采集端 `ignore_older` 界定，2 天已是其两倍余量；而 receipt 若比窗口年轻，放大窗口会一行都清不掉、磁盘继续涨。
 5. `DELETE` 只把页面标为可复用，文件不缩小但**增长停止**。要真正把空间还给文件系统须 `VACUUM FULL`，它取 ACCESS EXCLUSIVE 锁、阻塞接入数十秒（适配器保留 offset 重试，不丢数据），只在明确的维护窗口执行。
 6. 清理循环若报 `stopped after N batches with rows still eligible`，先确认待删行是否真的归零；该报错曾是计数把 psql 命令标签算作一行所致。
-7. 除 `ingest_receipts` 外还有一处**周期性**的临时占用：异机备份先把 ES 快照写进本机仓库，需要约一份证据库大小的空间（实测 4.9 GB）。稳态必须为它留出余量，否则**每次备份都会把用量推过 80% 并让 ES 全索引只读**。脚本已加前置闸门，见「异机备份与恢复」。
+7. 异机备份**不再占用本机磁盘**：快照直接写进挂在 `/var/lib/elasticsearch/backups` 的 21 仓库（旧版本在本机暂存，实测 4.9 GB，会把占用推过 80% 并让 ES 全索引只读，见「异机备份与恢复」）。脚本以"必须是独立挂载点"作为前置闸门，避免退回旧行为。
 
 ## 采集端(Windows Winlogbeat)运维
 
@@ -112,13 +114,16 @@ A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写
 
 ## 异机备份与恢复
 
-备份由 `scripts/backup_tuba_to_offsite.sh` 每日 02:37 推到 `10.6.69.21:/opt/tuba-backup/248/<stamp>/`，含四部分：PostgreSQL 自定义格式转储、Elasticsearch 快照、Keycloak realm 导出、发布包。免密通道是 248 上一把限定来源地址的密钥。
+备份由 `scripts/backup_tuba_to_offsite.sh` 每日 02:37 执行。四部分内容分两处落在 `10.6.69.21`：
+
+- **Elasticsearch 快照**直接写进 21 上的仓库 `/opt/tuba-backup/esrepo-248`，该目录 NFS 导出后挂载在 248 的 `/var/lib/elasticsearch/backups`（`path.repo` 路径未变，ES 无需重启）。
+- **PostgreSQL 转储、Keycloak realm 导出、发布包**经 rsync 推到 `21:/opt/tuba-backup/248/<stamp>/`。免密通道是 248 上一把限定来源地址的密钥。
 
 **RPO 为一次运行间隔。** 没有 WAL 归档：本机 PostgreSQL 与另一产品共用，不得为 TUBA 改动其服务配置。两次运行之间丢失本节点即丢失该窗口的接入数据。
 
-### 运行前的余量检查（2026-09-30 事故后新增）
+### 为什么仓库必须在别的机器上
 
-快照先写进**本机**仓库，所以运行期间本机需要约一份证据库大小的临时空间（实测 4.9 GB）。248 根盘常态已占 70%，这段空间会把用量推到 81%，**越过 ES 的 flood stage 水位（80%）**；ES 随即把**全部索引**置为 `read-only-allow-delete`，raw/quarantine/standard 三个索引器连续 11 分钟被拒写：
+旧版本把快照先写进**本机**仓库再推送。这份临时空间（实测 4.9 GB）把 248 根盘从 70% 推到 81%，**越过 ES 的 flood stage 水位（80%）**；ES 随即把**全部索引**置为 `read-only-allow-delete`，raw/quarantine/standard 三个索引器连续 11 分钟被拒写：
 
 ```
 raw evidence write failed after 5 attempts: raw document write returned 429:
@@ -126,29 +131,45 @@ cluster_block_exception: index [...] blocked by: [TOO_MANY_REQUESTS/12/disk usag
 exceeded flood-stage watermark, index has read-only-allow-delete block
 ```
 
-没有丢数据（写失败不提交 offset，组件重启后重读），但流水线每晚会停摆一次且不告警。**这是备份自身造成的，必须避免，不能靠事后发现。**
+没有丢数据（写失败不提交 offset，组件重启后重读，DLQ 零新增），但流水线每晚会停摆一次且不告警。**这是备份自身造成的**，所以仓库被移出本机根盘，而不是靠事后发现。
 
-因此脚本在**做任何事之前**先核对余量，判定依据是集群当前的水位设置（不是写死的常数）、当次文件系统用量与证据库大小，要求预计用量低于 flood stage 至少 2 个百分点；不满足则**拒绝运行并退出码 4，不采备份**：
+脚本在**做任何事之前**先做两项检查，任一不过就**拒绝运行（退出码 5 / 4）而不采备份**：
+
+1. `ES_REPO_PATH` 必须是**独立挂载点**。若挂载缺失（`nofail` 时 21 不可达会出现这种情况），该路径就是根盘上的普通目录，快照会写进本机——正是上面的事故。挂载点之下那个目录已设为 root 只读，即使判断失误 ES 也只会报权限错。
+2. 仓库文件系统的预计占用不得超过 `REPO_TARGET_MAX_PCT`（默认 90%）。
 
 ```bash
-/opt/tuba/backup_tuba_to_offsite.sh --check-only   # exit 0 装得下，4 装不下
+/opt/tuba/backup_tuba_to_offsite.sh --check-only   # 报余量、列现有快照；exit 0 可跑
 ```
 
-退出码：0 完成（`--check-only` 为装得下）；2 无数据库凭据；3 量不出文件系统、快照大小或水位；4 余量不足而拒绝。每日运行的输出落在 `/opt/tuba/logs/backup_tuba_to_offsite.log`。**当前没有"备份未运行"的告警**，拒绝只能靠读这个日志发现——这是一处已知缺口。
+退出码：0 完成（`--check-only` 为可跑）；2 无数据库凭据；3 量不出文件系统或快照大小；4 备份目标余量不足；5 仓库不在独立挂载点上。
 
-看到 4 时**必须腾空间或把仓库挪出根盘，而不是放它跑**——一次跳过备份是可恢复的，一个静默只读的集群不是。本地副本由**退出 trap** 释放，因此传输失败或中断也不会把它留在盘上；若日志出现 `WARNING: could not release local snapshot`，说明节点仍高于水位，需手工执行 `DELETE /_snapshot/tuba_offsite/<name>` 并确认 `df` 回落。
+每日运行输出落在 `/opt/tuba/logs/backup_tuba_to_offsite.log`。**当前没有"备份未运行"的告警**，拒绝只能靠读这个日志发现——这是一处已知缺口。
 
-### 恢复 Elasticsearch（顺序不能变）
+### 保留期
 
-1. 注销仓库：`DELETE /_snapshot/tuba_offsite`。
-2. **清空本地仓库目录** `/var/lib/elasticsearch/backups`，再整体拷入备份的 `elasticsearch/`。
-3. 重新注册仓库（`path.repo` 已声明，无需重启）。
-4. `GET /_snapshot/tuba_offsite/_all` 核对快照可见且 `state=SUCCESS`。
-5. 用 `rename_pattern` 恢复成临时索引名，核对文档数后再切换别名。
+仓库是**共享且增量**的：后来的快照复用已有段，所以实测第二个全量快照几乎不增加占用（4.7 GB 不变）。因此**快照不删除**，保留期由脚本经 ES API 执行，只保留最新的 `KEEP`（默认 7）个 `tuba-` 快照；段回收交给 ES。`21:/opt/tuba-backup/248/<stamp>/` 下的转储目录另行按数量保留 `KEEP` 份。
 
-第 2 步的"清空"不可省：`index-N` 是仓库世代号，ES 只读最高的那个。若只把备份文件叠加到已被改动的目录上，更新的空世代会遮蔽备份中的快照，表现为仓库可 `_verify` 通过却列出 0 个快照。
+注意 ES 的 REST 列表用 `snapshot` 字段，仓库索引文件用 `name`，读错会静默得到空列表、保留期完全失效。
 
-**恢复也必须在余量充足的条件下做。** 第 2 步本身就要占一份证据库的空间；而节点一旦高于 **high 水位（75%）**，新分片无法分配，恢复会在几十毫秒内以 `state [FAILURE]` 结束、**一个分片都不会启动**，日志里也只有 `NoShardAvailableActionException`，看不出真因。2026-09-30 的记录正是这样被误读成"备份不可恢复"。做演练前先确认 `df` 已低于 75%。
+### 恢复 Elasticsearch
+
+仓库已注册且指向挂载点，正常情况下不需要重建，直接恢复即可：
+
+1. `GET /_snapshot/tuba_offsite/_all` 确认目标快照 `state=SUCCESS`。
+2. 用 `rename_pattern` 恢复成临时索引名，核对文档数后再切换别名。
+
+若 21 重建过、仓库内容需要从别处搬回：注销仓库（`DELETE /_snapshot/tuba_offsite`）→ **清空** `/var/lib/elasticsearch/backups` → 拷入备份 → 重新注册（`path.repo` 已声明，无需重启）。"清空"不可省：`index-N` 是仓库世代号，ES 只读最高的那个；把备份叠加到已被改动的目录上，更新的空世代会遮蔽备份中的快照，表现为 `_verify` 通过却列出 0 个快照。
+
+**恢复要求节点有分配余量，这是单节点的硬约束。** `cluster.routing.allocation.disk.watermark.enable_for_single_data_node=true`（默认）会让 **low 水位（本环境 70%）阻止新分片分配**——不只是副本。节点的常态占用恰好就是 70%，于是恢复**时好时坏**：磁盘读数略高于 70% 时，恢复在几十毫秒内以 `state [FAILURE]` 结束、**没有任何分片启动**，日志里既没有分片级错误也没有异常。诊断要开 `org.elasticsearch.cluster.routing.allocation: TRACE`，日志才会出现：
+
+```
+DiskThresholdDecider: node [...] has 72.9% used disk
+less than the required 13976562892 free bytes threshold (11.7gb free), preventing allocation
+AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
+```
+
+`GET /_cluster/allocation/explain?include_yes_decisions=true` 在这种状态下**会误导**：它只给出 `restore_in_progress NO - shard has failed to be restored`，看起来像备份损坏。要做恢复演练，先确认 `df` 明显低于 70%。
 
 ### 恢复 PostgreSQL
 

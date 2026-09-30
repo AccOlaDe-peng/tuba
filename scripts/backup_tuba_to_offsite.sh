@@ -4,8 +4,8 @@
 # Covers the four things a rebuild needs, all of which live only on the node the
 # backup is meant to survive: the PostgreSQL database (receipts, sources,
 # releases), an Elasticsearch snapshot (raw and standard evidence plus the index
-# templates), the identity realm, and the release bundles. The destination is a
-# different host, so losing this node's disk does not take the backup with it.
+# templates), the identity realm, and the release bundles. Everything ends up on
+# a different host, so losing this node's disk does not take the backup with it.
 #
 # RPO is one run interval. There is no WAL archiving and no continuous shipping:
 # the PostgreSQL instance is shared with another product on this host, and its
@@ -13,27 +13,27 @@
 # between two runs therefore loses the events ingested in that window; the
 # measured RPO/RTO belong in the acceptance record, not in this comment.
 #
-# Runs on the TUBA node and pushes to the backup host over a key restricted to
-# that source address. Credentials are read from a root-only environment file so
-# the schedule needs no environment of its own.
+# The Elasticsearch snapshot goes straight into a repository that lives on the
+# backup host and is mounted at ES_REPO_PATH. It must not be written here: on
+# 2026-09-30 a version of this script that staged the snapshot on the node took
+# the root filesystem from 70% to 81%, past the Elasticsearch flood-stage
+# watermark, and every indexer was answered with 429 read-only-allow-delete for
+# the eleven minutes it took to ship and release the copy. The mount check below
+# exists so that cannot happen again by accident.
 #
-# The snapshot is written into a repository on this node's own filesystem before
-# it is shipped, so the run briefly needs room for a whole copy of the evidence
-# store. That copy is not free: on 2026-09-30 it took the root filesystem from
-# 70% to 81%, past the Elasticsearch flood-stage watermark of 80%, and
-# Elasticsearch answered every indexer with 429 read-only-allow-delete for the
-# eleven minutes it took to ship and release it. The run therefore refuses to
-# start unless the projected usage stays below the watermark, and it releases
-# the local copy even when it fails part way. See RUNBOOK "异机备份与恢复".
+# Because the repository is shared and incremental, the snapshot is kept, not
+# deleted: later snapshots reuse its segments. Retention is applied through the
+# Elasticsearch API (the newest KEEP snapshots), not by deleting directories.
 #
 # Usage:
 #   scripts/backup_tuba_to_offsite.sh              # run the backup
 #   scripts/backup_tuba_to_offsite.sh --check-only # report whether it fits, then stop
-#   KEEP=7 scripts/backup_tuba_to_offsite.sh       # keep 7 copies on the target
+#   KEEP=7 scripts/backup_tuba_to_offsite.sh       # keep 7 snapshots on the target
 #
 # Exit codes: 0 ran (or, with --check-only, fits); 2 no database credential;
-# 3 could not measure the filesystem, the snapshot size or the watermark;
-# 4 refused to run because the copy would cross the watermark.
+# 3 could not measure the filesystem or the snapshot size; 4 the repository
+# filesystem is too full to take another copy; 5 ES_REPO_PATH is not a separate
+# mount, so the snapshot would land on this node's root filesystem.
 set -euo pipefail
 
 TARGET_HOST="${TUBA_BACKUP_HOST:-10.6.69.21}"
@@ -47,96 +47,78 @@ ES_REPO="${ES_REPO:-tuba_offsite}"
 ES_REPO_PATH="${ES_REPO_PATH:-/var/lib/elasticsearch/backups}"
 RELEASES_DIR="${RELEASES_DIR:-/opt/tuba/releases}"
 # Where Elasticsearch keeps its indices, used only to estimate how large the
-# snapshot will be. The estimate does not have to be exact: it has to be within
-# the margin kept below the watermark.
+# snapshot will be. The estimate does not have to be exact: it only has to be
+# the right order of magnitude for the free-space check.
 ES_DATA_PATH="${ES_DATA_PATH:-/var/lib/elasticsearch}"
-REPO_HEADROOM_MARGIN_PCT="${REPO_HEADROOM_MARGIN_PCT:-2}"
+# The backup host is not under the node's capacity policy, so this is an
+# ordinary "do not fill the backup target" bound rather than a watermark.
+REPO_TARGET_MAX_PCT="${REPO_TARGET_MAX_PCT:-90}"
 # Lower case throughout: Elasticsearch rejects a snapshot name containing any
 # upper-case letter, and the run stamp carries T and Z separators.
 STAMP="$(date -u +%Y%m%dT%H%M%SZ | tr A-Z a-z)"
 WORK="$(mktemp -d /tmp/tuba-backup.XXXXXX)"
-
-# The local copy of the snapshot is the one thing this run must not leave
-# behind: it is what pushed the filesystem over the watermark. Releasing it has
-# to survive a failure at any later step, including a failed or interrupted
-# transfer, so it is done from the exit trap rather than inline at the end.
-LOCAL_SNAPSHOT=""
-release_local_snapshot() {
-  [[ -n "$LOCAL_SNAPSHOT" ]] || return 0
-  local name="$LOCAL_SNAPSHOT"
-  LOCAL_SNAPSHOT=""
-  # Not the `es` helper: the trap can fire before that is defined, and it must
-  # not itself abort under `set -e`.
-  local code
-  code="$(curl -sS -m "${ES_TIMEOUT:-120}" -o /dev/null -w '%{http_code}' \
-          -X DELETE "${ES_URL}/_snapshot/${ES_REPO}/${name}" 2>/dev/null || echo 000)"
-  if [[ "$code" == 2* ]]; then
-    printf '  local snapshot %s released\n' "$name"
-  else
-    printf '  WARNING: could not release local snapshot %s (HTTP %s); it is still consuming disk and may keep Elasticsearch above the watermark\n' \
-           "$name" "$code" >&2
-  fi
-}
-cleanup() { release_local_snapshot; rm -rf "$WORK"; }
-trap cleanup EXIT
+trap 'rm -rf "$WORK"' EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
 say() { printf '%s\n' "$*"; }
 
-# Size check, before anything else is done. The local copy of the snapshot costs
-# about what the evidence store costs, and this run is not allowed to be the
-# reason the node crosses the flood-stage watermark: at that watermark
-# Elasticsearch marks every index read-only and the indexers' writes are rejected
-# until the space comes back. A night without a backup is recoverable; a
-# silently read-only cluster is not. It runs first so a run that cannot fit
-# fails before spending a minute on a database dump.
-say "headroom check"
+# Pre-flight, before anything else is done, so a run that cannot fit fails
+# before spending a minute on a database dump.
+say "pre-flight"
+# The one check that matters most. If the repository is not a separate mount
+# then ES_REPO_PATH is an ordinary directory on the root filesystem, and the
+# snapshot would be written here — the exact failure this script exists to avoid.
+if ! mountpoint -q "$ES_REPO_PATH"; then
+  say "REFUSING to run: ${ES_REPO_PATH} is not a mount point." >&2
+  say "An Elasticsearch snapshot written there would consume this node's root filesystem," >&2
+  say "and at the flood-stage watermark that marks every index read-only and rejects the" >&2
+  say "indexers' writes. Mount the backup host's repository at ${ES_REPO_PATH} first" >&2
+  say "(see RUNBOOK, 异机备份与恢复). No backup was taken." >&2
+  exit 5
+fi
 repo_fs_total_kb="$(df -Pk "$ES_REPO_PATH" | awk 'NR==2 {print $2}')"
 repo_fs_used_kb="$(df -Pk "$ES_REPO_PATH" | awk 'NR==2 {print $3}')"
 repo_fs_free_kb="$(df -Pk "$ES_REPO_PATH" | awk 'NR==2 {print $4}')"
 if [[ -z "$repo_fs_total_kb" || "$repo_fs_total_kb" == "0" ]]; then
-  say "  cannot size the filesystem holding ${ES_REPO_PATH}; refusing to snapshot"
+  say "  cannot size the filesystem holding ${ES_REPO_PATH}; refusing to run" >&2
   exit 3
 fi
 estimate_kb="$(du -sk "$ES_DATA_PATH" 2>/dev/null | awk '{print $1}')"
 if [[ -z "${estimate_kb:-}" ]]; then
-  say "  cannot estimate the snapshot size from ${ES_DATA_PATH}; refusing to snapshot"
+  say "  cannot estimate the snapshot size from ${ES_DATA_PATH}; refusing to run" >&2
   exit 3
 fi
-# The watermark is read from the cluster rather than assumed, so this guard
-# tracks the operational policy instead of duplicating it.
-flood_pct="$("${PYTHON:-python3}" - "$ES_URL" <<'READ_FLOOD'
-import json, sys, urllib.request
-try:
-    doc = json.load(urllib.request.urlopen(
-        sys.argv[1] + "/_cluster/settings?include_defaults=true&flat_settings=true", timeout=10))
-except Exception:
-    sys.exit(0)
-key = "cluster.routing.allocation.disk.watermark.flood_stage"
-for scope in ("persistent", "transient", "defaults"):
-    value = doc.get(scope, {}).get(key)
-    if value:
-        print(str(value).rstrip("%"))
-        break
-READ_FLOOD
-)"
-if ! [[ "${flood_pct:-}" =~ ^[0-9]+$ ]]; then
-  say "  cannot read the flood-stage watermark from Elasticsearch; refusing to snapshot"
-  exit 3
-fi
-projected_pct=$(( (repo_fs_used_kb + estimate_kb) * 100 / repo_fs_total_kb ))
-say "  filesystem: ${repo_fs_used_kb}K used of ${repo_fs_total_kb}K, ${repo_fs_free_kb}K free"
-say "  snapshot estimate: ${estimate_kb}K; projected use ${projected_pct}%, limit $(( flood_pct - REPO_HEADROOM_MARGIN_PCT ))%"
-if (( projected_pct > flood_pct - REPO_HEADROOM_MARGIN_PCT )); then
-  say "REFUSING to snapshot: the local copy would take the filesystem to ${projected_pct}%," >&2
-  say "within ${REPO_HEADROOM_MARGIN_PCT} points of the flood-stage watermark (${flood_pct}%), at which" >&2
-  say "Elasticsearch marks every index read-only and the indexers' writes are rejected." >&2
-  say "Free space on the filesystem holding ${ES_REPO_PATH}, or move the repository off" >&2
-  say "this node's root filesystem, then run again. No backup was taken." >&2
+# The repository is incremental, so a later snapshot usually costs far less than
+# this; the estimate is the pessimistic whole-store figure, which is the right
+# thing to refuse on.
+repo_fs_after_pct=$(( (repo_fs_used_kb + estimate_kb) * 100 / repo_fs_total_kb ))
+say "  repository filesystem: ${repo_fs_used_kb}K used of ${repo_fs_total_kb}K, ${repo_fs_free_kb}K free"
+say "  snapshot estimate: ${estimate_kb}K; worst-case use ${repo_fs_after_pct}%, limit ${REPO_TARGET_MAX_PCT}%"
+if (( repo_fs_after_pct > REPO_TARGET_MAX_PCT )); then
+  say "REFUSING to run: another snapshot could take ${ES_REPO_PATH} to ${repo_fs_after_pct}%," >&2
+  say "past the ${REPO_TARGET_MAX_PCT}% bound for the backup target. Free space on" >&2
+  say "${TARGET_HOST}, or lower KEEP, then run again. No backup was taken." >&2
   exit 4
 fi
 if [[ "${1:-}" == "--check-only" ]]; then
+  say "  snapshots currently in ${ES_REPO}:"
+  # Reach the repository the same way the run does, so this reports what the run
+  # would see rather than what the config says it should see.
+  if curl -sS -m 20 "${ES_URL}/_snapshot/${ES_REPO}/_all" -o "$WORK/es-snapshots.json" 2>/dev/null; then
+    "${PYTHON:-python3}" - "$WORK/es-snapshots.json" <<'LIST_SNAPSHOTS'
+import json, sys
+doc = json.load(open(sys.argv[1]))
+snaps = [s for s in doc.get("snapshots", []) if s.get("snapshot", "").startswith("tuba-")]
+snaps.sort(key=lambda s: s.get("start_time_in_millis", 0))
+if not snaps:
+    print("    (none)")
+for s in snaps:
+    print("    %s %s" % (s.get("state"), s.get("snapshot")))
+LIST_SNAPSHOTS
+  else
+    say "    (repository not registered yet)"
+  fi
   say "check only: the run fits; no backup was taken"
   exit 0
 fi
@@ -201,13 +183,12 @@ say "postgres: dumping"
 say "  dump verified: $(wc -l < "$WORK/postgres-toc.txt") archive entries"
 gzip -9 "$WORK/postgres-tuba.dump"
 
-# 2. Elasticsearch snapshot. The filesystem repository path is already declared
-#    in path.repo, so registering it needs no restart. The size check above has
-#    already established that the copy fits below the watermark.
+# 2. Elasticsearch snapshot, written into the mounted off-host repository. The
+#    filesystem repository path is already declared in path.repo, so registering
+#    it needs no restart, and the pre-flight above established it fits.
 say "elasticsearch: snapshot"
-es -X PUT "${ES_URL}/_snapshot/${ES_REPO}" -d "{\"type\":\"fs\",\"settings\":{\"location\":\"${ES_REPO_PATH}\",\"compress\":true}}" >/dev/null
-# From here the local copy exists and the exit trap owns releasing it.
-LOCAL_SNAPSHOT="tuba-${STAMP}"
+es -X PUT "${ES_URL}/_snapshot/${ES_REPO}" \
+   -d "{\"type\":\"fs\",\"settings\":{\"location\":\"${ES_REPO_PATH}\",\"compress\":true}}" >/dev/null
 ES_TIMEOUT=3600 es -X PUT "${ES_URL}/_snapshot/${ES_REPO}/tuba-${STAMP}?wait_for_completion=true" \
    -d '{"indices":"logs-ueba.*,tuba-v1-*","include_global_state":false,"ignore_unavailable":true}' \
    > "$WORK/es-snapshot.json"
@@ -222,6 +203,37 @@ if not snapshot or snapshot.get("state") != "SUCCESS":
 print("  snapshot %s: %d indices, %d shards successful"
       % (snapshot.get("snapshot"), len(snapshot.get("indices", [])), snapshot.get("shards", {}).get("successful", 0)))
 CHECK_SNAPSHOT
+
+# 2b. Retention, through the API rather than by deleting files. Snapshots in a
+#     filesystem repository share segments, so dropping the oldest lets
+#     Elasticsearch release only the segments no remaining snapshot needs. Only
+#     snapshots this script created are considered; anything else in the
+#     repository is left alone.
+say "elasticsearch: retention (keep ${KEEP})"
+es -X GET "${ES_URL}/_snapshot/${ES_REPO}/_all" > "$WORK/es-snapshots.json"
+# The listing goes through a file rather than a pipe: `python3 -` takes its
+# program from stdin, so a heredoc and a pipe cannot both supply it.
+"${PYTHON:-python3}" - "$WORK/es-snapshots.json" "$KEEP" <<'LIST_STALE' > "$WORK/es-stale.txt"
+import json, sys
+doc = json.load(open(sys.argv[1]))
+keep = int(sys.argv[2])
+# The REST listing names each snapshot in "snapshot", not "name" — the
+# repository's own index file uses "name", which is why this looks wrong but is
+# not. Getting it wrong silently produces an empty list and no retention at all.
+snaps = [s for s in doc.get("snapshots", [])
+         if s.get("snapshot", "").startswith("tuba-") and s.get("state") == "SUCCESS"]
+snaps.sort(key=lambda s: s.get("start_time_in_millis", 0), reverse=True)
+for s in snaps[keep:]:
+    print(s["snapshot"])
+LIST_STALE
+while read -r stale; do
+  [[ -n "$stale" ]] || continue
+  say "  expiring ${stale}"
+  # Asynchronous on purpose: the run should not wait for a large segment delete,
+  # and a failure here leaves a surplus snapshot rather than an invalid backup.
+  es -X DELETE "${ES_URL}/_snapshot/${ES_REPO}/${stale}" >/dev/null || \
+    say "  WARNING: could not expire ${stale}; it still counts against the target's space" >&2
+done < "$WORK/es-stale.txt"
 
 # 3. Identity realm, exported through the admin API. The realm is the authority
 #    for who may reach the data, so it belongs in the same backup as the data.
@@ -257,29 +269,26 @@ say "watermarks: recording"
   echo "source_instances: $("$PSQL" "$DATABASE_URL" -Atc 'SELECT count(*) FROM source_instances;')"
   echo "release_bundles: $("$PSQL" "$DATABASE_URL" -Atc 'SELECT count(*) FROM release_bundles;')"
   echo "es_snapshot: tuba-${STAMP}"
-  echo "es_repo: ${ES_REPO}"
-  echo "repo_fs_used_pct_before: ${projected_pct} (projected including the snapshot)"
-  echo "repo_fs_free_kb_before: ${repo_fs_free_kb}"
+  echo "es_repository: ${ES_REPO} at ${TARGET_HOST}:${ES_REPO_PATH} (mounted here)"
+  echo "es_snapshot_note: the snapshot stays in the shared repository; restore it from there"
   echo "snapshot_estimate_kb: ${estimate_kb}"
+  echo "repo_fs_free_kb_before: ${repo_fs_free_kb}"
 } > "$WORK/MANIFEST.txt"
 cat "$WORK/MANIFEST.txt" | sed 's/^/  /'
 
-say "transfer to ${TARGET_HOST}"
+say "transfer artefacts to ${TARGET_HOST}"
 ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new -o ConnectTimeout=15 \
     "root@${TARGET_HOST}" "mkdir -p '${TARGET_ROOT}/${STAMP}'"
+# Only the small artefacts are copied; the snapshot is already on the target and
+# copying the repository here would create a second, divergent generation of it.
 rsync -a -e "ssh -i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
       --stats "$WORK/" "root@${TARGET_HOST}:${TARGET_ROOT}/${STAMP}/" >/dev/null
-rsync -a --delete -e "ssh -i $SSH_KEY -o BatchMode=yes -o StrictHostKeyChecking=accept-new" \
-      "${ES_REPO_PATH}/" "root@${TARGET_HOST}:${TARGET_ROOT}/${STAMP}/elasticsearch/" >/dev/null
 
-# Drop the local snapshot once the off-host copy is complete. Restoring copies
-# it back from the target; see RUNBOOK. The exit trap also does this, so a
-# failure above still releases the space instead of leaving the node over the
-# watermark until someone notices.
-release_local_snapshot
-
-# Keep the most recent KEEP copies on the target.
+# Keep the most recent KEEP artefact directories on the target. The Elasticsearch
+# snapshots are pruned above, by the API; these directories hold the dump, the
+# realm export and the release bundles.
 ssh -i "$SSH_KEY" -o BatchMode=yes -o StrictHostKeyChecking=accept-new "root@${TARGET_HOST}" \
   "cd '${TARGET_ROOT}' && ls -1d */ 2>/dev/null | sort | head -n -${KEEP} | xargs -r rm -rf" || true
 
 say "done: ${TARGET_HOST}:${TARGET_ROOT}/${STAMP}"
+say "snapshot tuba-${STAMP} is in ${ES_REPO} on ${TARGET_HOST}:${ES_REPO_PATH}"

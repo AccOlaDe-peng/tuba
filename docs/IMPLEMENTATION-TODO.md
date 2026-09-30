@@ -326,17 +326,18 @@ Kafka 与 Elasticsearch 各自有保留期、会封顶；**receipt 表每个事�
 
 ### 2026-09-30 异机备份首轮落地（B04 部分完成；V08 未通过）
 
-备份目的地按用户决定选 21（139 GB 可用）。`scripts/backup_tuba_to_offsite.sh` 每日 02:37 执行，产出四部分并推到 `21:/opt/tuba-backup/248/<stamp>/`：PostgreSQL 自定义格式转储、Elasticsearch 快照、Keycloak realm 导出、发布包，外加一份记录水位（库大小、receipt 行数、来源数、release 数）的 MANIFEST。免密通道为 248 上限定来源地址的密钥。
+备份目的地按用户决定选 21（可用空间 130 GB+）。架构：**ES 快照直接写进 21 上的仓库** `/opt/tuba-backup/esrepo-248`（NFS 导出后挂载在 248 的 `/var/lib/elasticsearch/backups`；`path.repo` 路径不变，故 ES 无需重启），PostgreSQL 转储、Keycloak realm 导出、发布包经 rsync 推到 `21:/opt/tuba-backup/248/<stamp>/`。`scripts/backup_tuba_to_offsite.sh` 每日 02:37 执行，另产出一份记录水位（库大小、receipt 行数、来源数、release 数）的 MANIFEST。免密通道为 248 上限定来源地址的密钥。
 
 **已验证可用的部分**
 
-- 首次运行产出的转储为 179 MB（源库 2,171 MB），在 21 上复核存在；拉回后 `pg_restore --list` 列出 **390 个归档条目**，证明归档可读。
-- realm 导出 61 KB，发布包 88 KB，均随备份送达。
-- ES 快照报告 `state=SUCCESS`、48/48 分片；21 上的仓库 JSON 索引 `index-2` 内 3 个快照状态均为 SUCCESS、48 个索引元数据条目齐全，1,986 个数据文件完整送达。
+- 完整跑通一次：转储 188 MB（源库 2,172 MB）、390 个归档条目、realm 61 KB、发布包、快照 `state=SUCCESS` 48/48 分片、MANIFEST 落盘，均已在 21 上复核。
+- **根盘全程不变**：4.9 GB 快照写入期间 248 根盘稳定在 31 GB / 71%（旧架构同一操作会到 81%）。
+- 仓库增量共享生效：第二个全量快照几乎不增加占用，21 上仓库稳定在 4.7 GB。
+- **快照可恢复，且文档数与线上逐项精确相符**：恢复到临时索引名后 `_count` 比对 —— raw 794,004 / quarantine 54,767 / dns 73,849 / iam 1，全部 MATCH。
 
-**本轮发现并已修复：备份每晚把平台打成只读（严重）**
+**本轮发现并已修复（严重）：备份每晚把平台打成只读**
 
-快照先写进 248 的本机仓库，这段临时空间（实测 4.9 GB）把根盘从 70% 推到 81%，**越过 ES 的 flood stage 水位（80%）**。ES 随即把**全部索引**置为 `read-only-allow-delete`，raw / quarantine / standard 三个索引器在 **10:27:08–10:38:11 连续约 11 分钟**被拒写：
+旧架构把快照先写进 248 的本机仓库，这段临时空间（实测 4.9 GB）把根盘从 70% 推到 81%，**越过 ES 的 flood stage 水位（80%）**。ES 随即把**全部索引**置为 `read-only-allow-delete`，raw / quarantine / standard 三个索引器在 **10:27:08–10:38:11 连续约 11 分钟**被拒写：
 
 ```
 raw evidence write failed after 5 attempts: raw document write returned 429:
@@ -346,12 +347,26 @@ exceeded flood-stage watermark, index has read-only-allow-delete block
 
 **没有数据丢失**：写失败不提交 offset，组件退出后由 supervisor 重启并从上次已提交位置重读；三个 DLQ 分段的最后写入时间为 02:01、02:01、04:47，**均早于事故**，事故期间 DLQ 零新增（末位偏移 tenant_a 509、zeek 9,565、source-adapter 10,470）。恢复后当日 raw 分区继续增长（41,968 条）。
 
-修复：脚本在**做任何事之前**先核对余量——读数取自集群当前的水位设置、当次文件系统用量与证据库大小，要求预计用量低于 flood stage 至少 2 个百分点，不满足则**拒绝运行（退出码 4）而不是采备份**；另加 `--check-only` 供窗口前预检。本地快照的释放改到**退出 trap** 里执行，因此传输失败或中断也不会把副本留在盘上——旧版在 `set -e` 下 rsync 一失败就退出、本地副本永不释放，会把节点一直卡在水位之上。
+修复即上文的架构改动：仓库移出本机根盘，快照不再经过本机磁盘。脚本前置两项检查——`ES_REPO_PATH` 必须是**独立挂载点**（否则拒绝运行，退出码 5），仓库文件系统占用不得超过 90%（退出码 4）；另有 `--check-only` 供窗口前预检。挂载点之下的目录已设为 root 只读，即使挂载缺失 ES 也只会报权限错，不会静默写满根盘。
+
+**本轮发现并已修复（严重）：70% 实际是本节点的分配硬上限**
+
+`cluster.routing.allocation.disk.watermark.enable_for_single_data_node=true`（默认）使 **low 水位阻止一切新分片分配**，不只是副本。而 248 的常态占用恰好就是 70%，于是**索引创建与恢复时好时坏**，且 ES **不报任何错**：恢复在几十毫秒内以 `state [FAILURE]` 结束、**没有任何分片启动**，日志无分片级错误也无异常。本轮 4 分片的恢复测试失败 1–3 个、**每次失败的索引都不同**，正是这个原因；`_cluster/allocation/explain?include_yes_decisions=true` 在这种状态下还会误导——只给出 `restore_in_progress NO - shard has failed to be restored`，看起来像备份损坏。开 `org.elasticsearch.cluster.routing.allocation: TRACE` 才看得到真因：
+
+```
+DiskThresholdDecider: node [...] has 72.9% used disk
+less than the required 13976562892 free bytes threshold (11.7gb free), preventing allocation
+AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
+```
+
+`13976562892` 恰为文件系统总量的 30%，即 low 水位。**A03 里写的"根盘 70% warning"在本环境实际是硬上限，不是告警档位**；这一条已写入 RUNBOOK。
 
 **未通过的部分（因此 B04 不勾选、V08 未通过）**
 
-1. **ES 快照恢复尚未验证——上一轮"恢复失败"的结论作废。** 上轮记为"`_restore` 返回 1 分片 1 失败 0 成功，备份不能视为可用"。复查 ES 日志后确认那次共 4 次恢复尝试全部落在上述 flood stage 窗口内：恢复在 **22 毫秒**内以 FAILURE 结束、**没有任何分片启动过**（日志无分片级错误，随后查询该索引得到的是 `NoShardAvailableActionException`），原因是节点当时高于水位、新分片无法分配。**这是被自身备份破坏掉的测量环境，不是"备份不可恢复"的证据**，该结论撤回。备份究竟可不可恢复，目前**仍属未知**，须在余量充足的条件下重做演练。
-2. **当前余量既装不下备份、也不够做这个演练。** `--check-only` 实测：文件系统 31.7 GB / 45.5 GB，证据库 4.9 GB，预计用量 **80%**，上限 78% → 拒绝。同口径下，要让演练跑在 75%（high 水位，之上新分片无法分配）以下需先腾出约 **2.4 GB**；只让每晚备份安全运行需约 **1.1 GB**。VG 已无空闲 extent（48.41 GB 全部给了 root 43.41 + swap 5），扩容只能加盘。**待定：腾本机空间，或把 ES 仓库移出本机根盘。**
+1. **未做全量恢复演练，且在本节点做不到。** 全量恢复要在线上数据之外再放一份完整证据库（4.9 GB），会把节点推到 80% 以上并再次触发分配失败——正是本轮踩到并查清的坑。本轮做的是**有代表性的子集演练**（含 1.4 GB 的大分片），文档数逐项相符；全量演练需要在空节点或独立实例上进行。
+2. **未核对 Raw/标准/派生/案件水位，未实测 RPO/RTO。**
+3. **PG 恢复演练无法执行**：TUBA 数据库身份没有 CREATEDB 权限，恢复需独立实例或具备建库权限的运维身份。
+4. **节点常态占用 70% 与分配阈值重合，是待决策项。** 要么把常态占用压到 70% 以下（VG 已无空闲 extent，扩容只能加盘），要么调整 ES 的水位使行为与 A03 本意一致（当前 low=70/high=75/flood=80 使 70% 成为硬上限）。在此之前，**每日新分区与任何索引创建都可能因余量不足而延迟**。
 3. **PG 恢复演练无法执行**：TUBA 数据库身份没有 CREATEDB 权限，恢复需独立实例或具备建库权限的运维身份。
 4. 未核对 Raw/标准/派生/案件水位，未实测 RPO/RTO。
 
