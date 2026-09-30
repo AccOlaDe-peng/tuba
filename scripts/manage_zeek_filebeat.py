@@ -369,59 +369,96 @@ def test():
         print(dataset + ": Filebeat config valid; Kafka authentication/Topic ACL confirmed")
 
 
-def stop_processes(state):
-    remaining = []
-    for dataset, details in reversed(list(state.items())):
-        pid = int(details["pid"])
-        if not process_matches(pid, dataset):
-            continue
+def terminate(dataset, pid):
+    """Stop one supervised process. Returns True once it is gone."""
+    if not process_matches(pid, dataset):
+        return True
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    deadline = time.time() + 10
+    while time.time() < deadline and process_matches(pid, dataset):
+        time.sleep(.2)
+    if process_matches(pid, dataset):
         try:
-            os.killpg(pid, signal.SIGTERM)
+            os.killpg(pid, signal.SIGKILL)
         except ProcessLookupError:
-            continue
-        deadline = time.time() + 10
+            pass
+        deadline = time.time() + 5
         while time.time() < deadline and process_matches(pid, dataset):
             time.sleep(.2)
-        if process_matches(pid, dataset):
-            try:
-                os.killpg(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            deadline = time.time() + 5
-            while time.time() < deadline and process_matches(pid, dataset):
-                time.sleep(.2)
-            if process_matches(pid, dataset):
-                remaining.append(dataset)
+    return not process_matches(pid, dataset)
+
+
+def stop_processes(state, datasets=None):
+    """Stop the named datasets, or everything in `state` when none are named.
+
+    Per-dataset stop is the point of the split: without it a single faulty
+    collector could only be restarted by stopping all four and starting them
+    again, so one dataset's fault took the other three down with it. Entries
+    whose process is already gone are dropped rather than reported as failures.
+    """
+    remaining = []
+    stopped = []
+    for dataset, details in reversed(list(state.items())):
+        if datasets is not None and dataset not in datasets:
+            continue
+        if terminate(dataset, int(details["pid"])):
+            stopped.append(dataset)
+        else:
+            remaining.append(dataset)
     if remaining:
         raise RuntimeError("isolated Filebeat processes did not stop: " + ", ".join(remaining))
-    try:
-        os.remove(STATE)
-    except IOError:
-        pass
+    for dataset in stopped:
+        state.pop(dataset, None)
+    if state:
+        save_state(state)
+    else:
+        try:
+            os.remove(STATE)
+        except IOError:
+            pass
+    return sorted(stopped)
 
 
-def start():
+def start(datasets=None):
+    """Start the named datasets, or all of them when none are named.
+
+    Datasets that are already running are left alone instead of making the call
+    fail, so this is safe to re-run and a single stopped collector can be
+    brought back without touching the rest. Refusing outright was the old
+    behaviour, and it is why recovering one broken dataset meant stopping all
+    four.
+    """
     for directory in (RUN, CONFIGS, LOGS, DATA, ARCHIVE_DATA):
         os.makedirs(directory, mode=0o750, exist_ok=True)
-    state = load_state()
-    if any(process_matches(int(details["pid"]), dataset) for dataset, details in state.items()):
-        raise RuntimeError("one or more TUBA Zeek Filebeat instances are already running")
-    if state:
-        save_state({})
     if not os.path.isfile(FILEBEAT):
         raise RuntimeError("Filebeat binary was not found at " + FILEBEAT)
+    requested = [d for d in (datasets if datasets else CONTEXTS) if d in CONTEXTS]
+    state = load_state()
+    # A killed instance leaves its pid in the state file, and `status` already
+    # reports those as stale; drop them here too rather than refusing to start
+    # over an entry that no longer has a process behind it.
+    for dataset, details in list(state.items()):
+        if not process_matches(int(details["pid"]), dataset):
+            state.pop(dataset, None)
     secrets_data = json.load(open(SECRETS, "r"))
-    running = {}
+    started = []
     try:
-        archive_log = open(os.path.join(LOGS, "archive-sync.log"), "ab", buffering=0)
-        archive = subprocess.Popen([sys.executable, os.path.abspath(__file__), "sync-archives"],
-                                   cwd=ROOT, env=os.environ.copy(), stdin=subprocess.DEVNULL,
-                                   stdout=archive_log, stderr=subprocess.STDOUT, start_new_session=True)
-        archive_log.close()
-        running["archive-sync"] = {"pid": archive.pid}
-        save_state(running)
-        for dataset, context in CONTEXTS.items():
-            config_path, data_path, log_path = prepare_instance(dataset, context, secrets_data[dataset])
+        if "archive-sync" not in state:
+            archive_log = open(os.path.join(LOGS, "archive-sync.log"), "ab", buffering=0)
+            archive = subprocess.Popen([sys.executable, os.path.abspath(__file__), "sync-archives"],
+                                       cwd=ROOT, env=os.environ.copy(), stdin=subprocess.DEVNULL,
+                                       stdout=archive_log, stderr=subprocess.STDOUT, start_new_session=True)
+            archive_log.close()
+            state["archive-sync"] = {"pid": archive.pid}
+            save_state(state)
+        for dataset in requested:
+            if dataset in state:
+                print(dataset + " pid=" + str(state[dataset]["pid"]) + " already running")
+                continue
+            config_path, data_path, log_path = prepare_instance(dataset, CONTEXTS[dataset], secrets_data[dataset])
             validate_instance(dataset, config_path, data_path, log_path)
             log = open(os.path.join(LOGS, dataset + ".log"), "ab", buffering=0)
             process = subprocess.Popen([FILEBEAT, "--path.home", FILEBEAT_HOME,
@@ -430,17 +467,22 @@ def start():
                                        stdin=subprocess.DEVNULL, stdout=log, stderr=subprocess.STDOUT,
                                        start_new_session=True)
             log.close()
-            running[dataset] = {"pid": process.pid, "context": context}
-            save_state(running)
+            state[dataset] = {"pid": process.pid, "context": CONTEXTS[dataset]}
+            save_state(state)
+            started.append(dataset)
             time.sleep(.8)
             if process.poll() is not None:
                 raise RuntimeError("Filebeat exited during startup for " + dataset + "; inspect its local log")
-        print("started four TUBA Filebeat processes with independent config, registry, queue and Kafka ACL")
-        for dataset, details in running.items():
-            print(dataset + " pid=" + str(details["pid"]))
+        print("started " + str(len(started)) + " TUBA Filebeat process(es) with independent config, registry, queue and Kafka ACL")
     except Exception:
-        stop_processes(running)
+        # Roll back only what this call started: the datasets that were already
+        # running before it must not be touched.
+        for dataset in started:
+            if dataset in state and terminate(dataset, int(state[dataset]["pid"])):
+                state.pop(dataset, None)
+        save_state(state)
         raise
+    return started
 
 
 def status():
@@ -456,6 +498,8 @@ def status():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("test", "start", "stop", "status", "sync-archives", "archive-status"))
+    parser.add_argument("datasets", nargs="*", choices=tuple(CONTEXTS) + ("archive-sync",),
+                        help="limit start/stop to these datasets; the default is all of them")
     args = parser.parse_args()
     try:
         if args.action == "test":
@@ -465,10 +509,11 @@ def main():
         elif args.action == "archive-status":
             archive_status()
         elif args.action == "start":
-            start()
+            started = start(args.datasets or None)
+            print("started: " + (", ".join(started) if started else "none"))
         elif args.action == "stop":
-            stop_processes(load_state())
-            print("stopped")
+            stopped = stop_processes(load_state(), args.datasets or None)
+            print("stopped: " + (", ".join(stopped) if stopped else "none"))
         else:
             status()
     except Exception as error:

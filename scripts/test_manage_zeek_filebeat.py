@@ -1,3 +1,4 @@
+import copy
 import gzip
 import importlib.util
 import json
@@ -168,6 +169,110 @@ class ArchiveStageTests(unittest.TestCase):
         self.assertTrue(os.path.exists(source), "disk-full recovery must retain the original gzip")
         self.assertFalse(os.path.exists(destination), "incomplete expansion must not become visible to Filebeat")
         self.assertFalse(os.path.exists(destination + ".partial"))
+
+
+class LifecycleTests(unittest.TestCase):
+    """start/stop have to be usable per dataset.
+
+    A single dataset's fault used to mean stopping and starting all four, since
+    `start` refused whenever any instance was running and had no way to name
+    one. That is exactly what turned one collector's fault into a four-dataset
+    outage, so the behaviour is pinned here.
+    """
+
+    def setUp(self):
+        self.state = {
+            "archive-sync": {"pid": 100},
+            "conn": {"pid": 101, "context": "c"},
+            "dns": {"pid": 102, "context": "d"},
+            "http": {"pid": 103, "context": "h"},
+            "ssl": {"pid": 104, "context": "s"},
+        }
+        self.alive = {100, 101, 102, 103, 104}
+        self.spawned = []
+        self.killed = []
+
+        def fake_popen(argv, **kwargs):
+            pid = 200 + len(self.spawned)
+            self.spawned.append(argv)
+            self.alive.add(pid)
+            return mock.Mock(pid=pid, poll=mock.Mock(return_value=None))
+
+        def fake_killpg(pid, _signal):
+            self.alive.discard(pid)
+            self.killed.append(pid)
+
+        patchers = [
+            mock.patch.object(MANAGER, "load_state", side_effect=lambda: copy.deepcopy(self.state)),
+            mock.patch.object(MANAGER, "save_state", side_effect=lambda value: setattr(self, "state", copy.deepcopy(value))),
+            mock.patch.object(MANAGER, "process_matches", side_effect=lambda pid, dataset: pid in self.alive),
+            mock.patch.object(MANAGER, "prepare_instance", return_value=("/cfg", "/data", "/logs")),
+            mock.patch.object(MANAGER, "validate_instance"),
+            mock.patch.object(MANAGER.os, "makedirs"),
+            mock.patch.object(MANAGER.os.path, "isfile", return_value=True),
+            mock.patch.object(MANAGER.os, "remove"),
+            # create=True: os.killpg does not exist on the Windows checkout this
+            # suite also runs on, and the manager only calls it on Linux.
+            mock.patch.object(MANAGER.os, "killpg", create=True, side_effect=fake_killpg),
+            mock.patch.object(MANAGER.subprocess, "Popen", side_effect=fake_popen),
+            mock.patch.object(MANAGER.json, "load", return_value={d: {} for d in MANAGER.CONTEXTS}),
+            mock.patch("builtins.open", mock.mock_open()),
+        ]
+        for patcher in patchers:
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
+    def test_start_naming_one_dataset_touches_only_that_dataset(self):
+        self.alive.discard(104)  # ssl is down, and its now-stale pid is still in the state file
+
+        started = MANAGER.start(["ssl"])
+
+        self.assertEqual(started, ["ssl"], "a stale pid must not block a restart")
+        self.assertEqual(len(self.spawned), 1, "only the named dataset may be spawned")
+        for dataset, pid in (("archive-sync", 100), ("conn", 101), ("dns", 102), ("http", 103)):
+            self.assertEqual(self.state[dataset]["pid"], pid, dataset + " must be left alone")
+
+    def test_start_all_skips_running_datasets_instead_of_refusing(self):
+        started = MANAGER.start()
+
+        self.assertEqual(started, [])
+        self.assertEqual(self.spawned, [], "nothing may be started twice")
+        self.assertEqual(set(self.state), {"archive-sync", "conn", "dns", "http", "ssl"})
+
+    def test_stop_naming_one_dataset_keeps_the_rest_registered(self):
+        stopped = MANAGER.stop_processes(copy.deepcopy(self.state), ["ssl"])
+
+        self.assertEqual(stopped, ["ssl"])
+        self.assertEqual(self.killed, [104], "only the named dataset may be signalled")
+        self.assertNotIn("ssl", self.state, "the stopped dataset is dropped from the state file")
+        for dataset in ("archive-sync", "conn", "dns", "http"):
+            self.assertIn(dataset, self.state)
+
+    def test_stop_without_names_stops_everything(self):
+        state = copy.deepcopy(self.state)
+        stopped = MANAGER.stop_processes(state)
+
+        self.assertEqual(sorted(stopped), ["archive-sync", "conn", "dns", "http", "ssl"])
+        self.assertEqual(sorted(self.killed), [100, 101, 102, 103, 104])
+        self.assertEqual(state, {}, "every entry is dropped before the state is written back")
+        MANAGER.os.remove.assert_called_once_with(MANAGER.STATE)
+
+    def test_cli_accepts_a_dataset_name_for_start_and_stop(self):
+        for action in ("start", "stop"):
+            with mock.patch.object(MANAGER, "start", return_value=["ssl"]) as started, \
+                    mock.patch.object(MANAGER, "stop_processes", return_value=["ssl"]) as stopped, \
+                    mock.patch.object(MANAGER.sys, "argv", ["manage_zeek_filebeat.py", action, "ssl"]):
+                self.assertEqual(MANAGER.main(), 0)
+            if action == "start":
+                started.assert_called_once_with(["ssl"])
+            else:
+                stopped.assert_called_once_with(mock.ANY, ["ssl"])
+
+    def test_cli_rejects_an_unknown_dataset(self):
+        with mock.patch.object(MANAGER.sys, "argv", ["manage_zeek_filebeat.py", "start", "nope"]), \
+                mock.patch.object(MANAGER.sys, "stderr", mock.Mock()), \
+                self.assertRaises(SystemExit):
+            MANAGER.main()
 
 
 if __name__ == "__main__":

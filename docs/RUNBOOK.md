@@ -109,6 +109,15 @@ A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写
 5. 重读本身安全（同一记录按位置去重），前提是 payload 字节稳定：来源字段若随读取变化（如 Windows 渲染的任务名），重读会被判为冲突并进 DLQ。`registry_flush: 1s` 用于缩小这个窗口。
 6. 来源未产生数据时，先查 `source_instances` 是否 enabled、Kafka 源 Topic 是否有写入、适配器计数器是否增长，最后才查采集器自身。
 
+## 采集端(21 Zeek Filebeat)运维
+
+1. 管理器是 `/opt/tuba/collector-live/filebeat-r2/manage_zeek_filebeat.py`（仓库副本 `scripts/manage_zeek_filebeat.py`），动作 `status|start|stop|test|sync-archives|archive-status`。四个数据集 `conn`/`dns`/`http`/`ssl` 各有独立配置、registry、磁盘队列与 Kafka ACL；另有一个 `archive-sync` 子进程负责把最近归档解压进私有 spool。
+2. **可以只启停单个数据集**：`start ssl`、`stop dns`；不带数据集名就是全部。**线上单个数据集故障请只重启它**——这条能力是 2026-09-30 才补上的，在那之前只能停掉再起全部四个，于是**一个数据集的故障会连带停掉另外三个**（当天实际发生过约 4.5 分钟的四数据集停机）。
+3. `start` 对已在运行的数据集是**跳过而不是拒绝**，可以安全重复执行；状态文件里若留下已被强杀进程的条目，会被自动丢弃，不再阻塞重启。
+4. **不要碰 21 上别产品的 `filebeat.service`**（systemd）。TUBA 的四个实例都在 `filebeat-r2/` 下，用 `--path.data` 指向自己的目录，与它无关。
+5. 归档按 Filebeat 的 registry 游标**确认读到 EOF 之后**才回收；`archive-status` 可查当前水位。**不得仅凭"文件超过 N 小时"删除未确认的归档**——未确认就删等于丢数据。
+6. 已知浪费（未修，不是正确性问题）：`sync-archives` 把整点归档解压进 archive 目录后，Filebeat 会把**整整一小时的文件重新发布一遍**，每小时每个数据集都如此，使归档数据在 source topic 里翻倍。下游 receipt 去重会吸收（同一记录指纹相同故稳定位置一致，不会产生重复文档），代价只是 adapter/ingest 多处理一遍。详见 TODO 的 2026-09-30 日志轮转记录。
+
 ## 新增命名空间的数据面
 
 1. 一个命名空间对应一套数据面：raw-indexer、normalizer、quarantine-indexer、standard-indexer 各一；消费组与 metrics 端口都必须与既有链不冲突。
