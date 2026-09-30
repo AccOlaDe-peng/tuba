@@ -133,11 +133,23 @@ func (s Server) ingestRaw(w http.ResponseWriter, r *http.Request) {
 	var source RawSource
 	if s.SourceResolver != nil {
 		resolved, err := s.SourceResolver.ResolveSource(r.Context(), r.Header.Get("X-API-Key"), contextID)
-		if errors.Is(err, ErrSourceUnauthorized) {
+		switch {
+		case errors.Is(err, ErrSourceRevoked):
+			// The platform identified this source and refused it. Retrying cannot
+			// change that answer, so the caller must quarantine the record and
+			// advance; holding it would hand it to the topic's retention window
+			// with nothing recorded about the refusal.
+			http.Error(w, "source has been revoked", http.StatusForbidden)
+			return
+		case errors.Is(err, ErrSourcePaused):
+			// Known and deliberately held. This answer does change — when the
+			// operator resumes it — so it stays retryable.
+			http.Error(w, "source is paused", http.StatusServiceUnavailable)
+			return
+		case errors.Is(err, ErrSourceUnauthorized):
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
-		}
-		if err != nil {
+		case err != nil:
 			http.Error(w, "source registry unavailable", http.StatusServiceUnavailable)
 			return
 		}
@@ -190,8 +202,16 @@ func (s Server) ingestBeat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	source, err := s.TopicResolver.ResolveTopic(r.Context(), topic)
-	if err != nil {
-		// A stale/revoked source remains at its input offset until explicitly resolved.
+	switch {
+	case errors.Is(err, ErrSourceRevoked):
+		// A revoked source's topic is answered definitively: the adapter
+		// quarantines the record and advances rather than holding the partition
+		// until retention deletes it.
+		http.Error(w, "source has been revoked", http.StatusForbidden)
+		return
+	case err != nil:
+		// Unknown or paused. An unknown topic may simply be mid-registration, and
+		// a paused one is expected to resume, so both keep the offset.
 		http.Error(w, "source topic is not currently bound to an active source", http.StatusServiceUnavailable)
 		return
 	}

@@ -24,14 +24,20 @@ type SourceInput struct {
 }
 
 type SourceInstance struct {
-	ID              string    `json:"id"`
-	Organization    string    `json:"organization_id"`
-	Namespace       string    `json:"namespace"`
-	VendorName      string    `json:"vendor_name"`
-	VendorProduct   string    `json:"vendor_product"`
-	VendorDataset   string    `json:"vendor_dataset"`
-	SourceEpoch     string    `json:"source_epoch"`
-	ReleaseID       string    `json:"release_id"`
+	ID            string `json:"id"`
+	Organization  string `json:"organization_id"`
+	Namespace     string `json:"namespace"`
+	VendorName    string `json:"vendor_name"`
+	VendorProduct string `json:"vendor_product"`
+	VendorDataset string `json:"vendor_dataset"`
+	SourceEpoch   string `json:"source_epoch"`
+	ReleaseID     string `json:"release_id"`
+	// State is the lifecycle: active, paused or revoked. It is reported next to
+	// the older boolean because the two are not the same fact — a paused source
+	// is expected to resume and keeps its consumer offset, while a revoked one is
+	// refused for good and its records are quarantined. An operator who cannot
+	// see which of the two happened has no way to tell a hold from a retirement.
+	State           string    `json:"state"`
 	Enabled         bool      `json:"enabled"`
 	RateLimit       int       `json:"rate_limit"`
 	SourceContextID string    `json:"source_context_id"`
@@ -98,9 +104,9 @@ func (s *Store) RegisterSource(ctx context.Context, principal auth.Principal, in
 	err = tx.QueryRow(ctx, `
 		INSERT INTO source_instances(id,organization_id,namespace,vendor_name,vendor_product,vendor_dataset,source_epoch,credential_ref,release_id,rate_limit)
 		VALUES($1,$2,$3,$4,$5,$6,'1',$7,$8,$9)
-		RETURNING id,namespace,vendor_name,vendor_product,vendor_dataset,source_epoch,release_id,enabled,rate_limit,created_at,updated_at`,
+		RETURNING id,namespace,vendor_name,vendor_product,vendor_dataset,source_epoch,release_id,state,enabled,rate_limit,created_at,updated_at`,
 		id, organizationID, namespace, in.VendorName, in.VendorProduct, in.VendorDataset, credentialRef, in.ReleaseID, in.RateLimit).Scan(
-		&out.ID, &out.Namespace, &out.VendorName, &out.VendorProduct, &out.VendorDataset, &out.SourceEpoch, &out.ReleaseID, &out.Enabled, &out.RateLimit, &out.CreatedAt, &out.UpdatedAt)
+		&out.ID, &out.Namespace, &out.VendorName, &out.VendorProduct, &out.VendorDataset, &out.SourceEpoch, &out.ReleaseID, &out.State, &out.Enabled, &out.RateLimit, &out.CreatedAt, &out.UpdatedAt)
 	if err != nil {
 		return out, err
 	}
@@ -150,7 +156,7 @@ func (s *Store) RotateSourceCredential(ctx context.Context, principal auth.Princ
 		return out, errors.New("active tenant membership not found")
 	}
 	var previousEpoch string
-	err = tx.QueryRow(ctx, `SELECT source_epoch FROM source_instances WHERE id=$1 AND organization_id=$2 AND enabled=true FOR UPDATE`, id, organizationID).Scan(&previousEpoch)
+	err = tx.QueryRow(ctx, `SELECT source_epoch FROM source_instances WHERE id=$1 AND organization_id=$2 AND state='active' FOR UPDATE`, id, organizationID).Scan(&previousEpoch)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RegisteredSource{}, errors.New("source not found or disabled")
 	}
@@ -160,10 +166,10 @@ func (s *Store) RotateSourceCredential(ctx context.Context, principal auth.Princ
 	err = tx.QueryRow(ctx, `
 		UPDATE source_instances
 		SET credential_ref=$3,updated_at=now()
-		WHERE id=$1 AND organization_id=$2 AND enabled=true
-		RETURNING id,namespace,vendor_name,vendor_product,vendor_dataset,source_epoch,COALESCE(release_id,''),enabled,rate_limit,created_at,updated_at`,
+		WHERE id=$1 AND organization_id=$2 AND state='active'
+		RETURNING id,namespace,vendor_name,vendor_product,vendor_dataset,source_epoch,COALESCE(release_id,''),state,enabled,rate_limit,created_at,updated_at`,
 		id, organizationID, credentialRef).Scan(
-		&out.ID, &out.Namespace, &out.VendorName, &out.VendorProduct, &out.VendorDataset, &out.SourceEpoch, &out.ReleaseID, &out.Enabled, &out.RateLimit, &out.CreatedAt, &out.UpdatedAt)
+		&out.ID, &out.Namespace, &out.VendorName, &out.VendorProduct, &out.VendorDataset, &out.SourceEpoch, &out.ReleaseID, &out.State, &out.Enabled, &out.RateLimit, &out.CreatedAt, &out.UpdatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return RegisteredSource{}, errors.New("source not found or disabled")
 	}
@@ -197,7 +203,7 @@ func (s *Store) RotateSourceCredential(ctx context.Context, principal auth.Princ
 func (s *Store) ListSources(ctx context.Context, principal auth.Principal) ([]SourceInstance, error) {
 	rows, err := s.Pool.Query(ctx, `
 		SELECT si.id,o.slug,si.namespace,si.vendor_name,si.vendor_product,si.vendor_dataset,
-		       si.source_epoch,COALESCE(si.release_id,''),si.enabled,si.rate_limit,
+		       si.source_epoch,COALESCE(si.release_id,''),si.state,si.enabled,si.rate_limit,
 		       COALESCE((SELECT sc.id FROM source_contexts sc WHERE sc.source_instance_id=si.id ORDER BY sc.created_at DESC LIMIT 1),''),si.created_at,si.updated_at
 		FROM source_instances si JOIN organizations o ON o.id=si.organization_id
 		WHERE o.slug=$1 ORDER BY si.created_at DESC,si.id`, principal.Organization)
@@ -235,11 +241,16 @@ func (s *Store) RevokeSource(ctx context.Context, principal auth.Principal, id, 
 	if err != nil {
 		return errors.New("active tenant membership not found")
 	}
+	// 'revoked', not merely disabled: the difference is what the ingest answers
+	// with. A revoked source is a definitive refusal, so the adapter quarantines
+	// its records and advances; a paused one stays retryable. `enabled` is set
+	// alongside it because the table constrains the two to agree while binaries
+	// built before the state column are still allowed to run.
 	var before []byte
 	err = tx.QueryRow(ctx, `
-		UPDATE source_instances SET enabled=false,updated_at=now()
-		WHERE id=$1 AND organization_id=$2 AND enabled=true
-		RETURNING jsonb_build_object('source_id',id,'dataset',vendor_dataset,'enabled',true)::text`, id, organizationID).Scan(&before)
+		UPDATE source_instances SET state='revoked',enabled=false,updated_at=now()
+		WHERE id=$1 AND organization_id=$2 AND state='active'
+		RETURNING jsonb_build_object('source_id',id,'dataset',vendor_dataset,'state','active')::text`, id, organizationID).Scan(&before)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return errors.New("source not found or already revoked")
 	}
@@ -248,7 +259,7 @@ func (s *Store) RevokeSource(ctx context.Context, principal auth.Principal, id, 
 	}
 	if _, err := tx.Exec(ctx, `
 		INSERT INTO audit_events(organization_id,actor_identity_id,action,resource_type,resource_id,request_id,before_state,after_state)
-		VALUES($1,$2,'source.revoke','source_instance',$3,$4,$5,'{"enabled":false}'::jsonb)`, organizationID, identityID, id, requestID, before); err != nil {
+		VALUES($1,$2,'source.revoke','source_instance',$3,$4,$5,'{"state":"revoked","enabled":false}'::jsonb)`, organizationID, identityID, id, requestID, before); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

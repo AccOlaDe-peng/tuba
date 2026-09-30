@@ -282,9 +282,18 @@ func (a Adapter) deliver(ctx context.Context, message kafka.Message) (permanent 
 // permanentIngestRejection reports whether the ingest examined this event and
 // will never accept it. Retrying such a record holds the source offset forever
 // and stalls every later event on the partition, so it is quarantined instead.
-// Auth, routing and throttling failures are excluded: those are deployment
-// conditions a retry can outlive, and quarantining them would drop the whole
-// stream rather than the one bad record.
+// Routing and throttling failures are excluded: those are deployment conditions
+// a retry can outlive, and quarantining them would drop the whole stream rather
+// than the one bad record.
+//
+// 403 is permanent. It carries one specific meaning from the ingest — the
+// platform identified this source and refused it — and no amount of retrying
+// changes that answer. Holding it instead means the records sit in the topic
+// until the 24-hour retention deletes them, with nothing anywhere recording that
+// they were refused, which is how a revoked source used to disappear silently.
+// Quarantining keeps the bytes and raises events_rejected_total, so the refusal
+// is loud and replayable. 401 stays retryable: an unidentified source may be a
+// credential rotation in flight, which a retry does outlive.
 //
 // A 400 from the ingest covers both a single unacceptable record and a collector
 // that has not been configured to emit the coordinates its source kind requires.
@@ -295,7 +304,7 @@ func (a Adapter) deliver(ctx context.Context, message kafka.Message) (permanent 
 // and recoverable rather than silent, and the partition keeps moving.
 func permanentIngestRejection(status int) bool {
 	switch status {
-	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,
+	case http.StatusUnauthorized, http.StatusNotFound,
 		http.StatusRequestTimeout, http.StatusTooManyRequests:
 		return false
 	}

@@ -66,6 +66,86 @@ func (r staticTopicResolver) ResolveTopic(_ context.Context, topic string) (RawS
 	return source, nil
 }
 
+type stateSourceResolver struct{ err error }
+
+func (r stateSourceResolver) ResolveSource(context.Context, string, string) (RawSource, error) {
+	return RawSource{}, r.err
+}
+
+type stateTopicResolver struct{ err error }
+
+func (r stateTopicResolver) ResolveTopic(context.Context, string) (RawSource, error) {
+	return RawSource{}, r.err
+}
+
+// The lifecycle state decides what the caller must do, so it has to survive into
+// the status code. Collapsing the cases is what let a revoked source be retried
+// forever: "the platform refused this" and "the platform cannot tell you" looked
+// the same, so the adapter held the offset until the topic's retention deleted
+// the records without recording that anything had been refused.
+func TestIngestMapsSourceLifecycleToDistinctStatusCodes(t *testing.T) {
+	const adapterToken = "test-adapter-token-with-more-than-32-characters"
+	const topic = "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
+	const contextID = "ctx_0123456789abcdef0123456789abcdef"
+	cases := []struct {
+		name    string
+		err     error
+		adapter int
+		trusted int
+	}{
+		// Revoked is a definitive refusal on both routes: quarantine and advance.
+		{"revoked", ErrSourceRevoked, http.StatusForbidden, http.StatusForbidden},
+		// Paused is a hold the operator intends to lift, so both routes retry.
+		{"paused", ErrSourcePaused, http.StatusServiceUnavailable, http.StatusServiceUnavailable},
+		// An unidentified caller is 401 where the credential is checked. The topic
+		// route cannot tell "never existed" from "registered a moment from now",
+		// so it keeps retrying rather than quarantining a race.
+		{"unknown", ErrSourceUnauthorized, http.StatusServiceUnavailable, http.StatusUnauthorized},
+		{"registry down", errors.New("connection refused"), http.StatusServiceUnavailable, http.StatusServiceUnavailable},
+	}
+	for _, tc := range cases {
+		adapterServer := Server{TopicResolver: stateTopicResolver{err: tc.err}, AdapterToken: adapterToken}
+		req := httptest.NewRequest(http.MethodPost, "/api/v1/internal/ingest/beat-events", bytes.NewReader([]byte(`{}`)))
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("X-Source-Adapter-Token", adapterToken)
+		req.Header.Set("X-Source-Topic", topic)
+		req.Header.Set("X-Source-Partition", "0")
+		req.Header.Set("X-Source-Offset", "1")
+		response := httptest.NewRecorder()
+		adapterServer.Handler().ServeHTTP(response, req)
+		if response.Code != tc.adapter {
+			t.Fatalf("adapter route %s status=%d body=%s, want %d", tc.name, response.Code, response.Body.String(), tc.adapter)
+		}
+
+		trustedServer := Server{SourceResolver: stateSourceResolver{err: tc.err}}
+		trustedRequest := httptest.NewRequest(http.MethodPost, "/api/v1/ingest/events", bytes.NewReader([]byte(`{}`)))
+		trustedRequest.Header.Set("X-Source-Context", contextID)
+		trustedResponse := httptest.NewRecorder()
+		trustedServer.Handler().ServeHTTP(trustedResponse, trustedRequest)
+		if trustedResponse.Code != tc.trusted {
+			t.Fatalf("trusted route %s status=%d body=%s, want %d", tc.name, trustedResponse.Code, trustedResponse.Body.String(), tc.trusted)
+		}
+	}
+}
+
+func TestClassifySourceStateTreatsAnUnknownStateAsPaused(t *testing.T) {
+	if err := classifySourceState("active"); err != nil {
+		t.Fatalf("active -> %v, want nil", err)
+	}
+	if err := classifySourceState("revoked"); !errors.Is(err, ErrSourceRevoked) {
+		t.Fatalf("revoked -> %v, want ErrSourceRevoked", err)
+	}
+	if err := classifySourceState("paused"); !errors.Is(err, ErrSourcePaused) {
+		t.Fatalf("paused -> %v, want ErrSourcePaused", err)
+	}
+	// A state this build does not know is held rather than refused: holding the
+	// offset is recoverable, advancing past records that were never accepted is
+	// not.
+	if err := classifySourceState("something-newer"); !errors.Is(err, ErrSourcePaused) {
+		t.Fatalf("unknown state -> %v, want ErrSourcePaused", err)
+	}
+}
+
 type memoryReceipt struct {
 	hash    string
 	encoded []byte

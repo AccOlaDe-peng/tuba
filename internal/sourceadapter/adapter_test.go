@@ -124,6 +124,44 @@ func TestProcessUntilCommittedQuarantinesIngestRejectedEvent(t *testing.T) {
 	}
 }
 
+// 403 is the ingest identifying this source and refusing it. Retrying cannot
+// change that answer, so the record is quarantined and the offset advances —
+// exactly as for any other permanent rejection. Holding it instead would leave
+// the bytes in the topic until the 24-hour retention deleted them, with nothing
+// anywhere recording that they had been refused, which is how a revoked source
+// used to disappear without a trace.
+func TestProcessUntilCommittedQuarantinesARevokedSource(t *testing.T) {
+	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
+	message := kafka.Message{Topic: topic, Partition: 0, Offset: 42, Value: beatEventBody()}
+
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		http.Error(w, "source has been revoked", http.StatusForbidden)
+	}))
+	defer server.Close()
+
+	consumer := &recordingConsumer{}
+	dead := &recordingDeadLetter{}
+	adapter := Adapter{Binding: Binding{Topic: topic}, IngestURL: server.URL, AdapterToken: "adapter-token",
+		Consumer: consumer, DeadLetter: dead, RetryBackoff: time.Millisecond, Metrics: telemetry.New(),
+		HTTPClient: http.DefaultClient}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	_ = adapter.processUntilCommitted(ctx, message)
+
+	if calls != 1 {
+		t.Fatalf("ingest calls=%d, want 1: a revoked source must not be retried", calls)
+	}
+	if len(dead.messages) != 1 {
+		t.Fatalf("DLQ writes=%d, want 1 so the refused bytes outlive the topic's retention", len(dead.messages))
+	}
+	if consumer.commitCalls != 1 {
+		t.Fatalf("commits=%d, want 1 so the partition keeps moving", consumer.commitCalls)
+	}
+}
+
 // A 5xx is the ingest being unavailable, not the event being unacceptable: the
 // offset has to stay uncommitted so the record is retried rather than dropped.
 func TestProcessUntilCommittedRetriesIngestServerError(t *testing.T) {

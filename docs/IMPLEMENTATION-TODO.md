@@ -121,6 +121,10 @@
 - [ ] I01（G）实现来源注册、凭证绑定、namespace/dataset/配额授权和可信上下文；拒绝客户端越权声明。首版 API 与 ingest resolver 已实现；source reset 与真实 Collector 联动、发布版本管理和验收仍待完成。
 - [ ] I02（G）实现 `/api/v1/ingest/events`，Kafka 确认后返回 receipt；明确 400/401/403/413/429/503 行为。可信来源由 `internal/ingest/source_registry.go` 解析；仅允许数据库登记的来源凭证，Raw 路由仍需补齐错误合同、就绪状态和可靠性验收。
   - **2026-09-30 复核：错误合同只差一项，且那一项与设计基线冲突。** 实现实际返回的状态码：400 / 401 / **415** / 409 / 413 / 429 / 500 / 503；本项要求的 400/401/413/429/503 均已实现，**403 从未返回**。原因不是遗漏：`DESIGN-BASELINE.md` 明写「**授权失败、映射缺失、PG/Kafka/ingest 不可用和限流均为可重试错误**」，所以「已停用/未绑定的来源」被有意映射为 **503** 并保留 offset 重试（代码注释：a stale/revoked source remains at its input offset until explicitly resolved），而不是 403 永久拒绝。**需要定的问题**：本项列出的 403 是过时条目，还是应当把「未认证(401)」与「已认证但未授权(403，永久)」区分开？后者会改变适配器的行为——现在被撤销的来源会永远重试而不排空。另两处小偏差：**415 已实现但本项未列**；**429 没有测试断言**。
+  - **2026-09-30 按用户决定实施（取「分开两种认识状态」的方向）**：`403` 现在是真的了。来源生命周期由布尔 `enabled` 改为三态 `active`/`paused`/`revoked`（迁移 `00014_source_lifecycle_state.sql`；`enabled` 保留并由 CHECK 约束与 `state` 保持一致，使旧二进制仍可运行且二者不会漂移）；resolver 不再在 SQL 里过滤状态，而是**读出来分类**（`ErrSourceRevoked` / `ErrSourcePaused` / `ErrSourceUnauthorized`）；ingest 两条路由把撤销映射为 **403**、暂停与未知映射为 503（未知在可信路由上仍是 401）；adapter 的 `permanentIngestRejection` **把 403 移出可重试类**，改为隔离并提交。
+    理由与实证：撤销是确定性拒绝，重试不会改变答案，扣住 offset 只会把记录交给 topic 保留期且不留被拒证据——2026-09-30 采集端那个 ACL 被撤销的实例重试三天、49,144 条授权错误即同一形态。`paused` 与 `revoked` 的区分正是为此：前者保留 offset，后者隔离并前进。
+    三条新测试均做**变异验证**：把 403 放回可重试类 → adapter 报 `ingest calls=9, want 1`；把两处 403 改成 503 → ingest 报 `want 403`。`go test ./...` 26 包 ok、0 FAIL，`go vet ./...` 干净。
+    **尚未部署**：迁移会改线上库 schema，且按滚动部署约束 ingest 与 adapter 必须同批上线（403 若只有一侧生效，行为会介于新旧之间），等待用户窗口。
   - 就绪与可靠性两项其实已有证据：`TestReadinessTracksDependencyRecovery` 覆盖依赖断开/恢复的 200→503→200；可靠性验收由 COL-07/V02 非破坏性子集四项覆盖。
 - [ ] I03（G/O）按 [COLLECTOR-DESIGN.md](COLLECTOR-DESIGN.md) 交付 Filebeat/Winlogbeat＋TUBA 管理和可信适配链路；按 COL-01–COL-15 的对应来源和迁移任务验收，不以设计文档代替实现。
 - [ ] I04（G/D）实现 Raw 索引分支、原文 hash、按固定采集日期写入、访问控制和归档就绪状态。
