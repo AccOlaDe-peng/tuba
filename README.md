@@ -19,8 +19,11 @@ TUBA 是面向 Windows Security 与 Zeek 等来源的 UEBA 平台。本仓库正
 ## 当前实现切片
 
 - Go 数据面已有 Raw 接入、来源凭证解析、Kafka receipt、Raw 索引、首批 Zeek/Windows Security DIP/UIM 映射、标准事件索引与隔离处理。
-- Collector 有 Zeek JSONL、SQLite WAL 队列、单条 HTTP 投递和过滤骨架；该自研路径保留迁移用途；目标 Windows 采集改为 Winlogbeat，管理客户端和新链路尚未交付。
-- 控制面已有 Collector 注册、心跳和配置版本 API；Agent 客户端尚未接通。任务/outbox、实体、特征、风险和管理查询也仍处于待实现或部分实现状态。
+- Windows Security 已**在 139/169 上真实接入并闭环**：Winlogbeat 独立实例 → 来源 Kafka（SCRAM 身份与精确 ACL）→ source-adapter → tuba-ingest → Raw ES → DIP/UIM → 标准 ES。该链路按来源命名空间路由，与既有 Zeek 链路并行、不共用消费组。逐段数量见 TODO 的 2026-09-29/30 记录。
+- 语义发布（release）控制面已实现并部署：manifest 注册、validate→stage→activate 状态机、资产哈希与依赖校验、全局 publisher 授权与审计；`windows-security-1.0.0` 已 active。
+- Collector 仍有 Zeek JSONL、SQLite WAL 队列、单条 HTTP 投递和过滤骨架；该自研路径保留迁移用途，Windows 自研 adapter 已取消。
+- 控制面已有 Collector 注册、心跳、凭据与配置版本 API；**Agent 客户端尚未接通**。因此 Windows 采集器目前由运维脚本手工部署与管理，未纳入远程管理闭环。
+- **尚未交付**：TUBA Management Agent 与其远程配置下发（COL-08/09）、来源过滤策略版本与影子计数（COL-06）、任务/outbox、实体、特征、风险与管理查询控制台。
 - Web 登录验收已通过开发 realm 的用户名/密码登录；生产身份接入和目标运行环境的登录验收不由此推定完成。
 
 组件与数据流的目标、已有落点和缺口逐项记录在 [实施差异矩阵](docs/IMPLEMENTATION-GAP-MATRIX.md)。248 当前运行状态以 [环境盘点报告](docs/ENVIRONMENT-248-REPORT.md) 为准；该报告是指定日期的快照，不是持续健康保证。
