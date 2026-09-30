@@ -87,7 +87,7 @@
 
 ## 磁盘水位与容量
 
-A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写入；Kafka 各 Topic 保留 24 小时，ES Raw/domain/Quarantine 最多 7 个 UTC 日分区。
+A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写入；Kafka 各 Topic 保留 12 小时（2026-09-30 由 24 小时下调：全部 topic 动态设 `retention.ms=43200000`，`server.properties` 同步为 `log.retention.hours=12`），ES Raw/domain/Quarantine 最多 7 个 UTC 日分区。
 
 **告警档位与 ES 的分配水位已刻意分开，改动前它们曾被写成同一组数。** 单节点上 `cluster.routing.allocation.disk.watermark.enable_for_single_data_node=true`（默认）会让 **low 水位阻止一切新分片分配**，不只是副本——所以把 A03 的 70% warning 线直接用作 low 水位，等于把"70% 告警"变成了"70% 之后再也建不出新索引"。本节点常态就压在 70%，2026-09-30 实测后果是索引创建与恢复**时好时坏、ES 不报任何错**（诊断见「异机备份与恢复」）。
 
@@ -96,7 +96,7 @@ A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写
 1. 先分清哪一层在涨。Kafka 与 ES 各有保留期、会自行封顶；**只有 `ingest_receipts` 会无限增长**（每个接入事件一行，约 1.5 KB/行）。2026-09-30 实测：该表 2,511 MB 时为根盘增长主因，写入约 0.5 GB/天。
 2. `SELECT pg_size_pretty(pg_total_relation_size('ingest_receipts')), count(*) FROM ingest_receipts;` 确认表状态与最早一行时间。
 3. 日常清理由 `scripts/prune_ingest_receipts.sh` 每日 03:17 执行（保留 2 天）。手动核对先不带 `APPLY=true` 试跑，确认待删行数再执行。
-4. 保留期不得随意放大：可重投窗口由 Kafka 保留期（24 小时）与采集端 `ignore_older` 界定，2 天已是其两倍余量；而 receipt 若比窗口年轻，放大窗口会一行都清不掉、磁盘继续涨。
+4. 保留期不得随意放大：可重投窗口由 Kafka 保留期（12 小时，2026-09-30 由 24 小时下调）与采集端 `ignore_older` 界定，2 天已是其四倍余量；而 receipt 若比窗口年轻，放大窗口会一行都清不掉、磁盘继续涨。
 5. `DELETE` 只把页面标为可复用，文件不缩小但**增长停止**。要真正把空间还给文件系统须 `VACUUM FULL`，它取 ACCESS EXCLUSIVE 锁、阻塞接入数十秒（适配器保留 offset 重试，不丢数据），只在明确的维护窗口执行。
 6. 清理循环若报 `stopped after N batches with rows still eligible`，先确认待删行是否真的归零；该报错曾是计数把 psql 命令标签算作一行所致。
 7. 异机备份**不再占用本机磁盘**：快照直接写进挂在 `/var/lib/elasticsearch/backups` 的 21 仓库（旧版本在本机暂存，实测 4.9 GB，会把占用推过 80% 并让 ES 全索引只读，见「异机备份与恢复」）。脚本以"必须是独立挂载点"作为前置闸门，避免退回旧行为。
