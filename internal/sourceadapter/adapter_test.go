@@ -2,8 +2,6 @@ package sourceadapter
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -14,6 +12,7 @@ import (
 	"time"
 
 	"github.com/segmentio/kafka-go"
+	"tuba/product/internal/rawevent"
 	"tuba/product/internal/telemetry"
 )
 
@@ -163,7 +162,13 @@ func TestRunRetriesKafkaFetchAndCommitWithoutRedeliveringAcceptedRecord(t *testi
 	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
 	body := []byte(`{"@timestamp":"2026-09-28T10:00:00Z","agent":{"type":"filebeat","version":"8.19.0","id":"beat-a"},"event":{"dataset":"zeek.conn"},"log":{"file":{"device_id":"2053","inode":"8926348","path":"/var/log/conn.log"},"offset":10118640}}`)
 	message := kafka.Message{Topic: topic, Partition: 0, Offset: 42, Value: body}
-	digest := sha256.Sum256(body)
+	// The receipt carries the canonical digest, because that is what the adapter
+	// recomputes when it checks a receipt against the message it sent. A raw-byte
+	// digest here would never match and the adapter would retry forever.
+	payloadHash, err := rawevent.CanonicalPayloadHash(body)
+	if err != nil {
+		t.Fatal(err)
+	}
 	var ingestCalls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ingestCalls++
@@ -177,7 +182,7 @@ func TestRunRetriesKafkaFetchAndCommitWithoutRedeliveringAcceptedRecord(t *testi
 			"source_context_id": "ctx_0123456789abcdef0123456789abcdef",
 			"source_position":   "filebeat-v1:2053:8926348:10118640",
 			"delivery_position": "kafka-v1:" + topic + ":0:42",
-			"payload_hash":      hex.EncodeToString(digest[:]),
+			"payload_hash":      payloadHash,
 			"status":            "accepted",
 		})
 	}))

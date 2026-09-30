@@ -20,6 +20,15 @@ func StableBeatPosition(payload []byte, deliveryPosition string) string {
 	if decoder.Decode(&event) != nil {
 		return deliveryPosition
 	}
+	return StableBeatPositionFromEvent(event, deliveryPosition)
+}
+
+// StableBeatPositionFromEvent derives the position from an already-decoded event.
+// The ingest needs the position several times per request — once per source-kind
+// guard and once for the identity itself — and a decode per call made that the
+// most repeated work in the request path. A nil event yields deliveryPosition,
+// which is what the byte form returns when the payload does not decode.
+func StableBeatPositionFromEvent(event map[string]any, deliveryPosition string) string {
 	winlog, ok := event["winlog"].(map[string]any)
 	if ok {
 		computer, computerOK := coordinateString(winlog["computer_name"])

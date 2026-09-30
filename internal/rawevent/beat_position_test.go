@@ -1,6 +1,10 @@
 package rawevent
 
-import "testing"
+import (
+	"bytes"
+	"encoding/json"
+	"testing"
+)
 
 func TestStableBeatPositionUsesFilestreamCoordinatesAcrossDeliveries(t *testing.T) {
 	body := []byte(`{"log":{"file":{"device_id":"2053","inode":"8926348","path":"/logs/conn.log"},"offset":10118640}}`)
@@ -89,5 +93,33 @@ func TestStableBeatPositionFallsBackForIncompleteWindowsCoordinates(t *testing.T
 	body := []byte(`{"@timestamp":"2026-09-29T03:14:15Z","winlog":{"computer_name":"WIN-139","channel":"Security"}}`)
 	if got := StableBeatPosition(body, fallback); got != fallback {
 		t.Fatalf("position = %q, want fallback %q", got, fallback)
+	}
+}
+
+// The ingest decodes the payload once and uses the event-taking form; every
+// other caller keeps passing bytes. The two must not drift, or the position
+// that decides a raw event's identity would depend on which entry point ran.
+func TestStableBeatPositionFromEventMatchesPayloadForm(t *testing.T) {
+	bodies := [][]byte{
+		[]byte(`{"log":{"file":{"device_id":"2053","inode":"8926348","fingerprint":"3f9a2c","path":"/logs/conn.log"},"offset":10118640}}`),
+		[]byte(`{"log":{"file":{"device_id":"2053","inode":"8926348"},"offset":0}}`),
+		[]byte(`{"@timestamp":"2026-09-29T03:14:15.1234567Z","winlog":{"computer_name":"WIN-139","channel":"Security","record_id":"928144"}}`),
+		[]byte(`{"@timestamp":"2026-09-29T03:14:15Z","winlog":{"computer_name":"WIN-139","channel":"Security"}}`),
+		[]byte(`{"message":"not a file event"}`),
+		[]byte(`not json at all`),
+	}
+	const fallback = "kafka-v1:topic:0:7"
+	for _, body := range bodies {
+		decoder := json.NewDecoder(bytes.NewReader(body))
+		decoder.UseNumber()
+		var event map[string]any
+		if decoder.Decode(&event) != nil {
+			event = nil
+		}
+		fromBytes := StableBeatPosition(body, fallback)
+		fromEvent := StableBeatPositionFromEvent(event, fallback)
+		if fromBytes != fromEvent {
+			t.Fatalf("position differs by entry point for %s:\n  bytes=%q\n  event=%q", body, fromBytes, fromEvent)
+		}
 	}
 }

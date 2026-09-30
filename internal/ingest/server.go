@@ -1,6 +1,7 @@
 package ingest
 
 import (
+	"bytes"
 	"context"
 	"crypto/subtle"
 	"encoding/json"
@@ -173,16 +174,24 @@ func (s Server) ingestBeat(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "event too large", http.StatusRequestEntityTooLarge)
 		return
 	}
-	if source.VendorProduct == "zeek" && rawevent.StableBeatPosition(payload, "") == "" {
+	// One decode serves the source-kind guards and the position itself. A decode
+	// per call made this the most repeated work in the request path.
+	payloadDecoder := json.NewDecoder(bytes.NewReader(payload))
+	payloadDecoder.UseNumber()
+	var beatEvent map[string]any
+	if payloadDecoder.Decode(&beatEvent) != nil {
+		beatEvent = nil
+	}
+	if source.VendorProduct == "zeek" && rawevent.StableBeatPositionFromEvent(beatEvent, "") == "" {
 		http.Error(w, "Zeek Filebeat event requires stable file device, inode and log offset", http.StatusBadRequest)
 		return
 	}
-	if (source.VendorProduct == "windows" || source.VendorDataset == "windows.security") && rawevent.StableBeatPosition(payload, "") == "" {
+	if (source.VendorProduct == "windows" || source.VendorDataset == "windows.security") && rawevent.StableBeatPositionFromEvent(beatEvent, "") == "" {
 		http.Error(w, "Windows Security Winlogbeat event requires computer, channel, record ID and timestamp", http.StatusBadRequest)
 		return
 	}
 	deliveryPosition := fmt.Sprintf("kafka-v1:%s:%d:%d", topic, partition, offset)
-	position := rawevent.StableBeatPosition(payload, deliveryPosition)
+	position := rawevent.StableBeatPositionFromEvent(beatEvent, deliveryPosition)
 	s.acceptRaw(w, r, source, position, deliveryPosition, payload)
 }
 
