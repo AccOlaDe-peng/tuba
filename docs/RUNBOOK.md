@@ -109,6 +109,30 @@ A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写
 
 **启用 `file_identity.fingerprint` 会改变事件身份**：位置由 `filebeat-v1:<device>:<inode>:<offset>` 变为 `filebeat-v2:<fingerprint>:<offset>`，`StableID` 随之变化，积压重读会被当作全新事件重复入索引而非去重。要在不产生重复的前提下切换，须在来源暂停时进行。
 
+## 异机备份与恢复
+
+备份由 `scripts/backup_tuba_to_offsite.sh` 每日 02:37 推到 `10.6.69.21:/opt/tuba-backup/248/<stamp>/`，含四部分：PostgreSQL 自定义格式转储、Elasticsearch 快照、Keycloak realm 导出、发布包。免密通道是 248 上一把限定来源地址的密钥。
+
+**RPO 为一次运行间隔。** 没有 WAL 归档：本机 PostgreSQL 与另一产品共用，不得为 TUBA 改动其服务配置。两次运行之间丢失本节点即丢失该窗口的接入数据。
+
+### 恢复 Elasticsearch（顺序不能变）
+
+1. 注销仓库：`DELETE /_snapshot/tuba_offsite`。
+2. **清空本地仓库目录** `/var/lib/elasticsearch/backups`，再整体拷入备份的 `elasticsearch/`。
+3. 重新注册仓库（`path.repo` 已声明，无需重启）。
+4. `GET /_snapshot/tuba_offsite/_all` 核对快照可见且 `state=SUCCESS`。
+5. 用 `rename_pattern` 恢复成临时索引名，核对文档数后再切换别名。
+
+第 2 步的"清空"不可省：`index-N` 是仓库世代号，ES 只读最高的那个。若只把备份文件叠加到已被改动的目录上，更新的空世代会遮蔽备份中的快照，表现为仓库可 `_verify` 通过却列出 0 个快照。
+
+### 恢复 PostgreSQL
+
+`pg_restore` 需要目标库；当前 TUBA 数据库身份**没有 CREATEDB 权限**，因此恢复演练必须在独立实例或由具备建库权限的运维身份执行。转储本身已在备份时用 `pg_restore --list` 校验可读（390 个归档条目）。
+
+### 容量要求
+
+备份期间本机需要约一份证据库大小的临时空间（2026-09-30 实测 4.6 GB）。**稳态占用必须留出这段余量**，否则每次备份都会瞬时越过 80% 停止写入水位。快照传输完成后脚本会释放本地副本；未释放会把证据库在本节点上翻倍。
+
 ## 凭据轮转
 
 1. Kafka 服务身份与来源身份均由 `secrets.json` 承载（Kafka 目录下，0600）。轮转后必须重启对应组件，否则旧凭据继续生效直到连接重建。
