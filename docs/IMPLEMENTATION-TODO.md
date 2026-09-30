@@ -386,6 +386,27 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 
 **遗留**：白名单仍是多处重复（含 Grafana），**新增命名空间时漏改一处不会报错**，集中生成应在 D1.5 处理。孤儿消费组本身未删除（保留其 offset 作为证据），因此 `--all-groups` 排查时仍会看到冻结 lag，RUNBOOK 的 TubaKafkaLag 已写明如何区分。
 
+### 2026-09-30 COL-07/V02 非破坏性子集（1/4）：重复投递与跨 offset 重发 —— 通过
+
+**要验的不变量**：同一条记录被重复投递、或从不同 Kafka offset 再投一次时，不得产生第二条原始事件、不得丢已确认记录。这既是 COL-07 的"重复 offset/跨 offset 重发"，也是 V02 的"重复提交"，并且是采集端强杀后重读场景的安全前提。
+
+**方法**：直接按 adapter 面向 ingest 的契约投递——`POST /api/v1/internal/ingest/beat-events`，头带 `X-Source-Adapter-Token` 与 `X-Source-Topic/Partition/Offset`，body 为源 topic 里该记录的**原始字节**。选真实记录（不从构造输入），跑在 248 本机、不经过 adapter，因此对线上无副作用。
+
+**为什么不用 ES 文档数判定**：重复投递在 receipt 层就被吸收，第二条永远不会写进 Kafka，所以 ES 文档数看不出差别。**唯一可观测的位置是 receipt 本身与 raw topic 里的出现次数。**
+
+| 用例 | 记录 | 三次投递（同位置 / 完全相同 / 换 offset+777） | raw topic 中该 `raw_event_id` 出现次数 |
+| --- | --- | --- | --- |
+| Windows（tenant_a） | `ctx_03329669…` offset 5511 | 均 HTTP 202，`receipt_id` **完全相同** `raw:af2c9509…` | 扫描 3,000 条，**1 次** |
+| Zeek（tls） | `ctx_5fadf1a6…` offset 128708 | 均 HTTP 202，`receipt_id` **完全相同** `raw:c5e0b697…` | 扫描 3,000 条，**1 次** |
+
+另验冲突分支：**同位置、改一个字段**再投 → **HTTP 409** `source position was already used for a different payload`，不产生新事件。这正是 2026-09-29/30 那批 DLQ 的来源类别（当时是采集端重读时来源字段渲染不稳定所致），现在确认它在 ingest 侧被正确拒绝而不是静默接受。
+
+**结论与机制**：去重键是 `RawEventID`（由**稳定位置**推出，Windows 是 computer/channel/recordID/timestamp，Zeek 是文件指纹+偏移）加 `PayloadHash`，**不含投递位置**。所以采集端强杀后重读、或消费组回退 offset 导致同一记录从新 offset 再来时，会收敛到同一条原始事件——这正是"强杀重读"能够安全的前提，也在契约层面解释了为什么位置稳定性（[[beat_position]] 的指纹方案与规范化哈希）是必需的而不是优化。
+
+**过程中修正的一处判据错误**：本测试第一版把"raw topic 末位不得增长"当作判据，**该判据无效**——raw topic 同时在接收实时业务流量（测试期间 tenant_a +4、Zeek +121），无法区分是我的投递还是生产写入。已改为统计 `raw_event_id` 在 raw topic 中的出现次数，对实时流量免疫。
+
+**本项未覆盖（仍属 COL-07/V02 未完成部分）**：采集端真实强杀与 registry 丢失窗口（未做）；ingest 不可用时 adapter 不提交 offset；DLQ 不可用时不得提交输入。
+
 ## 后续多节点（P2；本轮不要求实施）
 
 - [ ] X01 Kafka 多 broker/控制器、Topic 副本/ISR、分区迁移与故障演练。
