@@ -5,6 +5,36 @@
 
 本地依赖由 `product/compose.yaml` 提供。正式环境不得直接使用 Compose 中的开发密码、单节点 Kafka 或单节点 Elasticsearch。
 
+### 安装器的职责边界：自己的产品树 vs 被领养的共享依赖
+
+单节点的安装面只覆盖**TUBA 自己的产品树**，其余全部是**领养**而不是安装：
+
+| 对象 | 归属 | 由谁处理 |
+| --- | --- | --- |
+| `/opt/tuba/releases/<version>`＋`current`/`previous`、不可登录 `tuba` 账号、`/etc/tuba`、`/var/lib/tuba`、`/var/log/tuba` | **TUBA 自有** | `scripts/install_tuba_linux.sh` 创建、校验、版本切换与回滚 |
+| PostgreSQL / Kafka / Elasticsearch / Keycloak 实例本身 | **被领养** | 由环境提供，TUBA **不安装、不升级、不重新配置** |
+| 迁移、运行角色、Topic、ES 模板、realm discovery 校验 | TUBA 落在已有实例上的对象 | `scripts/initialize_tuba_single_node.sh` 幂等执行 |
+
+这不是洁癖，而是 248 的现实：那里的 PostgreSQL **与另一个产品共用**，Kafka/ES/Keycloak 也都是既有实例。安装器去"拥有"它们，代价是别的产品的可用性。
+
+初始化之前先跑**只读**的领养预检——它**不创建任何对象、不下发任何 DDL**，只回答"现有依赖能不能安全地被使用"，并对三类情况**默认拒绝**：
+
+```bash
+DATABASE_MIGRATION_URL=... KAFKA_BROKERS=... ES_URL=... KEYCLOAK_URL=... \
+  bash scripts/check_tuba_prerequisites.sh          # 或 --json 取机器可读报告
+bash scripts/initialize_tuba_single_node.sh --check-dependencies-only   # 只查不做
+```
+
+| 拒绝项 | 原因 | 显式确认 |
+| --- | --- | --- |
+| `public` 里存在非 TUBA 的表（库被共用） | 运行角色供给会 `REVOKE CONNECT ON DATABASE ... FROM PUBLIC` 和 `REVOKE CREATE ON SCHEMA public FROM PUBLIC`，在共用库上等于让别的产品掉线 | `TUBA_ADOPT_SHARED_DATABASE=yes` |
+| 运行角色就是 schema owner（248 现状） | 能 DDL，DML-only 的运行身份形同虚设 | `TUBA_ALLOW_RUNTIME_OWNER=yes` |
+| 单数据节点 ES 仍在默认 85%/90% 水位 | 到 85% 直接停止分配分片，而表现只是"分片分配失败"——248 上曾被误判为快照恢复失败 | 由 `scripts/tuba_capacity_guard.py` 设为 75/78/80；预检只告警不拦截 |
+
+预检与 `scripts/provision_postgres_runtime_role.sh` 共用 `scripts/lib/tuba_pg_adoption.sh` 判定"哪些表是我们的"——**预检放行而供给脚本拒绝**这种自相矛盾比没有预检更糟。两个脚本的默认拒绝与显式确认都有测试覆盖，见 `scripts/test_check_tuba_prerequisites.sh`。
+
+`docs/TARGET-ARCHITECTURE.md` 11.1 的"现有 248 路径可通过配置接入"是这条边界的依据：**安装器对齐现实，不要求环境迁就安装器**。
+
 ### Windows 单节点包安装与回滚（O01）
 
 `scripts/package_tuba.ps1 -Version <版本> -GOOS windows -GOARCH amd64` 生成带 SHA-256 sidecar 的 ZIP 包。以提升权限的 PowerShell 运行安装器；`-CreateLocalAccount` 会交互式创建专用本地标准账号，不提供密码参数：

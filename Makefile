@@ -1,6 +1,6 @@
 SHELL := /bin/sh
 
-.PHONY: bootstrap check test build contracts helm-check go-check python-check analysis-evaluate web-check dev-up dev-down topics clean
+.PHONY: bootstrap check test build contracts helm-check go-check python-check shell-check analysis-evaluate web-check dev-up dev-down topics clean
 
 bootstrap:
 	uv sync --project python --frozen
@@ -23,6 +23,12 @@ python-check:
 	uv run --project python python -m unittest discover -s python/tests
 	uv run --project python tuba-analysis-evaluate python/scenarios/*.json --min-precision 1 --min-recall 1
 
+shell-check:
+	# These drive the installer, the initializer and the adoption guards against
+	# fakes; they need bash, python3 and curl, not any real dependency.
+	bash scripts/test_check_tuba_prerequisites.sh
+	bash scripts/test_initialize_tuba_single_node.sh
+
 analysis-evaluate:
 	uv run --project python tuba-analysis-evaluate python/scenarios/*.json --min-precision 1 --min-recall 1
 
@@ -30,7 +36,7 @@ web-check:
 	corepack pnpm@12.6.0 --dir web typecheck
 	corepack pnpm@12.6.0 --dir web test
 
-check: contracts helm-check go-check python-check web-check
+check: contracts helm-check go-check python-check shell-check web-check
 
 test: check
 

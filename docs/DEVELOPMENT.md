@@ -69,6 +69,7 @@ uv run --project python python scripts\load_test.py --events 1000 --concurrency 
 | `make contracts` | 校验 JSON Schema、示例与 UIM 用例（零依赖基线），并解析 OpenAPI：解析整个文档、递归解析全部 `$ref`（含外部 schema 文件并复跑同一套 schema 校验）、检查每个 path 的方法与 responses |
 | `make go-check` | Go 测试和 vet |
 | `make python-check` | Python 分析测试 |
+| `make shell-check` | 安装器/初始化器/领养预检的 shell 测试（用 fake 依赖驱动，不需要真实 Kafka/PG/ES/Keycloak） |
 | `make web-check` | TypeScript 检查和前端测试 |
 | `make check` | 运行全部基础质量门禁 |
 | `make build` | 构建 Go 命令、Python wheel/sdist 和 React 静态资源 |

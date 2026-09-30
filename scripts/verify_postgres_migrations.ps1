@@ -55,7 +55,13 @@ exit "$status"
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot "apply_postgres_migrations.sh") -Destination (Join-Path $profileRoot "scripts/apply_postgres_migrations.sh")
         Copy-Item -Path (Join-Path $root "migrations/*.sql") -Destination (Join-Path $profileRoot "migrations")
     }
-    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "provision_postgres_runtime_role.sh") -Destination (Join-Path $tempRoot "runtime/scripts/provision_postgres_runtime_role.sh")
+    # The provisioning script sources lib/tuba_pg_adoption.sh to decide what a
+    # shared database is, so the copy has to carry the lib too. Without it the
+    # script dies on the missing source and this whole acceptance run aborts.
+    $runtimeScripts = Join-Path $tempRoot "runtime/scripts"
+    New-Item -ItemType Directory -Force -Path (Join-Path $runtimeScripts "lib") | Out-Null
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "provision_postgres_runtime_role.sh") -Destination (Join-Path $runtimeScripts "provision_postgres_runtime_role.sh")
+    Copy-Item -LiteralPath (Join-Path $PSScriptRoot "lib/tuba_pg_adoption.sh") -Destination (Join-Path $runtimeScripts "lib/tuba_pg_adoption.sh")
 
     $driftMigration = Get-ChildItem (Join-Path $tempRoot "drift/migrations") -File | Sort-Object Name | Select-Object -First 1
     [IO.File]::AppendAllText($driftMigration.FullName, "`n-- checksum drift verification`n", [Text.UTF8Encoding]::new($false))

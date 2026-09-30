@@ -22,6 +22,16 @@ make_step "$test_root/scripts/apply_postgres_migrations.sh" postgres-migrations
 make_step "$test_root/scripts/provision_postgres_runtime_role.sh" postgres-runtime-role
 make_step "$test_root/scripts/apply_elasticsearch_assets.sh" elasticsearch-assets
 make_step "$test_root/bin/tuba-topic-admin" kafka-topics
+# The dependency check is not a make_step: it has to be able to fail on demand so
+# the ordering assertion below has something to observe.
+cat >"$test_root/scripts/check_tuba_prerequisites.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' dependency-check >>"$TUBA_INIT_TEST_LOG"
+[[ ${FAKE_DEPS_FAIL:-0} == 1 ]] && exit 1
+exit 0
+EOF
+chmod 0755 "$test_root/scripts/check_tuba_prerequisites.sh"
 cat >"$test_root/bin/curl" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -43,9 +53,32 @@ export TUBA_TOPIC_NAMESPACE=single_node_validation
 export TUBA_TOPIC_ADMIN="$test_root/bin/tuba-topic-admin"
 
 bash "$test_root/scripts/initialize_tuba_single_node.sh" >/dev/null
-expected=$'postgres-migrations\npostgres-runtime-role\nkafka-topics\nelasticsearch-assets'
+expected=$'dependency-check\npostgres-migrations\npostgres-runtime-role\nkafka-topics\nelasticsearch-assets'
 actual=$(cat "$TUBA_INIT_TEST_LOG")
 [[ $actual == "$expected" ]] || { echo "Unexpected initializer order: $actual" >&2; exit 1; }
+
+# The dependency check comes first, so a refusal there must stop the run before
+# anything is applied -- that ordering is the whole point of adopting rather than
+# installing, and a check that runs late protects nothing.
+: >"$TUBA_INIT_TEST_LOG"
+if FAKE_DEPS_FAIL=1 bash "$test_root/scripts/initialize_tuba_single_node.sh" >/dev/null 2>&1; then
+  echo "A failing dependency check did not stop the initializer" >&2
+  exit 1
+fi
+actual=$(cat "$TUBA_INIT_TEST_LOG")
+[[ $actual == dependency-check ]] || { echo "Steps ran despite the dependency check failing: $actual" >&2; exit 1; }
+
+# --check-dependencies-only must stop after the check and touch nothing.
+: >"$TUBA_INIT_TEST_LOG"
+bash "$test_root/scripts/initialize_tuba_single_node.sh" --check-dependencies-only >/dev/null
+actual=$(cat "$TUBA_INIT_TEST_LOG")
+[[ $actual == dependency-check ]] || { echo "--check-dependencies-only ran other steps: $actual" >&2; exit 1; }
+
+# An unknown argument must be refused rather than ignored.
+if bash "$test_root/scripts/initialize_tuba_single_node.sh" --nonsense >/dev/null 2>&1; then
+  echo "Initializer accepted an unknown argument" >&2
+  exit 1
+fi
 
 if TUBA_TOPIC_PROFILE=production_single_node bash "$test_root/scripts/initialize_tuba_single_node.sh" >/dev/null 2>&1; then
   echo "Initializer accepted a production profile before A03 approval" >&2
