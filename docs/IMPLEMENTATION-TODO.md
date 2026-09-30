@@ -89,7 +89,7 @@
       7. **监控栈不在清单内**：prometheus/grafana/node_exporter/kafka_exporter 独立于 Launcher 运行，未纳入统一管理，重启后同样不会自动恢复——这是第 1 条的另一个实例。
       8. **未做持续稳定性窗口**：验收只有分钟级观察（11/11 running、`restarts=0`、33 个消费组不变、各域文档数上涨）；跨天趋势、跨 offset 重放对账与故障注入（COL-07/V02）仍未做。
       9. ~~**生成清单的工具不在版本控制里**~~ **（已收编）**：`gen248.py`（从 `/proc` 推导 manifest＋env 的生成器，即本次修复白名单缺陷的那个文件）原先位于 `.runtime/`、被 `.gitignore` 排除，没有 review、历史或测试。现已移入版本控制为 `scripts/gen248.py`（内容不变），两条守卫的变异用例已固化为 `scripts/test_gen248.py`（`python scripts/test_gen248.py`，7 例）：共享密钥值漂移拒绝写盘及一致值只落地一次的正例；"live 变量到不了任何服务则拒绝写盘"守卫——含加宽 `AMBIENT_DENY` 而不动 `MAY_DROP` 的变异（模拟 `ES_URL` 被静默丢弃）必须触发拒绝、`MAY_DROP` 内变量（`PWD`/`HOME`）被丢弃不触发、以及守卫与拷贝循环的名字正则必须不同、`MAY_DROP` 必须是独立第二份拷贝的结构性断言；外加两服务最小 fixture 的 happy-path（wildcard 监听进 `dropped_listeners`、每服务密钥变 `${TUBA_<NAME>_...}`、共享密钥变 `${VAR}` 引用）。
-    - **同批结转的待办**（不在本次切换范围内，但切换后仍未关闭）：COL-07/V02 破坏性故障注入子集——阻塞于磁盘扩容，且用户已决定本轮不做目标机重启测试；Adapter/DLQ 端到端验收测试——用户推迟到后续会话。
+    - **同批结转的待办**（不在本次切换范围内，但切换后仍未关闭）：COL-07/V02 破坏性故障注入子集——**已于 2026-09-30 执行 6 项中的 5 项**（磁盘满/Kafka 故障/PG 故障/Topic 重建/积压换凭据，见 COL-07b 五条记录，全过且暴露 adapter 对 topic 重建不自愈的缺陷），仅剩目标机重启（用户已决定本轮不做）；Adapter/DLQ 端到端验收测试——用户推迟到后续会话。
     - **一条需要记住的语义变更（不是待办，是现状）**：`/etc/tuba/tuba.env` 已从"api 的环境文件"变成"Launcher 的密钥文件"，只含密钥。已核对 `backup_tuba_to_offsite.sh` 自带 `ES_URL` 默认值、不 source 该文件，全机再无其他消费方，故无回归；但任何**新**脚本都不应再把它当作完整服务环境来 source。
 - O01 Linux 包核对补充（2026-09-28）：修复 PowerShell `.sha256` sidecar 的 CRLF 文件名问题，包脚本改为无换行 ASCII 输出，Linux 安装器使用 `sha256sum -c`。WSL Alpine 实测 Linux 包 checksum 返回 `OK`，`tar -tzf` 可完整读包；这验证包格式/校验链，不替代在 Ubuntu 目标主机执行安装器。
 - O01 Linux 安装补充（2026-09-28）：在隔离 Alpine v3.23 rootfs 中执行 Linux 安装器并从 RC6 升级到 RC7，`current` 切换且保留旧版本，升级后 `tuba` 非 root smoke service 的 status/stop 通过。随后在一次性 Ubuntu 24.04 容器中执行当前 Linux 包安装器，SHA-256 通过；创建不可登录 `tuba` 用户，验证 release/config/state/log 权限，使用 init 作为 PID 1 后以 `tuba` 非 root 完成 start/status/stop。一次无 init 的容器运行出现 PID 1 不回收的僵尸进程，未计为通过；加入 init 后 stop 在 10 秒内成功。两次容器均无宿主数据挂载，未部署到 248。Ubuntu 裸机目标安装和 Windows 专用账号安装仍未验收，O01 保持未勾选。
@@ -165,8 +165,8 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
   现有关键不变量均有测试覆盖并通过（`go test ./internal/sourceadapter ./internal/ingest ./internal/rawevent`）：ingest 5xx 时 **offset 保持未提交**（`TestProcessUntilCommittedRetriesIngestServerError`）、永久 4xx 才隔离并提交以免卡住分区（`TestProcessUntilCommittedQuarantinesIngestRejectedEvent`）、稳定位置强制且**跨 offset 去重**（`TestWindowsSecurityIngressRequiresStablePositionAndDeduplicatesAcrossOffsets`）、canonical hash 忽略采集器传输元数据（`TestCanonicalPayloadHashIgnoresCollectorLocationMetadata` 等）。
   **OpenAPI 兼容门禁已实现**（按用户决定另开独立脚本，不破坏原校验器的零依赖前提）：新增 `scripts/validate_openapi.py`，用 PyYAML 解析整个文档、**递归解析全部 `$ref`**（内部 JSON 指针解析到已解析的文档，外部 `.json` 引用要求文件存在且**复跑 `validate_contracts.validate_schema` 的同一套规则**）、检查每个 path 的方法与 responses、并要求 `BeatIngressEvent` 仍指向规范 Beat schema。已接入 `make contracts` 与 `make check`，前置依赖写进 DEVELOPMENT.md（与 helm/go/uv/pnpm 同类）。
   门禁自身的证据：正常路径通过（**42 paths、111 条内部引用、2 条外部引用全部解析**）；变异测试逐项确认能拦住漂移——内部引用指向不存在的组件、外部引用指向不存在的文件、Beat 引用被换成别的 schema、某 path 抽掉 responses、某 path 抽掉全部 HTTP 方法、openapi 版本被改，**全部被拦下**。其中一次“把 get 改名”的变异未被拦下，经核查是**变异无效**（该 path 还声明了 post，仍属合法），不是门禁漏洞，已单独用“抽掉全部方法”的变异复验并被拦下。
-  **本项可勾选**。范围说明：`端到端故障验收`在此按 D1 定义的非破坏性子集计（见 COL-07/V02——该子集五项已于 2026-09-30 全部完成；破坏性子集归 D4 且依赖加盘扩容，不作为本项前置）。
-- [ ] COL-02（G/O，P0）锁定 Filebeat/Winlogbeat 版本、OS/架构、Kafka 输出及磁盘队列能力；核对制品与再分发条件，建立带哈希的组件 manifest、下载/离线导入和统一目录包。已固定原型版本 8.19.0、Linux amd64 Filebeat 与 Windows amd64 Filebeat/Winlogbeat，manifest 校验值取自 Elastic 官方 SHA-512 sidecar；`scripts/package_managed_collectors.ps1` 实现下载/缓存/离线校验/打包且未执行。21 上现有 Filebeat 为 8.19.0，官方包授权审查、Beat→Kafka 与 broker/queue 兼容性及真实受管运行仍待验证。
+  **本项可勾选**。范围说明：`端到端故障验收`在此按 D1 定义的非破坏性子集计（见 COL-07/V02——该子集五项已于 2026-09-30 全部完成；破坏性子集归 D4，其中 6 项之 5 已于 2026-09-30 执行通过（见 COL-07b），仅目标机重启按用户决定暂缓，不作为本项前置）。
+- [x] COL-02（G/O，P0）锁定 Filebeat/Winlogbeat 版本、OS/架构、Kafka 输出及磁盘队列能力；核对制品与再分发条件，建立带哈希的组件 manifest、下载/离线导入和统一目录包。已固定原型版本 8.19.0、Linux amd64 Filebeat 与 Windows amd64 Filebeat/Winlogbeat，manifest 校验值取自 Elastic 官方 SHA-512 sidecar；`scripts/package_managed_collectors.ps1` 实现下载/缓存/离线校验/打包且未执行。21 上现有 Filebeat 为 8.19.0，官方包授权审查、Beat→Kafka 与 broker/queue 兼容性及真实受管运行仍待验证。
   - **2026-09-30 复核：仍不能勾选，两个缺口且相互关联。**
     - **官方包授权审查没有做。** 现有记录只有一条设计原则（`COLLECTOR-DESIGN.md`：“默认支持从批准地址下载并校验，**不预设可任意重新分发厂商二进制**”），**没有对 Elastic 实际条款的核对结论**。这不是形式问题：`manifest.v1.json` 声明的三个制品都是 Elastic 8.19.0 包，缓存与再分发它们是否被允许直接决定下一步能不能做。
     - **统一目录包没有产出，打包路径从未端到端跑通。** `scripts/package_managed_collectors.ps1` 实现齐全（读 manifest、`-Offline` 校验、暂存 manifest），但 `dist/component-cache` 里**只有 1 个制品**（`winlogbeat-8.19.0-windows-x86_64.zip`），manifest 声明的另外两个（Linux/Windows Filebeat）不在缓存里，`dist/` 下也没有 unified 目录包产物。**顺序上必须先有授权结论，再决定能否下载并缓存这两个制品**——这正是两个缺口关联的地方。
@@ -177,6 +177,13 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
     - **三条限制对 TUBA 用法的核对。** (1) 不得作为 hosted/managed service 提供给第三方：TUBA 是把 Beat 部署在客户侧、ES 单节点部署在客户环境、客户**不直接访问** ES API——与 FAQ 中两个被允许的示例同型（“contractor setting up Elasticsearch… for my clients to use internally → permitted”；“MSP… if your customers do not access Elasticsearch… permitted”），不构成托管服务。(2) 不得规避 license key 功能：TUBA 只用免费/基础功能（`setup.template/ilm.enabled:false`，无 X-Pack 付费特性），不涉及。(3) 不得删除/隐藏许可与版权声明，且 ELv2 Notices 条款要求**任何获得副本的人同时获得 ELv2 条款文本**：统一目录包内每个 Elastic 制品必须保留其包内自带的 `LICENSE.txt`/`NOTICE.txt`（不解包重打包丢文件），并在 bundle 根随附 Elastic License 2.0 文本；`manifest.v1.json` 已声明 `include_upstream_license_and_notice_files: true`，方向正确，打包脚本需实际核验。
     - **官方渠道补充。** Elastic 无公开的“OEM 强制审批”要求——FAQ 允许随应用再分发，仅对“以托管服务形式向客户直接开放 ES/Kibana 大部分功能”的场景要求联系 elastic_license@elastic.co 商谈。社区常见做法（打包随产品分发与下载页直连两种）均存在；因 TUBA 目标环境离线，随统一目录包分发是合理且被许可允许的路径。若未来形态变为向客户提供 TUBA 托管服务，需重新评估限制 (1)。
     - **剩余动作（授权结论已解除阻塞，按序执行）：** ① 执行 `scripts/package_managed_collectors.ps1` 下载并校验补齐 `dist/component-cache/` 缺失的两个 Filebeat 8.19.0 制品（Linux tar.gz、Windows zip），SHA-512 对官方 sidecar 核验；② 打包脚本增加“制品内 LICENSE/NOTICE 完整 + bundle 根随附 ELv2 文本”的校验步骤；③ 产出统一目录包并端到端跑通打包路径；④ 完成后将 `manifest.v1.json` 的 `public_bundle_redistribution_approved` 置为 true 并记录本结论。
+  - **2026-10-08 落地执行（纯本地，未触 248/21）：剩余动作 ①–④ 全部完成，本项勾选。**
+    - **① 制品补齐并核验。** 本机可直连 artifacts.elastic.co。三个制品的官方 `.sha512` sidecar 实测值与 `manifest.v1.json` 声明值逐一比对**完全一致**（filebeat linux tar.gz `3c795b14…08a8`、filebeat windows zip `1701c79c…ee39`、winlogbeat windows zip `e1681a70…1a58`）。两个缺失 Filebeat 制品经官方 URL 下载进 `dist/component-cache/`，本地 `sha512sum` 复算三制品全部匹配 manifest。
+    - **② 许可校验落地。** ELv2 官方文本取自 Elastic 仓库 `licenses/ELASTIC-LICENSE-2.0.txt`（v8.19.0 tag），存为 `deploy/components/ELASTIC-LICENSE-2.0.txt`。`scripts/package_managed_collectors.ps1` 增加：启动时要求该文件存在；每个制品解压后强制检查包根 `LICENSE.txt`/`NOTICE.txt`，缺失即中止；bundle 根随附 `ELASTIC-LICENSE-2.0.txt`；README 改为声明 ELv2 管辖与随附文本（删除原“授权审查未完成”措辞）。tar.gz 解压改为显式调用 `%SystemRoot%\System32\tar.exe`（bsdtar），规避 GNU tar 劫持 PATH 的坑。
+    - **③ 统一目录包产出。** 以 `-Tag v1` 端到端跑通打包路径，产出 `dist/managed-collectors/tuba-managed-collectors-v1.zip`（约 141 MiB）。结构核验符合 manifest 声明：`filebeat/8.19.0/linux-amd64/…`、`filebeat/8.19.0/windows-amd64/…`、`winlogbeat/8.19.0/windows-amd64/…` 三个组件目录，**每个组件根均含 LICENSE.txt 与 NOTICE.txt**（3 组件共 6 个文件）；bundle 根含 `ELASTIC-LICENSE-2.0.txt`、`manifest.v1.json`、`README.txt`。manifest 放行后又以 `-Offline` 模式纯缓存复跑成功，验证离线导入路径可用，且 bundle 内嵌 manifest 即为放行后的版本。
+    - **④ manifest 放行。** `deploy/components/manifest.v1.json` 的 `public_bundle_redistribution_approved` 置 `true`，`license_review` 更新为 `approved-2026-10-08-elastic-license-2.0`。
+    - **兼容性成文（补 2026-09-30 复核的“有证据未成文”缺口）。** 21 上 Filebeat/Winlogbeat 8.19.0 以 `version: "2.1.0"` 协议向 Kafka 4.3.1（单 broker KRaft）持续投递（Zeek raw 单日 10 万+ 条、tenant_a 23,075 条），四个实例的磁盘队列目录持续活动——Beat→Kafka 协议与 broker/磁盘队列兼容性据此确认。`manifest.v1.json` 的 `compatibility` 段与此一致。
+    - **范围说明。** “真实受管运行”（Management Agent 下发配置）按 2026-09-30 复核归属 COL-08/D1.5，不作为本项前置。
 - [x] COL-03（G/D，P0，依赖 COL-01）交付 tuba-source-adapter：按服务端 Topic→来源 context 绑定解析 Beat 原文，经 ingest 获取与来源 context、topic/partition/offset 和正文 hash 匹配的 receipt 后提交 offset；固定位置/正文重试，只有本地确认的永久输入错误先持久 DLQ。已有 `cmd/tuba-source-adapter` 与 `internal/sourceadapter` Kafka→内部 HTTP receipt→手动提交/DLQ 骨架；本地配置只含 Topic allowlist，通过 `SOURCE_ADAPTER_TOKEN` 认证，所有 HTTP 错误均保留 offset，避免授权或映射故障造成跳数。默认 loopback `/metrics` 已提供读取、接收、拒绝、重试、DLQ、offset commit 计数器。当前只支持 Filebeat/Winlogbeat 事件，非 Beat 连接器尚无入站合同。尚无 Management Agent 配置下发、token 发放/轮换、Kafka ACL 编排、仪表盘/告警和端到端运行验收。验收：伪造租户、崩溃重读、重复发送、超大消息和上下文换代行为符合合同。
   - **2026-09-30 复核：验收的五个场景已全部覆盖，本项勾选。** 其中三个原本就有测试（伪造租户：`internal/ingest/server_test.go` 注入 `"organization":{"id":"attacker-controlled"}`，断言信封采用**服务端解析**的身份；崩溃重读：`TestRunRetriesKafkaFetchAndCommitWithoutRedeliveringAcceptedRecord`；重复发送：两个 receipt 去重测试 + 现场实测），另外两个只有实现没有测试，本轮补齐：
     - **超大消息**：新增 `TestBeatIngressRejectsAnOversizedPayload`，投递超过 1 MiB（`rawevent.MaxPayloadBytes`）的**格式合法**正文，断言 413 且**不产生任何 Kafka 写入**——截断成一次成功等于悄悄改了证据。
@@ -195,8 +202,8 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
     2. **“读取权限”只在过程中被证明，未固化为交付物。** 24 小时 shadow 用各机 Administrator 成功读取，说明权限够用；但接入包模板没有写明所需账号/权限（如 Event Log Readers 与管理员），也没有脚本或部署前置校验。属“事实上满足、契约上未固化”。
 - [ ] COL-06（G/O，P0）实现来源范围配置与 TUBA 过滤策略版本、影子计数、原因码、场景保护及回滚；区分源端过滤与 adapter 准入过滤。验收：无审计计数的源端复杂规则不能发布，平台过滤不能冒称减少源端网络流量。
 - [x] COL-07a（G/O，P0）非破坏性可靠性验收（D1；2026-09-30 由 COL-07 拆分）：采集端强杀后重读与补齐、日志轮转不丢记录、重复 offset/跨 offset 重发、归档 spool 回放与确认水位、采集端断网后补齐。**五项全部完成**，逐项证据见下文 2026-09-30 的五条记录（方法、观测量、结论俱全）。最后一项"采集端断网后补齐"于 2026-09-30 21:20–21:24 执行：iptables 精确 REJECT 到 248:29292 的出站 240 秒，Filebeat 磁盘队列峰值约 21 MB，恢复后 61 秒内四路 adapter lag 归 0、ES 各域计数相应增长，无丢失。
-- [ ] COL-07b（G/O，P0）破坏性故障注入（D4；原 COL-07 的破坏性子集）：磁盘满、Kafka/PG 故障、Topic 重建、目标机重启、积压期间换凭据与配置。**阻塞于两件事**：(1) 根盘余量曾只剩 4 个点（常态 71%、分配线 75%），积压类测试会推高占用、重演 2026-09-30 的只读故障——2026-09-30 晚间已通过磁盘清理把根盘从 75% 降到 64%（见下方清理记录），腾出约 11 个点余量，加盘扩容仍排期未做；(2) **目标机重启按用户 2026-09-30 决定暂不做**：单节点没有远程带外恢复手段，若重启后组件未自动拉起，平台会停在停机状态且无法远程干预。2026-09-30 由 COL-07 拆分而来，拆分理由：非破坏性子集已完成（见 COL-07a 的证据），而破坏性子集未做，混在一个编号下会让 D1 永远关不掉这一条。
-  - **2026-09-30 状态：非破坏性子集已完成，破坏性子集未做，因此本项不整项勾选。** 完成的五项非破坏性验收（重复投递与跨 offset 重发、采集端强杀后重读与补齐、日志轮转不丢记录、归档 spool 回放与确认水位、采集端断网后补齐）已逐项留证据，见下文 2026-09-30 的五条记录。**未做的是破坏性子集**（磁盘满、Kafka/PG 故障、Topic 重建、目标机重启、积压期间换凭据与配置），它依赖磁盘余量——2026-09-30 晚间清理前根盘常态 71%、分配线 75%，只剩 4 个点余量；清理后降到 64%（见下条记录），余量约束已缓解，加盘扩容仍排期。按 D1 定义，D1 计入的是本项的**非破坏性子集**（五项已于 2026-09-30 全部完成，含断网补齐），破坏性子集归 D4。**拆分已执行（2026-09-30）**：本编号不再作为待决策项存在，见上方 COL-07a／COL-07b；下文各条日期记录保留为两者的共同证据。
+- [ ] COL-07b（G/O，P0）破坏性故障注入（D4；原 COL-07 的破坏性子集）：磁盘满、Kafka/PG 故障、Topic 重建、目标机重启、积压期间换凭据与配置。**2026-09-30 22:49–23:44 已执行 6 项中的 5 项**（磁盘满 / Kafka 故障 / PG 故障 / Topic 重建 / 积压换凭据），逐项证据见下方 COL-07b 五条记录（1/5–5/5）：全程无数据丢失、DLQ 零新增，三项保护机制按设计触发；新暴露缺陷一条（source-adapter 对 topic 删除重建不自愈，须重启组件恢复，见 4/5）。**磁盘阻塞已解除**（2026-09-30 晚间清理把根盘从 75% 降到 64%）。**唯一未做的是目标机重启**：按用户 2026-09-30 决定本轮不做——单节点没有远程带外恢复手段，若重启后组件未自动拉起，平台会停在停机状态且无法远程干预；因此本项暂不整项勾选，待目标机重启验收完成（或有带外手段）后关闭。2026-09-30 由 COL-07 拆分而来，拆分理由：非破坏性子集已完成（见 COL-07a 的证据），而破坏性子集未做，混在一个编号下会让 D1 永远关不掉这一条。
+  - **2026-09-30 状态：非破坏性子集已完成；破坏性子集 6 项之 5 已于同日晚间执行通过（见 COL-07b），仅目标机重启按用户决定暂缓，因此本项不整项勾选。** 完成的五项非破坏性验收（重复投递与跨 offset 重发、采集端强杀后重读与补齐、日志轮转不丢记录、归档 spool 回放与确认水位、采集端断网后补齐）已逐项留证据，见下文 2026-09-30 的五条记录。**破坏性子集**（磁盘满、Kafka/PG 故障、Topic 重建、积压期间换凭据）的执行依赖磁盘余量——2026-09-30 晚间清理前根盘常态 71%、分配线 75%，只剩 4 个点余量；清理后降到 64%（见下条记录），余量约束解除后当夜即完成五项注入。按 D1 定义，D1 计入的是本项的**非破坏性子集**（五项已于 2026-09-30 全部完成，含断网补齐），破坏性子集归 D4。**拆分已执行（2026-09-30）**：本编号不再作为待决策项存在，见上方 COL-07a／COL-07b；下文各条日期记录保留为两者的共同证据。
   - **2026-09-30 磁盘清理记录（248 根盘 75%→64%，释放约 5G）**：直接删除 `/root/.cache/go-build`（157M）、`/root/admc-analysis-fix`（191M）、`/root/go`（48M）；经逐文件字节数校验一致后归档至 `21:/opt/tuba-backup/248/cleanup-20260930/` 再删本地——`/opt/tuba/bin` 的 5 个陈旧 tuba-api/tuba-source-topic-admin 制品（78M，在用二进制未动）、`/opt/tuba/backups`（218M）、`collector-validation`（90M）、`collector-validation-v2`（119M）、`/opt/tuba/build`（167M）、`/opt/tuba/monitoring/staging`（660M，含唯一件 o05-config.tgz）、`/opt/tuba/packages/elasticsearch-8.19.0-x86_64.rpm`（625M，仓库无同源缓存故归档不直接删）。Kafka 保留由 24h 降为 12h：该版本 KRaft 拒绝动态 broker 级 `log.retention.hours`，改为对全部 topic 动态设 `retention.ms=43200000`（免重启）并同步把 `server.properties` 改为 `log.retention.hours=12`；数据目录 6.5G→4.0G。全程未重启任何数据面服务，清理后 tuba-launcher status 11/11 running restarts=0，九路 source-adapter 消费组 lag 全 0。
   - 已完成其中的单节点 worker 故障切片：PostgreSQL/Kafka 中断恢复、Launcher 托管进程强杀重启和优雅退出均于 2026-09-28 在 71 隔离通过，详见本 TODO 的 O04/COL-07 演练记录。其余 COL-07 场景及 Zeek Collector spool 端到端积压/重复投递演练仍待完成。
   - 2026-09-28 增加本机回归：source-adapter 注入 Kafka Fetch 与 offset commit 短暂失败，验证 retry 后 ACK/offset 顺序保持且只调用一次 ingest receipt；ingest 增加来源 Topic 绑定、可信上下文、重复 receipt 幂等、正文冲突、无效 token 和未绑定 Topic 覆盖。`go test ./...` 与 `go vet ./...` 均通过。248 上六个 Zeek worker 全部由监督器管理，source-adapter 子进程 SIGKILL 后 supervisor 拉起新 PID、readiness 恢复；现场只读复核六进程 running、Prometheus 6/6 targets UP、Kafka lag 0。此证据关闭 worker 单进程崩溃恢复切片，不能替代整机重启、断网、磁盘满、轮转覆盖、Kafka/PG 故障矩阵与 spool 回放验收；详见 [容量与可靠性观测记录](CAPACITY-OBSERVATION-20260927.md)。
@@ -563,6 +570,96 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 
 **一处口径注意**：spool 段字节是近似值——段文件惰性回收，且 conn/dns/http 在恢复后的残余 spool 含 21:00 整点归档的已知整份重放流量（见第 3 项记录），不是未发送积压；判定追平以 adapter 消费组 lag 为准。
 
+### 2026-09-30 COL-07b 破坏性子集（1/5）：磁盘满触发 ES flood-stage —— 通过
+
+**要验的不变量**：根盘越过 ES flood-stage（80%）时，ES 把全部索引置 `read-only-allow-delete` 保护，索引器写失败**不得提交 offset、不得进 DLQ**；磁盘恢复后块自动解除、积压追平、无丢失。同时验证 capacity guard 的档位上报。
+
+**注入与恢复**（248 本机，受控路径单文件，留 6.4 GB 余量）：
+
+- 注入 A 档：`fallocate -l 5500M /var/tmp/col07b-diskfill.img`（22:50:52，根盘 64%→76%，越过 guard 的 critical 线 75%）
+- 注入 B 档：`fallocate -l 9900M /var/tmp/col07b-diskfill.img`（22:52:22，→86%，越过 flood-stage 80%）
+- 恢复：`rm /var/tmp/col07b-diskfill.img`（22:55:54，秒级回滚）
+
+**观测**：
+
+| 观测量 | 基线（22:49） | A 档（76%） | B 档（86%，约 3 分钟） | 恢复后（22:58） |
+| --- | --- | --- | --- | --- |
+| capacity guard 档位 | normal 63% | **critical 1**（75.5%） | **protected 1**（85.5%） | normal 63.4% |
+| ES `read_only_allow_delete` | 无 | — | **48/48 索引全部加块** | 删除后 **≤30 秒全部解除** |
+| ES cluster health | green | green | green（块是写保护不是故障） | green |
+| zeek raw-indexer lag | 0 | — | **734** | **0** |
+| 各 standard-indexer lag | 0–5 | — | network 476 / dns 126 / web 91 / tls 2 | 全部 0 |
+| raw alias 计数 | 2,035,187 | — | 冻结 | 2,037,205（恢复增长） |
+
+**保护机制行为**：raw-indexer 日志逐条 `raw document write returned 429: cluster_block_exception ... disk usage exceeded flood-stage watermark`；standard-indexer `index N UIM event(s) still failing after 5 attempts`；写失败的组件退出（exit status 1）由 Launcher 按 1→30 秒退避拉起（raw/quarantine/standard 三组 restarts 各 5–8 次），**offset 未提交**，恢复后从原位置重读。**DLQ 三个 topic 的 end offset 全程不动**（9,565 / 10,470 / 509，均为历史旧轮次）——429 被拒写没有进 DLQ，符合"保护性拒绝不是数据缺陷"的设计。22:55:54 删除文件后 2 分 14 秒全部活跃消费组 lag=0，无数据丢失。
+
+### 2026-09-30 COL-07b 破坏性子集（2/5）：Kafka broker 停止与恢复 —— 通过
+
+**要验的不变量**：TUBA 专用 broker（248:29292）停机期间，采集端（21 Filebeat）落磁盘队列不丢数据，消费端崩溃由 Launcher 拉起且不产生重复；broker 恢复后全链路追平。
+
+**注入与恢复**（注入前先查明启动方式）：
+
+- **启动方式结论（新事实）**：TUBA broker 由 `/opt/tuba/collector-live/pipeline-r2/manage_zeek_ingress_broker.py`（start/stop/status，pid 文件 `run/broker.pid`）托管，**没有 systemd 单元**；`is_broker()` 按 `/proc/<pid>/cmdline` 是否含 TUBA 的 `server.properties` 判定，**不会误碰另一产品的 adms broker**（`kafka.service` 管的是 adms 那个，监听 9192，与本测试无关）。
+- 注入：`python3 manage_zeek_ingress_broker.py stop`（23:00:12，SIGTERM 优雅停机）
+- 恢复：`python3 manage_zeek_ingress_broker.py start`（23:02:10；broker 约 50 秒就绪，脚本随后幂等重建 users/topics/ACLs，每次调用一个 JVM 故整体约 7 分钟才返回——broker 本身早已可用）
+
+**观测**：
+
+| 观测量 | 基线 | 停机约 2 分钟 | 恢复后（23:10） |
+| --- | --- | --- | --- |
+| 消费端（indexer/normalizer） | running | 连接被拒 `connection refused`，exit 1 → Launcher 退避拉起（restarts 5–10） | 全部 running，消费组 rejoin（broker 日志 GroupCoordinator Stabilized） |
+| source-adapter / ingest | running | **存活不退出**：adapter 有界退避重试（`kafka_fetch_retries_total` 增长），ingest 持续监听 | 无重启 |
+| 21 四路 Filebeat diskqueue | 近 0 | conn 17 / dns 13 / http 10 / ssl 6 MB | 恢复后回落（conn 10 / dns 4 / http 1 / ssl 6 MB，残余为段文件惰性回收，以 lag 为准） |
+| 活跃消费组 lag | ≈0 | 冻结（无 broker 可查） | **全部 0** |
+| ES 计数 | 增长 | 冻结 | raw 2,040,613、恢复增长 |
+
+**结论**：broker 停机约 2 分钟无数据丢失；采集端队列吸收、消费端由 Launcher 重建、恢复后约 8 分钟内全部追平。DLQ 无新增。
+
+### 2026-09-30 COL-07b 破坏性子集（3/5）：PostgreSQL 连接中断（仅 TUBA 角色）—— 通过
+
+**要验的不变量**：PG 连接被反复掐断期间，ingest 写 receipt 失败 → adapter **不提交 source offset**、有界重试；恢复后重放被 receipt 去重吸收，不丢不重。共享实例约束：只能用只影响 TUBA 连接的方式，不得停监听、不得动其他角色。
+
+**注入与恢复**：248 本机循环 30 轮（每 2 秒一轮，共 61 秒，23:12:58–23:13:59）执行 `SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE usename='tuba' AND pid<>pg_backend_pid()`（每轮实际 terminate 1–2 个正在重建的 TUBA 后端）。恢复即循环自然结束，无任何状态需要回滚。
+
+**观测**：
+
+| 观测量 | 值 |
+| --- | --- |
+| adapter `delivery_retries_total` | +13（故障期间投递 ingest 失败重试） |
+| adapter fetched / accepted | 故障期冻结；恢复后 90,346 → 91,606 追平，**fetched==accepted 恒等** |
+| `ingest_receipts` 行数 | 1,683,527（故障前）→ 1,683,970（恢复后，+443，窗口流量全部入账） |
+| 消费组 lag / DLQ | 恢复后全部活跃组 lag=0；DLQ 三个 topic end offset 不变 |
+
+**结论**：秒级连接中断对数据面无正确性影响；adapter 的"投递失败不提交 offset"与 receipt 去重是这里的不丢不重保证。
+
+### 2026-09-30 COL-07b 破坏性子集（4/5）：ssl source topic 删除重建 —— 通过，并发现 adapter 对 topic 重建不自愈
+
+**要验的不变量**：低流量 source topic 被删除重建后，采集端积压不丢、ACL 恢复原样、链路恢复消费。
+
+**预置**：导出全部 ACL（`/root/col07b-topic-rebuild/acls-all-before.txt`）与该 topic 的 4 条 ACL；topic 1 分区 RF=1、动态 `retention.ms=43200000`；重建前 adapter 组 lag=0（end offset 145,172）。
+
+**注入与恢复**：`kafka-topics.sh --delete`（23:16:22）→ `--create --partitions 1 --replication-factor 1 --config retention.ms=43200000`（23:16:36）→ `kafka-acls.sh --add` 恢复 4 条 ACL（`tuba-zeek-ssl` WRITE+DESCRIBE、`tuba-zeek-source-adapter` READ+DESCRIBE）。
+
+**三个机制事实（前两个是新发现）**：
+
+1. **KRaft 的 literal ACL 不随 topic 删除而删除**：恢复 ACL 时 4 条均报 `already exists`，与导出逐字一致——ACL 恢复步骤在该版本下是验证而不是重建。
+2. **topic 删除会连带删除消费组对该 topic 的已提交 offset**（describe 的 CURRENT-OFFSET 变 `-`）。
+3. **缺陷：kafka-go 的消费 reader 在 topic 删除+重建后不自愈。** 其余 5 路 source topic 正常消费，ssl 这路静默卡死：`kafka_fetch_retries_total` 停在 52 不再增长、无任何错误日志、`fetched==committed` 的其他路照常推进，而 ssl context 连续约 13 分钟**零新 raw 文档**（topic 内积压 196 条）。恢复手段是重启组件：`tuba-launcher restart`（23:29:32，manifest-wide，无单组件粒度）后 adapter 因 offset 已被删除而按 `StartOffset: kafka.FirstOffset`（`cmd/tuba-source-adapter/main.go:112`）**从 0 重读**，196/196 全部投递，ssl 组 lag=0，ES tls 恢复增长。**无丢失、无重复**（重读由 receipt/稳定位置去重吸收）。
+
+**遗留**：adapter 应对 topic 重建运行期自愈，至少在日志/指标上暴露"该 binding 消费停滞"（当前完全静默，监控只能从侧面发现）；"topic 重建后必须重启消费组件"已写入 RUNBOOK。
+
+### 2026-09-30 COL-07b 破坏性子集（5/5）：积压期间轮换 SCRAM 凭据 —— 通过，并踩出共享身份的连带影响
+
+**要验的不变量**：有积压时轮换组件 Kafka 凭据，组件用新凭据恢复消费、积压追平；轮换过程不得造成认证死锁或数据丢失。
+
+**方法**：`tuba-launcher stop`（23:33:12）制造 160 秒全链路积压 → `kafka-configs.sh --alter --entity-type users --entity-name tuba-zeek-standard-indexer --add-config 'SCRAM-SHA-512=[iterations=4096,password=<新随机口令>]'` → 同步更新 `secrets.json` 的 `services.standard-indexer.password` 与 `/etc/tuba/tuba.env` 的 `TUBA_ZEEK_STANDARD_INDEXER_KAFKA_SASL_PASSWORD` → `tuba-launcher start`（23:35:57）。变更前把 tuba.env 与 secrets.json 备份到 `/root/col07b-cred-rotate/`（回滚=还原文件+重启，秒级）。
+
+**结果与踩到的坑（真发现）**：zeek-standard-indexer 用新凭据认证成功（8 个域组 lag 归 0、restarts=0）。但 **`tenant-a-standard-indexer` 与 `zeek-standard-indexer` 共用同一个 SCRAM 用户 `tuba-zeek-standard-indexer`**（备份中两个 env 变量同值）——只改 zeek 变量导致 tenant_a 全线 `SASL Authentication failed` 退避约 5 分钟。修复：`TUBA_TENANT_A_STANDARD_INDEXER_KAFKA_SASL_PASSWORD` 同步新口令 + launcher restart（23:41:37）。23:44:38 终态：11/11 running、两个 standard-indexer restarts=0、全部活跃组 lag≤3（瞬时在途）、DLQ 三个 topic 全程不变。
+
+**教训**：轮换任何服务身份前必须枚举该 SCRAM 用户的**全部**使用方（同一身份可被多个服务/命名空间共享）；这一条已补入 RUNBOOK「凭据轮转」。
+
+**COL-07b 小结**：六项中五项于 2026-09-30 22:49–23:44 逐项执行完毕（磁盘满 / Kafka 故障 / PG 故障 / Topic 重建 / 积压换凭据），每项均含注入前基线、注入/恢复命令、观测与追平证据；全程无数据丢失、DLQ 零新增、三项保护机制（flood-stage 写保护、Launcher 退避重建、receipt/稳定位置去重）均按设计触发。**目标机重启按用户决定本轮不做**（单节点无带外恢复手段，仍是本项唯一未执行子项）。新暴露缺陷一条：source-adapter 对 topic 删除重建不自愈（见 4/5），需修复或固化运维步骤。
+
 ### 2026-09-30 来源生命周期三态上线（248），并纠正迁移状态不受管的问题
 
 **上线内容**：迁移 `00014` + 新 `tuba-api` / `tuba-ingest` / `tuba-source-adapter`（ingest 与 adapter 按滚动部署约束同批重启）。
@@ -630,7 +727,7 @@ T 可在 D1 后半段开始；Q/W 在对应 API 合同稳定后逐步交付。�
 3. `O04` 的目标主机重启恢复验收；
 4. `N07`/`I06` 的"暂时重试 vs 永久 DLQ"与容量/过期保护状态的**可查询**验收。
 
-**不计入 D1 画勾前置**：`COL-07` 的破坏性子集（磁盘满、Kafka/PG 故障、Topic 重建、目标机重启、积压换凭据）——它依赖加盘扩容，归 D4；`V01`–`V10` 的其余项同样归 D4，但其中的非破坏部分可在 D1 期间就做（已在做）。
+**不计入 D1 画勾前置**：`COL-07` 的破坏性子集（磁盘满、Kafka/PG 故障、Topic 重建、目标机重启、积压换凭据）——归 D4；其中 6 项之 5 已于 2026-09-30 执行通过（见 COL-07b 记录），仅目标机重启按用户决定暂缓。`V01`–`V10` 的其余项同样归 D4，但其中的非破坏部分可在 D1 期间就做（已在做）。
 
 ## 2026-09-26 Zeek 标准事件纵向验收记录
 

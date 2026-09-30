@@ -7,6 +7,7 @@ param(
 $ErrorActionPreference = "Stop"
 $root = Split-Path -Parent $PSScriptRoot
 $manifestPath = Join-Path $root "deploy\components\manifest.v1.json"
+$elasticLicensePath = Join-Path $root "deploy\components\ELASTIC-LICENSE-2.0.txt"
 $distributionRoot = Join-Path $root "dist\managed-collectors"
 $outputPath = Join-Path $distributionRoot "tuba-managed-collectors-$Tag.zip"
 $stage = Join-Path $distributionRoot ("staging-" + [guid]::NewGuid().ToString("N"))
@@ -17,6 +18,7 @@ if (-not $resolvedStage.StartsWith($resolvedDistributionRoot, [System.StringComp
 }
 
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Component manifest is missing" }
+if (-not (Test-Path -LiteralPath $elasticLicensePath -PathType Leaf)) { throw "Elastic License 2.0 text is missing: $elasticLicensePath" }
 if (Test-Path -LiteralPath $outputPath) { throw "Output already exists: $outputPath" }
 if ($ArtifactCache -eq "") { $ArtifactCache = Join-Path $root "dist\component-cache" }
 $ArtifactCache = [System.IO.Path]::GetFullPath($ArtifactCache)
@@ -42,13 +44,18 @@ $manifest.artifacts | ForEach-Object {
         if ($artifact.format -eq "zip") {
             Expand-Archive -LiteralPath $archive -DestinationPath $extractPath
         } elseif ($artifact.format -eq "tar.gz") {
-            & tar.exe -xzf $archive -C $extractPath
+            & (Join-Path $env:SystemRoot "System32\tar.exe") -xzf $archive -C $extractPath
             if ($LASTEXITCODE -ne 0) { throw "Could not extract $fileName" }
         } else {
             throw "Unsupported archive format: $($artifact.format)"
         }
         $roots = @(Get-ChildItem -LiteralPath $extractPath -Directory)
         if ($roots.Count -ne 1) { throw "Unexpected archive layout for $fileName" }
+        foreach ($required in @("LICENSE.txt", "NOTICE.txt")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $roots[0].FullName $required) -PathType Leaf)) {
+                throw "Upstream $required is missing inside $fileName; redistribution requires license and notice files"
+            }
+        }
         Copy-Item -LiteralPath $roots[0].FullName -Destination $componentPath -Recurse
     } finally {
         if (Test-Path -LiteralPath $extractPath) { Remove-Item -LiteralPath $extractPath -Recurse -Force }
@@ -56,12 +63,13 @@ $manifest.artifacts | ForEach-Object {
 }
 
 Copy-Item -LiteralPath $manifestPath -Destination (Join-Path $stage "manifest.v1.json")
+Copy-Item -LiteralPath $elasticLicensePath -Destination (Join-Path $stage "ELASTIC-LICENSE-2.0.txt")
 $readme = @"
 TUBA managed collection components $Tag
 
 This archive contains the pinned Filebeat and Winlogbeat distributions with their upstream license and notice files. It does not contain the TUBA Management Agent or production-ready source configuration. Do not run a Beat directly from this archive until COL-03/08 configuration and topic bindings are installed.
 
-Component versions and SHA-512 values are in manifest.v1.json. The packaging script verifies each archive before extraction. Customer redistribution remains disabled pending license review.
+Component versions and SHA-512 values are in manifest.v1.json. The packaging script verifies each archive before extraction and confirms each upstream package retains its LICENSE.txt and NOTICE.txt. The upstream distributions are governed by the Elastic License 2.0; a copy of the license text is included at the root of this archive as ELASTIC-LICENSE-2.0.txt.
 "@
 Set-Content -LiteralPath (Join-Path $stage "README.txt") -Value $readme -Encoding utf8
 $null = New-Item -ItemType Directory -Force -Path $distributionRoot

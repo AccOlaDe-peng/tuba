@@ -230,6 +230,13 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 ## 凭据轮转
 
 1. Kafka 服务身份与来源身份均由 `secrets.json` 承载（Kafka 目录下，0600）。轮转后必须重启对应组件，否则旧凭据继续生效直到连接重建。
-2. 来源 API Key 只在创建时返回一次；丢失只能重建来源（会得到新的 source context 与新的 Kafka 身份），因此密钥必须落到受保护存储，不得只依赖终端输出。
-3. 来源 Kafka 写权限的撤销通过禁用来源实现；撤销后需确认适配器与 indexer 不再收到该来源数据。
-4. Keycloak 管理员凭据不得写入仓库或聊天记录。本仓库的 `claude.md` 曾把多台主机凭据提交到公开仓库——这类文件必须加入 `.gitignore`，且其中凭据在轮转前一律视为已泄露。
+2. **轮换前先枚举该 SCRAM 用户的全部使用方**：同一身份可能被多个服务、多个命名空间共享。2026-09-30 实测 `zeek-standard-indexer` 与 `tenant-a-standard-indexer` 共用 `tuba-zeek-standard-indexer`，只更新一侧的 env 变量导致另一侧全线 `SASL Authentication failed` 退避；`secrets.json` 与 `/etc/tuba/tuba.env` 中所有持有该口令的字段必须同批更新。变更前备份两份文件，回滚即还原并重启。
+3. 来源 API Key 只在创建时返回一次；丢失只能重建来源（会得到新的 source context 与新的 Kafka 身份），因此密钥必须落到受保护存储，不得只依赖终端输出。
+4. 来源 Kafka 写权限的撤销通过禁用来源实现；撤销后需确认适配器与 indexer 不再收到该来源数据。
+5. Keycloak 管理员凭据不得写入仓库或聊天记录。本仓库的 `claude.md` 曾把多台主机凭据提交到公开仓库——这类文件必须加入 `.gitignore`，且其中凭据在轮转前一律视为已泄露。
+
+## Topic 删除重建
+
+1. 先导出全部 ACL（`kafka-acls.sh --list`）与目标 topic 的逐条 ACL、分区数与动态配置。KRaft 下 literal ACL **不随 topic 删除而删除**，重建后核对即可，通常无需重加。
+2. **topic 删除会连带删除消费组对该 topic 的已提交 offset**；且当前 source-adapter（kafka-go）对"topic 删除+重建"**不自愈**：其余 topic 照常消费，被重建那路静默停滞，无错误日志。重建后必须 `tuba-launcher restart` 重启消费组件，adapter 会按 `StartOffset: kafka.FirstOffset` 从 0 重读，积压由 receipt 去重吸收，无丢失无重复（2026-09-30 COL-07b 4/5 实测）。
+3. 重建前确认目标 topic 消费组 lag=0，避免删除时丢弃未消费数据。

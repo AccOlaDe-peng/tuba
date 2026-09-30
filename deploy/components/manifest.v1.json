@@ -38,9 +38,9 @@
     }
   ],
   "distribution": {
-    "license_review": "required-before-customer-redistribution",
+    "license_review": "approved-2026-10-08-elastic-license-2.0",
     "include_upstream_license_and_notice_files": true,
-    "public_bundle_redistribution_approved": false
+    "public_bundle_redistribution_approved": true
   },
   "compatibility": {
     "elasticsearch_target": "8.19.x",
