@@ -1,5 +1,17 @@
 groups:
   - name: tuba-kafka
+    # The consumergroup matchers below are the allow-list of consumer groups that
+    # may alert. It is an allow-list rather than `tuba-.*` because a retired
+    # generation leaves its groups behind with a committed offset and no
+    # members, so their lag freezes and TubaKafkaConsumerInactiveWithBacklog
+    # would fire on them forever. Extend it when a namespace is added.
+    #
+    # Kept byte-identical to MONITORED_CONSUMER_GROUPS in
+    # scripts/manage_tuba_monitoring.py, which sets the exporter's own
+    # --group.filter; the two must cover the same groups or an alert can never
+    # see a series. Until 2026-09-30 the whole tenant_a (Windows Security) chain
+    # was missing here and in the exporter filter, so the busiest ingestion path
+    # had no lag monitoring.
     rules:
       - alert: TubaKafkaExporterUnavailable
         expr: up{job="kafka-exporter"} == 0
@@ -26,7 +38,7 @@ groups:
           summary: TUBA source adapter is retrying Kafka operations
           description: 'Source adapter Kafka retry rate is {{ $value }} per second. Check broker connectivity and consumer group state.'
       - alert: TubaKafkaConsumerLag
-        expr: kafka_consumergroup_lag{consumergroup=~"(tuba-.*-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927)"} > 10000
+        expr: kafka_consumergroup_lag{consumergroup=~"tuba-source-adapter-[0-9a-f]{16}-zeeklive20260927r2|tuba-raw-indexer-zeek_validation_20260927_001-zeeklive20260927r2|tuba-normalizer-zeek_validation_20260927_001-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927|tuba-raw-indexer-tenant_a-tenanta20260929|tuba-normalizer-tenant_a-tenanta20260929|tuba-quarantine-indexer-tenant_a-tenanta20260929|tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-zeek_validation_20260927_001-zeeklive20260927r2|tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-tenant_a-tenanta20260929"} > 10000
         for: 10m
         labels:
           severity: warning
@@ -34,7 +46,7 @@ groups:
           summary: TUBA Kafka consumer group lag is high
           description: 'Consumer group {{ $labels.consumergroup }} has lag {{ $value }}. Check worker health and ES write latency.'
       - alert: TubaKafkaConsumerInactiveWithBacklog
-        expr: (sum by (consumergroup) (kafka_consumergroup_lag_sum{consumergroup=~"(tuba-.*-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927)"}) > 0) and on (consumergroup) (kafka_consumergroup_members{consumergroup=~"(tuba-.*-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927)"} == 0)
+        expr: (sum by (consumergroup) (kafka_consumergroup_lag_sum{consumergroup=~"tuba-source-adapter-[0-9a-f]{16}-zeeklive20260927r2|tuba-raw-indexer-zeek_validation_20260927_001-zeeklive20260927r2|tuba-normalizer-zeek_validation_20260927_001-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927|tuba-raw-indexer-tenant_a-tenanta20260929|tuba-normalizer-tenant_a-tenanta20260929|tuba-quarantine-indexer-tenant_a-tenanta20260929|tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-zeek_validation_20260927_001-zeeklive20260927r2|tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-tenant_a-tenanta20260929"})) > 0) and on (consumergroup) (kafka_consumergroup_members{consumergroup=~"tuba-source-adapter-[0-9a-f]{16}-zeeklive20260927r2|tuba-raw-indexer-zeek_validation_20260927_001-zeeklive20260927r2|tuba-normalizer-zeek_validation_20260927_001-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927|tuba-raw-indexer-tenant_a-tenanta20260929|tuba-normalizer-tenant_a-tenanta20260929|tuba-quarantine-indexer-tenant_a-tenanta20260929|tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-zeek_validation_20260927_001-zeeklive20260927r2|tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-tenant_a-tenanta20260929"} == 0)
         for: 5m
         labels:
           severity: critical

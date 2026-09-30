@@ -376,6 +376,16 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 
 - 本地快照清理与 cron 均以 `env -i` 最小环境验证过启用路径（cron 不加载 `/root/.bashrc`，缺 `LD_LIBRARY_PATH` 时 psql 会因找不到 libpq 失败）。
 
+### 2026-09-30 监控缺口：消费组白名单漏掉整条 tenant_a 链路
+
+排查"lag 数值冻结"时查出两件事，都不是 lag 本身的问题。
+
+**一、当前量最大的接入路径没有 lag 监控。** kafka_exporter 的 `--group.filter` 是一份**手工白名单**（设计如此：退役代次会留下"有已提交 offset、无成员"的组，lag 冻结不动，若放开成 `tuba-.*`，`TubaKafkaConsumerInactiveWithBacklog` 会在它们身上常驻误报）。这份白名单共写在三处——`scripts/manage_tuba_monitoring.py` 的 `MONITORED_CONSUMER_GROUPS`、`rules/kafka.yml` 的两条告警、Grafana 面板查询——**三处都只列了 `zeeklive20260927*` 的组，一个 tenant_a 组都没有**。漏掉白名单不会报错，只会静默不监控：Windows Security 那条链路（09-29 接入、当前主要增长来源）没有任何 lag 告警，而安静的 Zeek 链路全程有。已补齐：受监控组由 11 个增至 19 个，其中 tenant_a 相关 8 个。
+
+**二、白名单必须排除退役代次，否则立刻误报。** 第一版把三个无后缀的 `tuba-source-adapter-<hash>`（`c169402d…`、`d1ff4e04…`、`395791423…`）当成 tenant_a 的适配器加了进去，"有积压且无成员"的判定随即命中这三组（lag 14176 / 5575 / 303）。核查确认它们是**已撤销的 placeholder 来源**留下的孤儿组：`CONSUMER-ID`/`HOST` 均为 `-`（无成员）、committed offset 30 秒内一动不动，且它们消费的 `ctx_6000…/7000…/8000…` **不在 `source_instances` 里**；真正承载 Windows 数据的是带 `-zeeklive20260927r2` 后缀的 `3a5f5426333adfdd` 与 `91f5ede6aee00ba0`（lag=0、有成员），而这两个此前也不在白名单里。已改为按后缀模式匹配（`tuba-source-adapter-[0-9a-f]{16}-zeeklive20260927r2`），既覆盖新注册来源又排除孤儿。**验证：19 个组导出、三个孤儿组导出 0 条序列、"无成员且有积压"命中 0、三条 Kafka 告警均 inactive。**
+
+**遗留**：白名单仍是多处重复（含 Grafana），**新增命名空间时漏改一处不会报错**，集中生成应在 D1.5 处理。孤儿消费组本身未删除（保留其 offset 作为证据），因此 `--all-groups` 排查时仍会看到冻结 lag，RUNBOOK 的 TubaKafkaLag 已写明如何区分。
+
 ## 后续多节点（P2；本轮不要求实施）
 
 - [ ] X01 Kafka 多 broker/控制器、Topic 副本/ISR、分区迁移与故障演练。

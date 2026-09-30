@@ -22,7 +22,39 @@ RUN = os.path.join(ROOT, "run")
 LOG = os.path.join(ROOT, "logs")
 KAFKA_SECRETS = "/opt/tuba/collector-live/kafka/secrets.json"
 BROKER = "10.6.68.248:29292"
-KAFKA_GROUP_FILTER = "^(tuba-source-adapter-e5b1be1213439bee-zeeklive20260927r2|tuba-source-adapter-3b74f08c13bedbcb-zeeklive20260927r2|tuba-source-adapter-884d0a18ba67a256-zeeklive20260927r2|tuba-source-adapter-189315c2397c8729-zeeklive20260927r2|tuba-raw-indexer-zeek_validation_20260927_001-zeeklive20260927r2|tuba-normalizer-zeek_validation_20260927_001-zeeklive20260927r2|tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927|tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-zeek_validation_20260927_001-zeeklive20260927r2)$"
+# The consumer groups monitoring is allowed to scrape and alert on.
+#
+# An allow-list rather than `tuba-.*` on purpose: a retired generation leaves its
+# consumer groups behind with a committed offset and no members, so their lag
+# freezes at whatever it was and never moves. `--all-groups` still lists them,
+# and TubaKafkaConsumerInactiveWithBacklog ("lag > 0 and no members") fires on
+# them immediately. Keeping them out is what this list is for.
+#
+# It has to be extended when a namespace is added, and it was missing the whole
+# tenant_a (Windows Security) chain until 2026-09-30 — the busiest ingestion path
+# had no lag monitoring at all. The same alternation is repeated verbatim in the
+# Prometheus rules and the Grafana dashboard, which cannot import from here;
+# when this changes, those change too.
+MONITORED_CONSUMER_GROUPS = "|".join((
+    # Active source adapters all carry the current generation suffix. The
+    # unsuffixed tuba-source-adapter-* names in the same range are retired
+    # placeholders whose committed offsets stopped moving: their lag is frozen
+    # and they have no members, so listing them would make
+    # TubaKafkaConsumerInactiveWithBacklog fire forever. A pattern rather than
+    # six hashes also covers sources registered later.
+    r"tuba-source-adapter-[0-9a-f]{16}-zeeklive20260927r2",
+    r"tuba-raw-indexer-zeek_validation_20260927_001-zeeklive20260927r2",
+    r"tuba-normalizer-zeek_validation_20260927_001-zeeklive20260927r2",
+    # The quarantine indexer kept its pre-generation group name on purpose, so
+    # renaming it would restart its offsets.
+    r"tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927",
+    r"tuba-raw-indexer-tenant_a-tenanta20260929",
+    r"tuba-normalizer-tenant_a-tenanta20260929",
+    r"tuba-quarantine-indexer-tenant_a-tenanta20260929",
+    r"tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-zeek_validation_20260927_001-zeeklive20260927r2",
+    r"tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-tenant_a-tenanta20260929",
+))
+KAFKA_GROUP_FILTER = "^(" + MONITORED_CONSUMER_GROUPS + ")$"
 SERVICES = {
     "prometheus": {
         "binary": os.path.join(BIN, "prometheus"), "port": 19090,

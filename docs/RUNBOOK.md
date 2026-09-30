@@ -15,11 +15,20 @@
 
 症状：`kafka_consumergroup_lag` 持续超过 10000。
 
-1. 确认 Lag 属于 `tuba-raw-indexer-*`、`tuba-standard-indexer-*`、`tuba-quarantine-indexer-*`、`tuba-analysis-*` 还是 `tuba-analysis-sink-*`。
-2. 检查对应 Launcher 组件的 CPU、内存、重启次数、readiness 和最近错误。
-3. 当前单实例版本不通过临时增加消费者处理故障；若 ES 正常，先确认组件存活、凭据、offset、批量预算和限流状态。
-4. 若 ES 出现 `429`、bulk 拒绝或高延迟，先保护 ES，不要扩大读取批量。
-5. Lag 下降且 watermark 恢复后关闭事件。
+**先分清这个数是谁的。** 监控只抓一份组白名单（`MONITORED_CONSUMER_GROUPS`，见下），因为**退役代次会留下一批"有已提交 offset、没有成员"的消费组**——它们的 lag 冻结在某个值上永远不动，`TubaKafkaConsumerInactiveWithBacklog`（"有积压且无成员"）会在它们身上常驻触发。2026-09-30 实测：`tuba-normalizer-…-zeeklive20260927`、`tuba-raw-indexer-…-zeeklive20260927` 与三个无后缀的 `tuba-source-adapter-<hash>` 都是这类孤儿，lag 分别冻在 2060 / 1682 / 14176 等值上。**用 `--all-groups` 排查时它们一定会出现，别当成真积压。**
+
+1. 用 `kafka-consumer-groups.sh --describe --group <组>` 确认 **`CONSUMER-ID` / `HOST` 是否为 `-`**。为 `-` 就是无成员：要么是孤儿（对比组名代次后缀），要么是组件真的没起来——后者才是故障。
+2. 确认 Lag 属于 `tuba-raw-indexer-*`、`tuba-standard-indexer-*`、`tuba-quarantine-indexer-*`、`tuba-analysis-*` 还是 `tuba-analysis-sink-*`。
+3. 检查对应 Launcher 组件的 CPU、内存、重启次数、readiness 和最近错误。
+4. 当前单实例版本不通过临时增加消费者处理故障；若 ES 正常，先确认组件存活、凭据、offset、批量预算和限流状态。
+5. 若 ES 出现 `429`、bulk 拒绝或高延迟，先保护 ES，不要扩大读取批量。
+6. Lag 下降且 watermark 恢复后关闭事件。
+
+### 组白名单是手工维护的，新增命名空间必须同步
+
+白名单同时写在三处且必须逐字一致：`scripts/manage_tuba_monitoring.py` 的 `MONITORED_CONSUMER_GROUPS`（决定 kafka_exporter 的 `--group.filter`）、`deploy/observability/single-node/rules/kafka.yml` 的两条告警、以及 Grafana 面板 `tuba-single-node.json` 的查询。**漏掉一处不会报错，只会静默不监控**——2026-09-30 之前整个 tenant_a（Windows Security）链路在这三处都不在名单里，**当前量最大的接入路径完全没有 lag 监控**，而 Zeek 那条安静的链路全程有。
+
+来源适配器的组名用 `tuba-source-adapter-[0-9a-f]{16}-<代次后缀>` 这一模式匹配，比逐个列 hash 更耐用（新注册来源自动覆盖）；但**退役代次的无后缀同名组要显式排除**，否则会立刻误报。
 
 ## TubaIndexerFailures
 
