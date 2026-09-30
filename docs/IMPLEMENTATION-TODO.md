@@ -301,6 +301,12 @@ Kafka 与 Elasticsearch 各自有保留期、会封顶；**receipt 表每个事�
 
 **遗留观察项：zeek 适配器有约 11,700 条常驻积压（约 49 分钟数据）。** `VACUUM FULL` 阻塞接入 40 秒期间适配器落后，此后其消费速率（约 3 条/秒）与 conn 源 topic 的生产速率（约 4 条/秒）基本持平、**无法反超**（适配器逐条处理，每条一次 HTTP 加一次同步 offset 提交），积压缓慢增长。计数器显示 fetched 8,216 / committed 8,215、`delivery_retries` 仅 15，**未卡死、不丢数据**；影响的是索引新鲜度。空闲窗口应能使其排空，但需要观察。这条同时说明适配器的稳态吞吐余量很薄，V07 应实测其上限。
 
+### 2026-09-30 两条滚动部署约束（复核发现，均已实际发生）
+
+**1. 共享 `rawevent` 语义的二进制必须同批部署。** `payload_hash` 的算法在 `rawevent.New`（计算方，ingest）与 `rawevent.Validate`（校验方，raw-indexer、normalizer）之间共享，adapter 另有一处比对 receipt。只更新部分二进制时，新版生产者产出的信封会被未重启的旧版消费者判为 `payload_hash mismatch`，**整条原始流进 DLQ**。本轮已实际发生约 11 分钟（见「已知数据缺口」一节）。当前没有版本协商机制：信封里的 `schema_version` 不区分哈希方案，所以无法在运行期识别混版。缓解手段只有部署顺序纪律；**彻底修复需要给摘要加自描述前缀（如 `canon:v1:`）并在 `Validate` 对未知前缀显式报错**，属未做的设计项。
+
+**2. 启用 `file_identity.fingerprint` 会改变位置形式，从而改变事件身份。** 位置由 `filebeat-v1:<device>:<inode>:<offset>` 变为 `filebeat-v2:<fingerprint>:<offset>`，`StableID` 随之变化。对已在接入的来源滚动启用时，24 小时积压被重读，且因身份不同而**作为全新事件重复入索引**，去重不生效——本轮实测 v2 位置文档 15,246 条与 v1 历史并存。要在不产生重复的前提下切换，须在来源暂停时进行，或接受一次性重复并记录。
+
 ## 后续多节点（P2；本轮不要求实施）
 
 - [ ] X01 Kafka 多 broker/控制器、Topic 副本/ISR、分区迁移与故障演练。

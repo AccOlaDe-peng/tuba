@@ -285,6 +285,14 @@ func (a Adapter) deliver(ctx context.Context, message kafka.Message) (permanent 
 // Auth, routing and throttling failures are excluded: those are deployment
 // conditions a retry can outlive, and quarantining them would drop the whole
 // stream rather than the one bad record.
+//
+// A 400 from the ingest covers both a single unacceptable record and a collector
+// that has not been configured to emit the coordinates its source kind requires.
+// Both are quarantined rather than retried: retrying a record whose bytes cannot
+// change stalls the partition behind it, which is the failure this classification
+// exists to prevent. Quarantining keeps the bytes in the 24-hour dead-letter
+// topic and raises events_rejected_total, so a misconfigured collector is loud
+// and recoverable rather than silent, and the partition keeps moving.
 func permanentIngestRejection(status int) bool {
 	switch status {
 	case http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound,

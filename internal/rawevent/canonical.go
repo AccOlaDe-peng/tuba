@@ -21,6 +21,22 @@ import (
 //
 // Numbers decode as json.Number so a record id or a Zeek timestamp keeps its
 // exact literal instead of rounding through float64 into a neighbouring value.
+//
+// What canonicalization deliberately normalises, and what it therefore stops
+// distinguishing: key order, insignificant whitespace, and unicode escaping
+// ("é" vs "é"). It also collapses duplicate keys, because decoding into a
+// map keeps the last one -- {"a":1,"a":2} hashes as {"a":2}. A collector emits
+// none of these differences, which is why the digest is taken this way, but a
+// source that produced them would no longer be flagged as a content change: the
+// stored payload still carries the original bytes, so the difference remains
+// visible in evidence even though the digest no longer reacts to it.
+//
+// The excluded paths below and the drop_fields list in
+// deploy/components/windows-security-winlogbeat.example.yml overlap but are not
+// copies: this list is what makes the digest stable for every collector, while
+// the Winlogbeat list additionally keeps those fields out of the stored payload.
+// A new collector does not have to edit this list to be correct, only to stop
+// seeing conflicts on whatever metadata it varies between deliveries.
 func CanonicalPayloadHash(payload []byte) (string, error) {
 	decoder := json.NewDecoder(bytes.NewReader(payload))
 	decoder.UseNumber()

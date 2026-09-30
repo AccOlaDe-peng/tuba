@@ -80,9 +80,12 @@ func Load() (Config, error) {
 		}
 	}
 	c := Config{
-		Brokers:           brokers,
-		RawTopic:          value("KAFKA_RAW_TOPIC", "tuba.raw.events.v1"),
-		RawTopicPattern:   value("KAFKA_RAW_TOPIC_PATTERN", "tuba.collector.{namespace}.raw.v1"),
+		Brokers:  brokers,
+		RawTopic: value("KAFKA_RAW_TOPIC", "tuba.raw.events.v1"),
+		// Deliberately no default: a pattern default that differs from the fixed
+		// topic would send the ingest somewhere the consumers never read. The
+		// ingest resolves an unset pattern to RawTopic so the two agree.
+		RawTopicPattern:   os.Getenv("KAFKA_RAW_TOPIC_PATTERN"),
 		QuarantineTopic:   value("KAFKA_QUARANTINE_TOPIC", "tuba.quarantine.v1"),
 		EventsTopicPrefix: value("KAFKA_EVENTS_TOPIC_PREFIX", "tuba.events"),
 		DeadLetterTopic:   value("KAFKA_DLQ_TOPIC", "tuba.indexing.dlq.v1"),

@@ -310,3 +310,38 @@ func TestWindowsSecurityIngressRequiresStablePositionAndDeduplicatesAcrossOffset
 		t.Fatalf("missing Windows source identity status=%d writes=%d", response.Code, len(producer.messages))
 	}
 }
+
+// The ingest and the consumers of the raw topic read the same config struct. A
+// pattern default that differs from the fixed-topic default would send every
+// event to a topic nothing reads, so an unconfigured deployment has to fall back
+// to the fixed topic rather than to a per-namespace name.
+func TestResolveRawTopicPatternFallsBackToTheFixedTopic(t *testing.T) {
+	got, err := ResolveRawTopicPattern("", "tuba.raw.events.v1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "tuba.raw.events.v1" {
+		t.Fatalf("resolved %q, want the fixed topic so producers and consumers agree", got)
+	}
+}
+
+// A pattern without the placeholder collapses every namespace onto one topic,
+// which each namespace's indexers then reject. Failing at startup is louder than
+// a config string that looks valid.
+func TestResolveRawTopicPatternRejectsAPatternWithoutThePlaceholder(t *testing.T) {
+	for _, pattern := range []string{"tuba.collector.raw.v1", "tuba.collector.${namespace}.raw.v1"} {
+		if _, err := ResolveRawTopicPattern(pattern, "tuba.raw.events.v1"); err == nil {
+			t.Fatalf("pattern %q was accepted without the {namespace} placeholder", pattern)
+		}
+	}
+}
+
+func TestResolveRawTopicPatternAcceptsAPerNamespacePattern(t *testing.T) {
+	got, err := ResolveRawTopicPattern("tuba.collector.{namespace}.raw.live2.v1", "unused")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != "tuba.collector.{namespace}.raw.live2.v1" {
+		t.Fatalf("resolved %q, want the configured pattern", got)
+	}
+}

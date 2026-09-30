@@ -44,6 +44,33 @@ type Server struct {
 	RequestTimeout  time.Duration
 }
 
+// ResolveRawTopicPattern validates the configured raw topic pattern and supplies
+// the fallback an unconfigured deployment needs.
+//
+// The ingest and the consumers of the raw topic are separate binaries sharing one
+// config struct. A pattern default that differs from the fixed-topic default
+// would send every event to a namespace-scoped topic while every consumer still
+// read the fixed one, so an unconfigured deployment falls back to the fixed
+// topic instead. A configured pattern must contain the placeholder: without it
+// every namespace collapses onto one topic, which each namespace's own indexers
+// then reject, and nothing surfaces the mistake until the dead-letter stream
+// fills.
+func ResolveRawTopicPattern(pattern, fixedTopic string) (string, error) {
+	if pattern == "" {
+		if fixedTopic == "" {
+			return "", errors.New("neither KAFKA_RAW_TOPIC nor KAFKA_RAW_TOPIC_PATTERN is configured")
+		}
+		return fixedTopic, nil
+	}
+	// ${namespace} contains {namespace}, so a plain substring check would pass and
+	// substitution would leave a stray dollar in the topic name -- a name no
+	// consumer reads. Only the bare placeholder is accepted.
+	if !strings.Contains(pattern, "{namespace}") || strings.Contains(pattern, "${namespace}") {
+		return "", errors.New("KAFKA_RAW_TOPIC_PATTERN must contain the {namespace} placeholder and no other form of it")
+	}
+	return pattern, nil
+}
+
 // rawTopicFor resolves the raw topic for one source namespace. Envelopes carry
 // the namespace they were produced under, and each consumer validates against
 // its own, so routing them to a shared topic makes every downstream indexer

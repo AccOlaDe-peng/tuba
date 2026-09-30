@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -18,9 +19,14 @@ import (
 	"tuba/product/internal/telemetry"
 )
 
-// topicWriters hands out one Kafka writer per raw topic. Topics are created on
-// demand because the set of namespaces is data, not configuration: a source
-// registered at runtime brings a namespace with it.
+// maxTopicWriters bounds the writer cache. The set of namespaces is data, not
+// configuration — a source registered at runtime brings one with it — so the map
+// would otherwise grow for the process lifetime, each entry holding its own
+// connection pool. A cap turns that slow leak into a refusal that names the
+// limit, and it sits far above any plausible number of source namespaces.
+const maxTopicWriters = 256
+
+// topicWriters hands out one Kafka writer per raw topic, created on demand.
 type topicWriters struct {
 	mu        sync.Mutex
 	transport *kafka.Transport
@@ -36,6 +42,10 @@ func (t *topicWriters) WriteMessages(ctx context.Context, topic string, messages
 	t.mu.Lock()
 	writer, ok := t.writers[topic]
 	if !ok {
+		if len(t.writers) >= maxTopicWriters {
+			t.mu.Unlock()
+			return fmt.Errorf("raw topic writer cache holds the maximum of %d topics; refusing to open another", maxTopicWriters)
+		}
 		writer = &kafka.Writer{Transport: t.transport, Addr: kafka.TCP(t.brokers...), Topic: topic,
 			Balancer: &kafka.Hash{}, RequiredAcks: kafka.RequireAll, Async: false, BatchTimeout: 10 * time.Millisecond}
 		t.writers[topic] = writer
@@ -107,7 +117,13 @@ func main() {
 		}
 		return conn.Close()
 	}
-	server := &http.Server{Addr: c.Listen, Handler: ingest.Server{RawProducer: rawWriter, RawTopicPattern: c.RawTopicPattern, SourceResolver: sourceResolver, TopicResolver: topicResolver, AdapterToken: os.Getenv("SOURCE_ADAPTER_TOKEN"), RawReceipts: rawReceipts, Limiter: ingest.NewLimiter(c.IngestRate, c.IngestBurst), SourceLimiters: &sourceLimiters, Metrics: metrics, ReadyCheck: readyCheck, RequestTimeout: c.HTTPRequestTimeout}.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.HTTPRequestTimeout, WriteTimeout: c.HTTPRequestTimeout + 5*time.Second, IdleTimeout: 60 * time.Second}
+	// Resolve before serving: a bad pattern must stop the process, not send events
+	// to a topic no consumer reads.
+	rawTopicPattern, patternErr := ingest.ResolveRawTopicPattern(c.RawTopicPattern, c.RawTopic)
+	if patternErr != nil {
+		log.Fatal(patternErr)
+	}
+	server := &http.Server{Addr: c.Listen, Handler: ingest.Server{RawProducer: rawWriter, RawTopicPattern: rawTopicPattern, SourceResolver: sourceResolver, TopicResolver: topicResolver, AdapterToken: os.Getenv("SOURCE_ADAPTER_TOKEN"), RawReceipts: rawReceipts, Limiter: ingest.NewLimiter(c.IngestRate, c.IngestBurst), SourceLimiters: &sourceLimiters, Metrics: metrics, ReadyCheck: readyCheck, RequestTimeout: c.HTTPRequestTimeout}.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: c.HTTPRequestTimeout, WriteTimeout: c.HTTPRequestTimeout + 5*time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := lifecycle.NotifyContext(context.Background())
 	defer stop()
 	log.Printf("ingest listening on %s", c.Listen)
