@@ -155,7 +155,7 @@ python3 /opt/tuba/collector-live/tenant_a_chain.py start              # 4 个 te
 
 **重启 248 不会自动拉起数据面**（不注册 systemd 是设计决定）。主机重启后需由受控运维入口或后续 Management Agent 调用 Launcher；Launcher 的 state 带 `runner_identity`（boot ID + 启动时刻），重启后 PID 被复用也不会被误判为"已在运行"。
 
-**不要执行 `/opt/tuba/start.sh`**：那是 M1 遗留脚本，会 source `/etc/tuba/tuba.env`。该文件在切换后语义已变——从"api 的完整环境文件"变成"Launcher 的密钥文件"，只含密钥。照旧执行会拉起一个**缺 `ES_URL`** 的 api，症状是日志里的 `ES_URL and ES_API_KEY are required`，而在同一个端口上掩盖掉正常运行的 api。数据面的启停一律经 `tuba-launcher`；`start.sh` 待废止。
+**不要执行 `/opt/tuba/start.sh`**：那是 M1 遗留脚本，会 source `/etc/tuba/tuba.env`。该文件在切换后语义已变——从"api 的完整环境文件"变成"Launcher 的密钥文件"，只含密钥。照旧执行会拉起一个**缺 `ES_URL`** 的 api，症状是日志里的 `ES_URL and ES_API_KEY are required`，而在同一个端口上掩盖掉正常运行的 api。数据面的启停一律经 `tuba-launcher`；`start.sh` 已于 2026-09-30 废止——改名为 `/opt/tuba/start.sh.retired`（0600 root，不可执行，仅留档）。
 
 ## 滚动部署约束
 

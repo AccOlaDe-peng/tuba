@@ -84,7 +84,7 @@
       2. **非 root 转换未做**：`tuba` 账号已建（uid=967、nologin），但 `/opt/tuba/collector-live` 是 `0700 root`，Launcher 目前以 root 运行。转换需搬迁二进制/改权限并重新验收权限边界，本轮未做。
       3. **Launcher 二进制不在包/校验链里**：248 保持扁平布局（`/opt/tuba/bin`、`collector-live/pipeline/bin`）是**已定的方向**（安装器对齐现实，不重装 248），所以"未收敛到 `releases/<version>`＋`current`"不是缺陷。真正的缺口是 `/opt/tuba/bin/tuba-launcher` 是本次手工 `install` 上去的，不来自任何包，没有 SHA-256 sidecar 与包审计链。也就是说 248 现在跑的是"Launcher 管进程、但 Launcher 本身不是受管制品"的中间态。
       4. **没有单服务回滚粒度**：原计划的 2b-3"单服务试切"被用户的"接管全部"决定取代。Launcher 的 `start`/`stop` 是 manifest-wide，`restart` 也是全量重启；要单独回滚一个服务只能退回旧监督器（且回退前须按 RUNBOOK 核对无孤儿进程，否则两套消费者同组会重复写索引）。
-      5. **`/opt/tuba/start.sh` 仍是地雷**：它会 source 语义已变的 `/etc/tuba/tuba.env`，起一个缺 `ES_URL` 的 api。尚未废止或加守卫。
+      5. ~~**`/opt/tuba/start.sh` 仍是地雷**~~（**已废止**，2026-09-30）：原脚本会 source 语义已变的 `/etc/tuba/tuba.env`，起一个缺 `ES_URL` 的 api。已在 248 上改名为 `/opt/tuba/start.sh.retired`（0600 root，不可执行，仅留档），改名后 `tuba-launcher status` 确认 11/11 running 不受影响；RUNBOOK 警告已同步更新。
       6. **预检与供给守卫仍未在 248 真实库上跑过**：仍只在 fake `psql`/`curl` 上验过（见上一条）。
       7. **监控栈不在清单内**：prometheus/grafana/node_exporter/kafka_exporter 独立于 Launcher 运行，未纳入统一管理，重启后同样不会自动恢复——这是第 1 条的另一个实例。
       8. **未做持续稳定性窗口**：验收只有分钟级观察（11/11 running、`restarts=0`、33 个消费组不变、各域文档数上涨）；跨天趋势、跨 offset 重放对账与故障注入（COL-07/V02）仍未做。
