@@ -268,6 +268,14 @@ class LifecycleTests(unittest.TestCase):
             else:
                 stopped.assert_called_once_with(mock.ANY, ["ssl"])
 
+    def test_cli_without_a_dataset_name_is_not_an_error(self):
+        # nargs="*" plus choices= makes argparse reject the empty list, which
+        # broke every action that takes no dataset name — status included.
+        for action, attribute in (("start", "start"), ("stop", "stop_processes"), ("status", "status")):
+            with mock.patch.object(MANAGER, attribute, return_value=[]), \
+                    mock.patch.object(MANAGER.sys, "argv", ["manage_zeek_filebeat.py", action]):
+                self.assertEqual(MANAGER.main(), 0, action + " must run without a dataset name")
+
     def test_cli_rejects_an_unknown_dataset(self):
         with mock.patch.object(MANAGER.sys, "argv", ["manage_zeek_filebeat.py", "start", "nope"]), \
                 mock.patch.object(MANAGER.sys, "stderr", mock.Mock()), \

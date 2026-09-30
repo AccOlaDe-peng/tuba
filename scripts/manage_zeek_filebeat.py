@@ -498,9 +498,15 @@ def status():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("action", choices=("test", "start", "stop", "status", "sync-archives", "archive-status"))
-    parser.add_argument("datasets", nargs="*", choices=tuple(CONTEXTS) + ("archive-sync",),
+    # Deliberately no `choices=` here: with nargs="*" argparse validates the
+    # empty list too, so every action would fail when called without a dataset
+    # name — including `status`. Names are checked explicitly below instead.
+    parser.add_argument("datasets", nargs="*",
                         help="limit start/stop to these datasets; the default is all of them")
     args = parser.parse_args()
+    unknown = [name for name in args.datasets if name not in CONTEXTS and name != "archive-sync"]
+    if unknown:
+        parser.error("unknown dataset(s): " + ", ".join(unknown))
     try:
         if args.action == "test":
             test()
