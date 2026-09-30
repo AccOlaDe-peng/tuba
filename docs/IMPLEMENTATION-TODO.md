@@ -88,7 +88,7 @@
       6. **预检与供给守卫仍未在 248 真实库上跑过**：仍只在 fake `psql`/`curl` 上验过（见上一条）。
       7. **监控栈不在清单内**：prometheus/grafana/node_exporter/kafka_exporter 独立于 Launcher 运行，未纳入统一管理，重启后同样不会自动恢复——这是第 1 条的另一个实例。
       8. **未做持续稳定性窗口**：验收只有分钟级观察（11/11 running、`restarts=0`、33 个消费组不变、各域文档数上涨）；跨天趋势、跨 offset 重放对账与故障注入（COL-07/V02）仍未做。
-      9. **生成清单的工具不在版本控制里**：`gen248.py`（从 `/proc` 推导 manifest＋env 的生成器，即本次修复白名单缺陷的那个文件）位于 `.runtime/`，已被 `.gitignore` 排除；它现在只存在于开发机与 248 上，没有 review、没有历史、没有任何测试守着它那条 fail-closed 守卫。这是本轮最容易被遗忘的遗留——它已经是一个**生产制品的唯一来源**，却还是草稿身份。本次那两条守卫的变异验证是**手工跑的一次性过程**，没有固化成仓库里的测试——下一次改动它的人不会得到任何保护。后续应收编进 `scripts/` 并把变异用例写成可重跑的测试。
+      9. ~~**生成清单的工具不在版本控制里**~~ **（已收编）**：`gen248.py`（从 `/proc` 推导 manifest＋env 的生成器，即本次修复白名单缺陷的那个文件）原先位于 `.runtime/`、被 `.gitignore` 排除，没有 review、历史或测试。现已移入版本控制为 `scripts/gen248.py`（内容不变），两条守卫的变异用例已固化为 `scripts/test_gen248.py`（`python scripts/test_gen248.py`，7 例）：共享密钥值漂移拒绝写盘及一致值只落地一次的正例；"live 变量到不了任何服务则拒绝写盘"守卫——含加宽 `AMBIENT_DENY` 而不动 `MAY_DROP` 的变异（模拟 `ES_URL` 被静默丢弃）必须触发拒绝、`MAY_DROP` 内变量（`PWD`/`HOME`）被丢弃不触发、以及守卫与拷贝循环的名字正则必须不同、`MAY_DROP` 必须是独立第二份拷贝的结构性断言；外加两服务最小 fixture 的 happy-path（wildcard 监听进 `dropped_listeners`、每服务密钥变 `${TUBA_<NAME>_...}`、共享密钥变 `${VAR}` 引用）。
     - **同批结转的待办**（不在本次切换范围内，但切换后仍未关闭）：COL-07/V02 破坏性故障注入子集——阻塞于磁盘扩容，且用户已决定本轮不做目标机重启测试；Adapter/DLQ 端到端验收测试——用户推迟到后续会话。
     - **一条需要记住的语义变更（不是待办，是现状）**：`/etc/tuba/tuba.env` 已从"api 的环境文件"变成"Launcher 的密钥文件"，只含密钥。已核对 `backup_tuba_to_offsite.sh` 自带 `ES_URL` 默认值、不 source 该文件，全机再无其他消费方，故无回归；但任何**新**脚本都不应再把它当作完整服务环境来 source。
 - O01 Linux 包核对补充（2026-09-28）：修复 PowerShell `.sha256` sidecar 的 CRLF 文件名问题，包脚本改为无换行 ASCII 输出，Linux 安装器使用 `sha256sum -c`。WSL Alpine 实测 Linux 包 checksum 返回 `OK`，`tar -tzf` 可完整读包；这验证包格式/校验链，不替代在 Ubuntu 目标主机执行安装器。
