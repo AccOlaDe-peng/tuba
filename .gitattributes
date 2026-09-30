@@ -1,0 +1,9 @@
+# Shell scripts must be checked out with LF endings.
+#
+# This is not cosmetic. These scripts are copied to Linux hosts and run there,
+# and a CRLF copy dies on the first line with "set: pipefail: 无效的选项名"
+# before executing anything. Under cron that failure is silent: the job simply
+# does not do its work and nothing reports it. The repository is edited on
+# Windows, where core.autocrlf rewrites text files to CRLF on checkout, so the
+# endings need to be pinned here rather than left to the local git config.
+*.sh text eol=lf

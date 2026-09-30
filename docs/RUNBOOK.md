@@ -85,6 +85,7 @@ A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写
 4. 保留期不得随意放大：可重投窗口由 Kafka 保留期（24 小时）与采集端 `ignore_older` 界定，2 天已是其两倍余量；而 receipt 若比窗口年轻，放大窗口会一行都清不掉、磁盘继续涨。
 5. `DELETE` 只把页面标为可复用，文件不缩小但**增长停止**。要真正把空间还给文件系统须 `VACUUM FULL`，它取 ACCESS EXCLUSIVE 锁、阻塞接入数十秒（适配器保留 offset 重试，不丢数据），只在明确的维护窗口执行。
 6. 清理循环若报 `stopped after N batches with rows still eligible`，先确认待删行是否真的归零；该报错曾是计数把 psql 命令标签算作一行所致。
+7. 除 `ingest_receipts` 外还有一处**周期性**的临时占用：异机备份先把 ES 快照写进本机仓库，需要约一份证据库大小的空间（实测 4.9 GB）。稳态必须为它留出余量，否则**每次备份都会把用量推过 80% 并让 ES 全索引只读**。脚本已加前置闸门，见「异机备份与恢复」。
 
 ## 采集端(Windows Winlogbeat)运维
 
@@ -115,6 +116,28 @@ A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写
 
 **RPO 为一次运行间隔。** 没有 WAL 归档：本机 PostgreSQL 与另一产品共用，不得为 TUBA 改动其服务配置。两次运行之间丢失本节点即丢失该窗口的接入数据。
 
+### 运行前的余量检查（2026-09-30 事故后新增）
+
+快照先写进**本机**仓库，所以运行期间本机需要约一份证据库大小的临时空间（实测 4.9 GB）。248 根盘常态已占 70%，这段空间会把用量推到 81%，**越过 ES 的 flood stage 水位（80%）**；ES 随即把**全部索引**置为 `read-only-allow-delete`，raw/quarantine/standard 三个索引器连续 11 分钟被拒写：
+
+```
+raw evidence write failed after 5 attempts: raw document write returned 429:
+cluster_block_exception: index [...] blocked by: [TOO_MANY_REQUESTS/12/disk usage
+exceeded flood-stage watermark, index has read-only-allow-delete block
+```
+
+没有丢数据（写失败不提交 offset，组件重启后重读），但流水线每晚会停摆一次且不告警。**这是备份自身造成的，必须避免，不能靠事后发现。**
+
+因此脚本在**做任何事之前**先核对余量，判定依据是集群当前的水位设置（不是写死的常数）、当次文件系统用量与证据库大小，要求预计用量低于 flood stage 至少 2 个百分点；不满足则**拒绝运行并退出码 4，不采备份**：
+
+```bash
+/opt/tuba/backup_tuba_to_offsite.sh --check-only   # exit 0 装得下，4 装不下
+```
+
+退出码：0 完成（`--check-only` 为装得下）；2 无数据库凭据；3 量不出文件系统、快照大小或水位；4 余量不足而拒绝。每日运行的输出落在 `/opt/tuba/logs/backup_tuba_to_offsite.log`。**当前没有"备份未运行"的告警**，拒绝只能靠读这个日志发现——这是一处已知缺口。
+
+看到 4 时**必须腾空间或把仓库挪出根盘，而不是放它跑**——一次跳过备份是可恢复的，一个静默只读的集群不是。本地副本由**退出 trap** 释放，因此传输失败或中断也不会把它留在盘上；若日志出现 `WARNING: could not release local snapshot`，说明节点仍高于水位，需手工执行 `DELETE /_snapshot/tuba_offsite/<name>` 并确认 `df` 回落。
+
 ### 恢复 Elasticsearch（顺序不能变）
 
 1. 注销仓库：`DELETE /_snapshot/tuba_offsite`。
@@ -125,13 +148,11 @@ A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写
 
 第 2 步的"清空"不可省：`index-N` 是仓库世代号，ES 只读最高的那个。若只把备份文件叠加到已被改动的目录上，更新的空世代会遮蔽备份中的快照，表现为仓库可 `_verify` 通过却列出 0 个快照。
 
+**恢复也必须在余量充足的条件下做。** 第 2 步本身就要占一份证据库的空间；而节点一旦高于 **high 水位（75%）**，新分片无法分配，恢复会在几十毫秒内以 `state [FAILURE]` 结束、**一个分片都不会启动**，日志里也只有 `NoShardAvailableActionException`，看不出真因。2026-09-30 的记录正是这样被误读成"备份不可恢复"。做演练前先确认 `df` 已低于 75%。
+
 ### 恢复 PostgreSQL
 
 `pg_restore` 需要目标库；当前 TUBA 数据库身份**没有 CREATEDB 权限**，因此恢复演练必须在独立实例或由具备建库权限的运维身份执行。转储本身已在备份时用 `pg_restore --list` 校验可读（390 个归档条目）。
-
-### 容量要求
-
-备份期间本机需要约一份证据库大小的临时空间（2026-09-30 实测 4.6 GB）。**稳态占用必须留出这段余量**，否则每次备份都会瞬时越过 80% 停止写入水位。快照传输完成后脚本会释放本地副本；未释放会把证据库在本节点上翻倍。
 
 ## 凭据轮转
 
