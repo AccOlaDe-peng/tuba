@@ -8,6 +8,8 @@ All components use the UTF-8 byte length followed by `:` and the field bytes, in
 | `event.id` | `event-v1`, raw event ID, semantic discriminator, child record key | `evt:` + lowercase SHA-256 hex; DIP; raw ID already binds tenant/source/dataset/epoch/position |
 | `entity.id` | tenant, entity type, authority, canonical key | `ent:` + lowercase SHA-256 hex; entity worker |
 | `attribution.id` | event ID, entity snapshot, role mapping version | `att:` + lowercase SHA-256 hex; entity worker |
+
+For attribution.id v1 the entity snapshot is `role|state|entity_id|canonical_key|sorted_candidate_entity_ids` (empty segments for unresolved). Recomputing the same event role at the same event time yields the same ID; attribution is a projection of the event and never rewrites event.id.
 | `relation.id` | tenant, from entity, relation type, to entity, event ID, resolution snapshot | `rel:` + lowercase SHA-256 hex; entity worker |
 | `feature.id` | tenant, entity, feature/version, window start/end, generation | `feat:` + lowercase SHA-256 hex; analysis worker |
 | `anomaly.id` | tenant, rule/version, entity-or-event key, stable window key, generation | `ano:` + lowercase SHA-256 hex; analysis worker |
