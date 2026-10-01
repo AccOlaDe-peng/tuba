@@ -47,7 +47,7 @@ func main() {
 		}
 	}()
 	log.Printf("quarantine indexer consuming %s", c.QuarantineTopic)
-	worker := quarantineindexer.Worker{Organization: c.Organization, Namespace: c.Namespace, Consumer: reader, DeadLetter: dlq, Sink: sink.New(c.ESURL, c.ESAPIKey, c.Namespace)}
+	worker := quarantineindexer.Worker{Organization: c.Organization, Namespace: c.Namespace, Consumer: reader, DeadLetter: dlq, Sink: sink.New(c.ESURL, c.ESAPIKey, c.Namespace), Metrics: metrics}
 	metrics.SetReady(true)
 	defer metrics.SetReady(false)
 	if err := worker.Run(ctx); err != nil {

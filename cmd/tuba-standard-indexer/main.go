@@ -58,7 +58,7 @@ func main() {
 		go func() {
 			defer workers.Done()
 			defer reader.Close()
-			if err := (standardindexer.Worker{Domain: domain, Organization: c.Organization, Consumer: reader, DeadLetter: dlq, Sink: indexSink, BatchSize: c.IndexBatchSize, MaxBatchBytes: c.IndexBatchBytes, BatchWait: c.IndexBatchWait, MaxAttempts: c.IndexMaxAttempts, RetryBackoff: c.IndexRetryBackoff}).Run(ctx); err != nil {
+			if err := (standardindexer.Worker{Domain: domain, Organization: c.Organization, Consumer: reader, DeadLetter: dlq, Sink: indexSink, BatchSize: c.IndexBatchSize, MaxBatchBytes: c.IndexBatchBytes, BatchWait: c.IndexBatchWait, MaxAttempts: c.IndexMaxAttempts, RetryBackoff: c.IndexRetryBackoff, Metrics: metrics}).Run(ctx); err != nil {
 				errCh <- fmt.Errorf("%s indexer: %w", domain, err)
 				stop()
 			}

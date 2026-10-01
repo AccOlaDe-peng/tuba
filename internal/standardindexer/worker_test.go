@@ -4,12 +4,16 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/segmentio/kafka-go"
 	"tuba/product/internal/rawevent"
 	"tuba/product/internal/sink"
+	"tuba/product/internal/telemetry"
 	"tuba/product/internal/uim"
 )
 
@@ -198,6 +202,50 @@ func TestProcessBatchDLQsEventIDContentConflict(t *testing.T) {
 	if _, leaksRaw := failure.Payload["vendor.payload"]; leaksRaw {
 		t.Fatal("DLQ must not contain raw vendor payload")
 	}
+}
+
+func TestProcessBatchRecordsMetrics(t *testing.T) {
+	mismatch := standardEvent(t, "event-other-tenant")
+	mismatch["organization"].(map[string]any)["id"] = "tenant_b"
+	messages := []kafka.Message{toMessage(t, standardEvent(t, "event-1"), 1), toMessage(t, mismatch, 2)}
+	metrics := telemetry.New()
+	indexer := &batchSink{apply: func(call int, events []map[string]any) ([]error, error) {
+		if call == 1 {
+			return []error{sink.PermanentIndexError{Code: "EVENT_ID_CONFLICT", Message: "same ID has different content"}}, nil
+		}
+		return make([]error, len(events)), nil
+	}}
+	// First pass DLQs the valid event as a permanent conflict.
+	first := Worker{Domain: "network", Organization: "tenant_a", Consumer: &consumer{}, DeadLetter: &dlqWriter{}, Sink: indexer, Metrics: metrics}
+	if err := first.processBatch(context.Background(), messages); err != nil {
+		t.Fatal(err)
+	}
+	assertMetrics := func(want ...string) {
+		t.Helper()
+		recorder := httptest.NewRecorder()
+		metrics.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+		body := recorder.Body.String()
+		for _, line := range want {
+			if !strings.Contains(body, line) {
+				t.Fatalf("metric %q missing from:\n%s", line, body)
+			}
+		}
+	}
+	assertMetrics("tuba_standard_indexer_invalid_total 1", "tuba_standard_indexer_index_failed_total 1")
+
+	// Retryable item error bumps retry then indexed.
+	metrics = telemetry.New()
+	retrying := &batchSink{apply: func(call int, events []map[string]any) ([]error, error) {
+		if call == 1 {
+			return []error{errors.New("temporary overload")}, nil
+		}
+		return []error{nil}, nil
+	}}
+	second := Worker{Domain: "network", Organization: "tenant_a", Consumer: &consumer{}, DeadLetter: &dlqWriter{}, Sink: retrying, RetryBackoff: time.Nanosecond, Metrics: metrics}
+	if err := second.processBatch(context.Background(), []kafka.Message{toMessage(t, standardEvent(t, "event-2"), 3)}); err != nil {
+		t.Fatal(err)
+	}
+	assertMetrics("tuba_standard_indexer_retry_total 1", "tuba_standard_indexer_indexed_total 1")
 }
 
 func standardEvent(t *testing.T, id string) map[string]any {

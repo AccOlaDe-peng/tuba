@@ -12,6 +12,7 @@ import (
 	"github.com/segmentio/kafka-go"
 	"tuba/product/internal/deadletter"
 	"tuba/product/internal/sink"
+	"tuba/product/internal/telemetry"
 	"tuba/product/internal/uim"
 )
 
@@ -36,6 +37,7 @@ type Worker struct {
 	BatchWait            time.Duration
 	MaxAttempts          int
 	RetryBackoff         time.Duration
+	Metrics              *telemetry.Registry
 }
 
 func (w Worker) defaults() Worker {
@@ -110,12 +112,14 @@ func (w Worker) processBatch(ctx context.Context, messages []kafka.Message) erro
 	for _, message := range messages {
 		var event map[string]any
 		if err := json.Unmarshal(message.Value, &event); err != nil {
+			w.inc("tuba_standard_indexer_invalid_total")
 			if err := w.toDLQ(ctx, message, "STANDARD_EVENT_INVALID", "invalid JSON UIM event"); err != nil {
 				return err
 			}
 			continue
 		}
 		if err := uim.Validate(event); err != nil {
+			w.inc("tuba_standard_indexer_invalid_total")
 			if err := w.toDLQ(ctx, message, "UIM_CONTRACT_FAILED", err.Error()); err != nil {
 				return err
 			}
@@ -124,6 +128,7 @@ func (w Worker) processBatch(ctx context.Context, messages []kafka.Message) erro
 		route := object(object(event["ueba"])["route"])
 		organization := object(event["organization"])
 		if value(route["domain"]) != w.Domain || value(organization["id"]) != w.Organization {
+			w.inc("tuba_standard_indexer_invalid_total")
 			if err := w.toDLQ(ctx, message, "TOPIC_SCOPE_MISMATCH", "event organization or domain does not match indexer subscription"); err != nil {
 				return err
 			}
@@ -143,6 +148,7 @@ func (w Worker) processBatch(ctx context.Context, messages []kafka.Message) erro
 			var permanent sink.PermanentIndexError
 			if errors.As(batchErr, &permanent) {
 				for _, message := range pendingSources {
+					w.inc("tuba_standard_indexer_index_failed_total")
 					if err := w.toDLQ(ctx, message, permanent.Code, permanent.Message); err != nil {
 						return err
 					}
@@ -153,6 +159,7 @@ func (w Worker) processBatch(ctx context.Context, messages []kafka.Message) erro
 			if attempt >= w.MaxAttempts {
 				return fmt.Errorf("bulk index UIM events after %d attempts: %w", attempt, batchErr)
 			}
+			w.inc("tuba_standard_indexer_retry_total")
 			if err := sleep(ctx, w.RetryBackoff<<min(attempt-1, 6)); err != nil {
 				return err
 			}
@@ -163,10 +170,12 @@ func (w Worker) processBatch(ctx context.Context, messages []kafka.Message) erro
 		nextSources := make([]kafka.Message, 0, len(pendingSources))
 		for i, itemErr := range results {
 			if itemErr == nil {
+				w.inc("tuba_standard_indexer_indexed_total")
 				continue
 			}
 			var permanent sink.PermanentIndexError
 			if errors.As(itemErr, &permanent) {
+				w.inc("tuba_standard_indexer_index_failed_total")
 				if err := w.toDLQ(ctx, pendingSources[i], permanent.Code, permanent.Message); err != nil {
 					return err
 				}
@@ -180,6 +189,7 @@ func (w Worker) processBatch(ctx context.Context, messages []kafka.Message) erro
 			if attempt >= w.MaxAttempts {
 				return fmt.Errorf("index %d UIM event(s) still failing after %d attempts", len(pendingEvents), attempt)
 			}
+			w.inc("tuba_standard_indexer_retry_total")
 			if err := sleep(ctx, w.RetryBackoff<<min(attempt-1, 6)); err != nil {
 				return err
 			}
@@ -205,6 +215,12 @@ func (w Worker) toDLQ(ctx context.Context, source kafka.Message, code, reason st
 		return fmt.Errorf("publish standard indexing DLQ: %w", err)
 	}
 	return nil
+}
+
+func (w Worker) inc(name string) {
+	if w.Metrics != nil {
+		w.Metrics.Inc(name)
+	}
 }
 
 func sleep(ctx context.Context, d time.Duration) error {

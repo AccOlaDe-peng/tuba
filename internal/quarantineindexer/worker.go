@@ -10,6 +10,7 @@ import (
 	"github.com/segmentio/kafka-go"
 	"tuba/product/internal/deadletter"
 	"tuba/product/internal/sink"
+	"tuba/product/internal/telemetry"
 	"tuba/product/internal/uim"
 )
 
@@ -29,6 +30,7 @@ type Worker struct {
 	Consumer                Consumer
 	DeadLetter              Writer
 	Sink                    Sink
+	Metrics                 *telemetry.Registry
 }
 
 func (w Worker) Run(ctx context.Context) error {
@@ -42,10 +44,12 @@ func (w Worker) Run(ctx context.Context) error {
 		}
 		var record uim.Quarantine
 		if err := json.Unmarshal(message.Value, &record); err != nil {
+			w.inc("tuba_quarantine_indexer_invalid_total")
 			if err := w.toDLQ(ctx, message, "QUARANTINE_INVALID", err.Error()); err != nil {
 				return err
 			}
 		} else if record.OrganizationID != w.Organization || record.Namespace != w.Namespace || record.ID == "" || record.RawEventID == "" || record.OccurredAt.IsZero() {
+			w.inc("tuba_quarantine_indexer_invalid_total")
 			if err := w.toDLQ(ctx, message, "QUARANTINE_SCOPE_INVALID", "quarantine identity or tenant scope is invalid"); err != nil {
 				return err
 			}
@@ -54,10 +58,12 @@ func (w Worker) Run(ctx context.Context) error {
 			for attempt := 0; attempt < 5; attempt++ {
 				writeErr = w.Sink.PutQuarantine(ctx, record)
 				if writeErr == nil {
+					w.inc("tuba_quarantine_indexer_indexed_total")
 					break
 				}
 				var permanent sink.PermanentIndexError
 				if errors.As(writeErr, &permanent) {
+					w.inc("tuba_quarantine_indexer_index_failed_total")
 					if err := w.toDLQ(ctx, message, permanent.Code, permanent.Message); err != nil {
 						return err
 					}
@@ -65,6 +71,7 @@ func (w Worker) Run(ctx context.Context) error {
 					break
 				}
 				if attempt < 4 {
+					w.inc("tuba_quarantine_indexer_retry_total")
 					timer := time.NewTimer(200 * time.Millisecond << min(attempt, 6))
 					select {
 					case <-ctx.Done():
@@ -96,6 +103,12 @@ func (w Worker) toDLQ(ctx context.Context, source kafka.Message, code, reason st
 		return fmt.Errorf("publish quarantine index DLQ: %w", err)
 	}
 	return nil
+}
+
+func (w Worker) inc(name string) {
+	if w.Metrics != nil {
+		w.Metrics.Inc(name)
+	}
 }
 
 func min(a, b int) int {
