@@ -27,7 +27,7 @@
 
 ### 组白名单是手工维护的，新增命名空间必须同步
 
-白名单同时写在三处且必须逐字一致：`scripts/manage_tuba_monitoring.py` 的 `MONITORED_CONSUMER_GROUPS`（决定 kafka_exporter 的 `--group.filter`）、`deploy/observability/single-node/rules/kafka.yml` 的两条告警、以及 Grafana 面板 `tuba-single-node.json` 的查询。**漏掉一处不会报错，只会静默不监控**——2026-09-30 之前整个 tenant_a（Windows Security）链路在这三处都不在名单里，**当前量最大的接入路径完全没有 lag 监控**，而 Zeek 那条安静的链路全程有。
+白名单同时写在多处且必须逐字一致：`/etc/tuba/tuba-monitoring.json` 里 kafka-exporter 的 `--group.filter`（仓库侧参考副本在 `scripts/manage_tuba_monitoring.py` 的 `MONITORED_CONSUMER_GROUPS`，2026-10-01 纳管后它不再是运行时来源）、`deploy/observability/single-node/rules/kafka.yml` 的两条告警、以及 Grafana 面板 `tuba-single-node.json` 的查询。**漏掉一处不会报错，只会静默不监控**——2026-09-30 之前整个 tenant_a（Windows Security）链路在这些地方都不在名单里，**当前量最大的接入路径完全没有 lag 监控**，而 Zeek 那条安静的链路全程有。
 
 来源适配器的组名用 `tuba-source-adapter-[0-9a-f]{16}-<代次后缀>` 这一模式匹配，比逐个列 hash 更耐用（新注册来源自动覆盖）；但**退役代次的无后缀同名组要显式排除**，否则会立刻误报。
 
@@ -154,7 +154,21 @@ python3 /opt/tuba/collector-live/tenant_a_chain.py start              # 4 个 te
 
 监督器的 `start` 会去 `/proc` 里找**正在运行的 `tuba-api`** 取环境基座，所以顺序必须是"先 api、后监督器"；api 若没起来，监督器会直接报 `source registry has no enabled source contexts` 或取不到环境。旧监督器的 `stop` **不完整**（实测 6 个 zeek 子进程只回收 2 个，其余成为孤儿继续消费），所以回滚或重切之前务必用 `pgrep -af collector-live/pipeline/bin` 核对没有残留进程——两名消费者在同一消费组内会导致索引重复写入。
 
-**开机恢复：cron `@reboot` 受控入口**（2026-09-30 安装，不注册 systemd 仍是设计决定）。root crontab 有一行 `@reboot /opt/tuba/bin/tuba-boot`；该脚本（0700 root）向 `/var/log/tuba/boot.log` 写带时间戳的日志后调用 `tuba-launcher start --manifest /etc/tuba/tuba-services.json`。脚本幂等：先用 `status` 探测，Launcher 已在运行则不动作、退出 0（launcher 的 `start` 在已运行时会以 `already running` 退出 1，不能直接当幂等用）。Launcher 的 state 带 `runner_identity`（boot ID + 启动时刻），重启后 PID 被复用也不会被误判为"已在运行"。**注意：该入口未经真实重启验收**（用户决定本轮不做目标机重启测试），只做过手动执行的静态验证；监控栈（prometheus/grafana/exporter）不在 Launcher 清单内，重启后仍不会自动恢复。
+**开机恢复：cron `@reboot` 受控入口**（2026-09-30 安装，不注册 systemd 仍是设计决定）。root crontab 有一行 `@reboot /opt/tuba/bin/tuba-boot`；该脚本（0700 root）向 `/var/log/tuba/boot.log` 写带时间戳的日志后依次对**两份清单**执行 `tuba-launcher start`：数据面 `/etc/tuba/tuba-services.json` 与监控栈 `/etc/tuba/tuba-monitoring.json`（2026-10-01 起监控栈已纳管，见下节）。脚本幂等：每份清单先用 `status` 探测，对应 Launcher 已在运行则跳过、退出 0（launcher 的 `start` 在已运行时会以 `already running` 退出 1，不能直接当幂等用）。Launcher 的 state 带 `runner_identity`（boot ID + 启动时刻），重启后 PID 被复用也不会被误判为"已在运行"。**注意：该入口未经真实重启验收**（用户决定本轮不做目标机重启测试），只做过手动执行的静态验证（两份清单均实测 no-op 退出 0）。
+
+## 监控栈由 Launcher 纳管（248 现状，2026-10-01 起）
+
+prometheus / grafana / node_exporter / kafka_exporter / capacity-guard 由**第二个 tuba-launcher 实例**监督，清单 `/etc/tuba/tuba-monitoring.json`（0600 root），密钥文件 `/etc/tuba/tuba-monitoring.env`（0600 root，只含 kafka_exporter SCRAM 口令与 Grafana admin 口令两项引用），状态与日志分别在 `/var/lib/tuba/launcher-monitoring` 与 `/var/log/tuba-monitoring`。操作用同一个二进制的另一份 manifest：
+
+```
+tuba-launcher status  --manifest /etc/tuba/tuba-monitoring.json
+tuba-launcher logs    --manifest /etc/tuba/tuba-monitoring.json --service prometheus --tail 100
+```
+
+- **为什么是两份清单而不是并入主清单**：Launcher 的 start/stop/restart 都是 manifest-wide，且没有运行期 reload；把监控并入 `tuba-services.json` 意味着每次监控变更都要连带重启 11 个数据面服务。两份清单各自有独立 state_dir，互不影响。
+- **非 root 身份通过 `setpriv` 保留**：Launcher 以 root 运行且不支持 per-service 用户切换，四个组件的清单 `command` 是 `/usr/bin/setpriv`（`--reuid/--regid/--clear-groups/--no-new-privs` 后 exec 真实二进制），进程身份与切换前完全一致（tuba-prometheus 971、tuba-node-exporter 970、tuba-kafka-exporter 969、tuba-grafana 968）；setpriv 是 exec 语义，PID 不变、SIGTERM 直达服务。capacity-guard 切换前就是 root，保持 root。**不得把 setpriv 包装去掉后直接以前端二进制为 command**——那会让组件以 root 运行，是安全倒退。
+- **重启单个监控组件**：Launcher 没有单服务粒度，沿用数据面的既定做法——`kill -TERM <子进程 pid>`，Launcher 按 1s→30s 退避自动拉起（prometheus 的 TSDB 在磁盘上，重启不丢历史）。
+- 旧的 `scripts/manage_tuba_monitoring.py` 与 capacity-guard 的 `manage_tuba_capacity_guard.py` 保留在磁盘上仅作回滚退路（先 `tuba-launcher stop --manifest /etc/tuba/tuba-monitoring.json` 再用旧脚本 start）；其自带的 log-rotator 已退役，监控组件日志由 Launcher 按 16 MiB×3 轮转（Grafana 自身文件日志仍由 Grafana 内部轮转）。Prometheus 数据目录 `/opt/tuba/monitoring/data/prometheus` 切换前后未动，15 天历史连续。
 
 **不要执行 `/opt/tuba/start.sh`**：那是 M1 遗留脚本，会 source `/etc/tuba/tuba.env`。该文件在切换后语义已变——从"api 的完整环境文件"变成"Launcher 的密钥文件"，只含密钥。照旧执行会拉起一个**缺 `ES_URL`** 的 api，症状是日志里的 `ES_URL and ES_API_KEY are required`，而在同一个端口上掩盖掉正常运行的 api。数据面的启停一律经 `tuba-launcher`；`start.sh` 已于 2026-09-30 废止——改名为 `/opt/tuba/start.sh.retired`（0600 root，不可执行，仅留档）。
 
