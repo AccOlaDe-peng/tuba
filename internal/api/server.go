@@ -91,6 +91,8 @@ func (s Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/collectors/enrollments", s.protected("source:manage", s.createCollectorEnrollment))
 	mux.HandleFunc("PUT /api/v1/collectors/{id}/config", s.protected("source:manage", s.putCollectorConfig))
 	mux.HandleFunc("DELETE /api/v1/collectors/{id}", s.protected("source:manage", s.disableCollector))
+	mux.HandleFunc("POST /api/v1/collectors/{id}/enable", s.protected("source:manage", s.enableCollector))
+	mux.HandleFunc("PUT /api/v1/collectors/{id}/source-binding", s.protected("source:manage", s.putCollectorSourceBinding))
 	mux.HandleFunc("POST /api/v1/collector/enroll", s.enrollCollector)
 	mux.HandleFunc("POST /api/v1/collector/heartbeat", s.collectorHeartbeat)
 	mux.HandleFunc("GET /api/v1/collector/config", s.collectorConfig)

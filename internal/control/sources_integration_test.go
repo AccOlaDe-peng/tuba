@@ -24,13 +24,13 @@ func TestListSourcesIntegration(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
-	if _, err = p.Exec(ctx, `INSERT INTO source_instances(id,organization_id,namespace,vendor_name,vendor_product,vendor_dataset,credential_ref,state,rate_limit)
-		SELECT 'src_listsources_integration_active',o.id,'listsources','vendor','product','dataset','cred_listsources_active','active',100 FROM organizations o WHERE o.slug='tenant_a'
+	if _, err = p.Exec(ctx, `INSERT INTO source_instances(id,organization_id,namespace,vendor_name,vendor_product,vendor_dataset,credential_ref,state,enabled,rate_limit)
+		SELECT 'src_listsources_integration_active',o.id,'listsources','vendor','product','dataset','cred_listsources_active','active',true,100 FROM organizations o WHERE o.slug='tenant_a'
 		ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err = p.Exec(ctx, `INSERT INTO source_instances(id,organization_id,namespace,vendor_name,vendor_product,vendor_dataset,credential_ref,state,rate_limit)
-		SELECT 'src_listsources_integration_paused',o.id,'listsources','vendor','product','dataset','cred_listsources_paused','paused',100 FROM organizations o WHERE o.slug='tenant_a'
+	if _, err = p.Exec(ctx, `INSERT INTO source_instances(id,organization_id,namespace,vendor_name,vendor_product,vendor_dataset,credential_ref,state,enabled,rate_limit)
+		SELECT 'src_listsources_integration_paused',o.id,'listsources','vendor','product','dataset','cred_listsources_paused','paused',false,100 FROM organizations o WHERE o.slug='tenant_a'
 		ON CONFLICT (id) DO NOTHING`); err != nil {
 		t.Fatal(err)
 	}

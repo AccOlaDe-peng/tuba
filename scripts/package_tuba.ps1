@@ -28,6 +28,7 @@ New-Item -ItemType Directory -Path $binDirectory,$launcherDirectory,$contractDir
 
 $commands = @(
     "tuba-launcher",
+    "tuba-agent",
     "tuba-web",
     "tuba-api",
     "tuba-ingest",

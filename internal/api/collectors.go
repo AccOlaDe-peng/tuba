@@ -188,7 +188,10 @@ func (s Server) disableCollector(w http.ResponseWriter, r *http.Request, p auth.
 	}
 	err := s.Control.DisableCollector(r.Context(), p, r.PathValue("id"), requestID(r))
 	if err != nil {
-		if strings.Contains(err.Error(), "not found") {
+		var revocation *control.SourceWriteRevocationError
+		if errors.As(err, &revocation) {
+			http.Error(w, revocation.Error(), 502)
+		} else if strings.Contains(err.Error(), "not found") {
 			http.Error(w, "collector not found", 404)
 		} else {
 			http.Error(w, "collector registry unavailable", 503)
@@ -196,6 +199,56 @@ func (s Server) disableCollector(w http.ResponseWriter, r *http.Request, p auth.
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s Server) enableCollector(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	if s.Control == nil {
+		http.Error(w, "control store unavailable", 503)
+		return
+	}
+	err := s.Control.EnableCollector(r.Context(), p, r.PathValue("id"), requestID(r))
+	if err != nil {
+		var revocation *control.SourceWriteRevocationError
+		if errors.As(err, &revocation) {
+			http.Error(w, revocation.Error(), 502)
+		} else if strings.Contains(err.Error(), "not disabled") {
+			http.Error(w, "collector is not disabled", 409)
+		} else if strings.Contains(err.Error(), "not found") {
+			http.Error(w, "collector not found", 404)
+		} else {
+			http.Error(w, "collector registry unavailable", 503)
+		}
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s Server) putCollectorSourceBinding(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	if s.Control == nil {
+		http.Error(w, "control store unavailable", 503)
+		return
+	}
+	var body struct {
+		SourceID       string `json:"source_id"`
+		KafkaPrincipal string `json:"kafka_principal"`
+		KafkaTopic     string `json:"kafka_topic"`
+	}
+	if !decodeCollectorJSON(w, r, 4<<10, &body) {
+		return
+	}
+	binding, err := s.Control.RegisterSourceKafkaBinding(r.Context(), p, r.PathValue("id"), body.SourceID, body.KafkaPrincipal, body.KafkaTopic, requestID(r))
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), 404)
+		} else if strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "must be") {
+			http.Error(w, err.Error(), 400)
+		} else {
+			http.Error(w, "collector registry unavailable", 503)
+		}
+		return
+	}
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, 201, binding)
 }
 
 const bodyLimitEnrollment = 4 << 10

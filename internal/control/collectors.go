@@ -105,7 +105,7 @@ func (s *Store) CreateCollectorEnrollment(ctx context.Context, p auth.Principal,
 	if err != nil {
 		return out, errors.New("active tenant membership not found")
 	}
-	err = tx.QueryRow(ctx, `INSERT INTO collector_enrollment_tokens(token_hash,organization_id,namespace,created_by,expires_at) VALUES($1,$2,$3,$4,now()+($5::text||' minutes')::interval) RETURNING expires_at`, digest, orgID, namespace, identityID, minutes).Scan(&out.ExpiresAt)
+	err = tx.QueryRow(ctx, `INSERT INTO collector_enrollment_tokens(token_hash,organization_id,namespace,created_by,expires_at) VALUES($1,$2,$3,$4,now()+make_interval(mins=>$5)) RETURNING expires_at`, digest, orgID, namespace, identityID, minutes).Scan(&out.ExpiresAt)
 	if err != nil {
 		return out, err
 	}
@@ -287,21 +287,74 @@ func (s *Store) DisableCollector(ctx context.Context, p auth.Principal, id, requ
 		return err
 	}
 	var previousState, hostname string
-	err = tx.QueryRow(ctx, `SELECT state,hostname FROM collector_agents WHERE id=$1 AND state<>'disabled' FOR UPDATE`, id).Scan(&previousState, &hostname)
+	err = tx.QueryRow(ctx, `SELECT state,hostname FROM collector_agents WHERE id=$1 FOR UPDATE`, id).Scan(&previousState, &hostname)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return errors.New("collector not found or disabled")
+		return errors.New("collector not found")
 	}
 	if err != nil {
 		return err
 	}
-	before, _ := json.Marshal(map[string]string{"state": previousState, "hostname": hostname})
-	if _, err = tx.Exec(ctx, `UPDATE collector_agents SET state='disabled',updated_at=now() WHERE id=$1`, id); err != nil {
+	// Disabling is idempotent: a repeated call skips the state update but still
+	// reconciles any source write ACLs whose earlier revocation failed.
+	if previousState != "disabled" {
+		before, _ := json.Marshal(map[string]string{"state": previousState, "hostname": hostname})
+		if _, err = tx.Exec(ctx, `UPDATE collector_agents SET state='disabled',updated_at=now() WHERE id=$1`, id); err != nil {
+			return err
+		}
+		if _, err = tx.Exec(ctx, `INSERT INTO audit_events(organization_id,actor_identity_id,action,resource_type,resource_id,request_id,before_state,after_state) VALUES($1,$2,'collector.disable','collector',$3,$4,$5,'{"state":"disabled"}'::jsonb)`, orgID, identityID, id, requestID, before); err != nil {
+			return err
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
 		return err
 	}
-	if _, err = tx.Exec(ctx, `INSERT INTO audit_events(organization_id,actor_identity_id,action,resource_type,resource_id,request_id,before_state,after_state) VALUES($1,$2,'collector.disable','collector',$3,$4,$5,'{"state":"disabled"}'::jsonb)`, orgID, identityID, id, requestID, before); err != nil {
+	return s.reconcileSourceWrites(ctx, orgID, identityID, id, requestID, true)
+}
+
+// EnableCollector reverses DisableCollector: it first restores every bound
+// source's Kafka write ACL and only then re-admits the collector credential.
+// If a restore fails the collector stays disabled and the failure is reported
+// and audited, so a collector can never come back without its write path.
+func (s *Store) EnableCollector(ctx context.Context, p auth.Principal, id, requestID string) error {
+	if !validCollectorID(id) {
+		return errors.New("invalid collector ID")
+	}
+	tx, err := s.Pool.BeginTx(ctx, pgx.TxOptions{})
+	if err != nil {
 		return err
 	}
-	return tx.Commit(ctx)
+	var orgID, identityID string
+	err = tx.QueryRow(ctx, `SELECT o.id::text,i.id::text FROM collector_agents ca JOIN organizations o ON o.id=ca.organization_id JOIN identities i ON i.issuer=$1 AND i.subject=$2 AND i.disabled_at IS NULL JOIN memberships m ON m.organization_id=o.id AND m.identity_id=i.id AND m.revoked_at IS NULL WHERE ca.id=$3 AND o.slug=$4`, s.Issuer, p.Subject, id, p.Organization).Scan(&orgID, &identityID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		tx.Rollback(ctx)
+		return errors.New("collector not found")
+	}
+	if err != nil {
+		tx.Rollback(ctx)
+		return err
+	}
+	var state string
+	err = tx.QueryRow(ctx, `SELECT state FROM collector_agents WHERE id=$1 FOR UPDATE`, id).Scan(&state)
+	if err != nil {
+		tx.Rollback(ctx)
+		return err
+	}
+	if state != "disabled" {
+		tx.Rollback(ctx)
+		return errors.New("collector is not disabled")
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return err
+	}
+	if err = s.reconcileSourceWrites(ctx, orgID, identityID, id, requestID, false); err != nil {
+		return err
+	}
+	after, _ := json.Marshal(map[string]string{"state": "enrolled"})
+	if _, err = s.Pool.Exec(ctx, `UPDATE collector_agents SET state='enrolled',updated_at=now() WHERE id=$1 AND state='disabled'`, id); err != nil {
+		return err
+	}
+	_, err = s.Pool.Exec(ctx, `INSERT INTO audit_events(organization_id,actor_identity_id,action,resource_type,resource_id,request_id,before_state,after_state) VALUES($1,$2,'collector.enable','collector',$3,$4,'{"state":"disabled"}'::jsonb,$5)`, orgID, identityID, id, requestID, after)
+	return err
 }
 
 func digestCredential(value string) string {

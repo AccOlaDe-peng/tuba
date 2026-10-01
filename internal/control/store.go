@@ -13,6 +13,11 @@ import (
 type Store struct {
 	Pool   *pgxpool.Pool
 	Issuer string
+	// WriteRevoker applies collector disable/enable to the bound sources' Kafka
+	// write ACLs. It is nil when the API has no Kafka admin credentials; disabling
+	// a collector that has source bindings then fails loudly instead of silently
+	// leaving write access in place.
+	WriteRevoker SourceWriteRevoker
 }
 
 func Open(ctx context.Context, url, issuer string) (*Store, error) {
@@ -29,7 +34,7 @@ func Open(ctx context.Context, url, issuer string) (*Store, error) {
 		p.Close()
 		return nil, e
 	}
-	return &Store{p, issuer}, nil
+	return &Store{Pool: p, Issuer: issuer}, nil
 }
 func (s *Store) Close() { s.Pool.Close() }
 

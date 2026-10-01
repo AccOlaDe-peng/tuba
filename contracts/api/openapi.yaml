@@ -216,13 +216,56 @@ paths:
     delete:
       operationId: disableCollector
       x-required-permission: source:manage
-      summary: Disable a Collector credential
+      summary: Disable a Collector credential and revoke bound source Kafka write ACLs
+      description: Idempotent. Bound source SCRAM users keep their credential and DESCRIBE ACL; only the WRITE ACL on the source topic is removed. A bound write revocation failure is reported as 502 and audited, never silent.
       parameters:
         - {name: id, in: path, required: true, schema: {type: string, pattern: '^col_[a-f0-9]{32}$'}}
       responses:
-        "204": {description: Collector disabled}
+        "204": {description: Collector disabled and bound source write ACLs revoked}
         "403": {$ref: "#/components/responses/Forbidden"}
-        "404": {description: Collector not found or already disabled}
+        "404": {description: Collector not found}
+        "502": {description: Collector disabled but a bound source write ACL revocation failed; retry the same request}
+        "503": {description: Collector registry unavailable}
+  /collectors/{id}/enable:
+    post:
+      operationId: enableCollector
+      x-required-permission: source:manage
+      summary: Re-enable a disabled Collector after restoring bound source write ACLs
+      description: Bound source WRITE ACLs are restored first; the collector is only re-admitted once every restore succeeded. A restore failure leaves the collector disabled and is reported as 502 and audited.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: '^col_[a-f0-9]{32}$'}}
+      responses:
+        "204": {description: Collector re-enabled and bound source write ACLs restored}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Collector not found}
+        "409": {description: Collector is not disabled}
+        "502": {description: A bound source write ACL restore failed; the collector stays disabled}
+        "503": {description: Collector registry unavailable}
+  /collectors/{id}/source-binding:
+    put:
+      operationId: putCollectorSourceBinding
+      x-required-permission: source:manage
+      summary: Bind a source's Kafka write principal to a Collector
+      description: Records which SCRAM principal writes to the source's context topic on behalf of this collector. The topic must be the source's own context topic (tuba.source.<context>.vN); foreign topics are rejected.
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: '^col_[a-f0-9]{32}$'}}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [source_id, kafka_principal, kafka_topic]
+              properties:
+                source_id: {type: string, pattern: '^src_'}
+                kafka_principal: {type: string, minLength: 1, maxLength: 255}
+                kafka_topic: {type: string, pattern: '^tuba\.source\.ctx_[a-f0-9]{32}\.v[0-9]+$'}
+      responses:
+        "201": {description: Binding recorded}
+        "400": {description: Invalid binding fields}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Collector or source not found, or topic does not match the source context}
         "503": {description: Collector registry unavailable}
   /collector/enroll:
     post:
