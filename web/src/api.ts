@@ -208,6 +208,67 @@ export const operationsStatusSchema = z.object({
   kafka_configured: z.boolean(),
 });
 
+export const sourceSchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  namespace: z.string(),
+  vendor_name: z.string(),
+  vendor_product: z.string(),
+  vendor_dataset: z.string(),
+  source_epoch: z.string(),
+  release_id: z.string().optional().default(""),
+  state: z.string(),
+  enabled: z.boolean(),
+  rate_limit: z.number().int().positive(),
+  source_context_id: z.string().optional().default(""),
+  created_at: z.string(),
+  updated_at: z.string(),
+});
+
+export const sourcesSchema = z.object({
+  items: z.array(sourceSchema),
+});
+
+export const collectorSourceStatusSchema = z.object({
+  source_id: z.string(),
+  state: z.string(),
+  events_read: z.number().int().nonnegative(),
+  events_sent: z.number().int().nonnegative(),
+  events_drop: z.number().int().nonnegative(),
+  last_error: z.string().optional().default(""),
+});
+
+export const collectorHeartbeatSchema = z.object({
+  version: z.string().optional().default(""),
+  config_version: z.number().int().nonnegative().optional().default(0),
+  state: z.string().optional().default(""),
+  queue_depth: z.number().int().nonnegative().optional().default(0),
+  oldest_queued_at: z.string().nullable().optional(),
+  diagnostic: z.string().optional().default(""),
+  sources: z.array(collectorSourceStatusSchema).optional().default([]),
+});
+
+export const collectorSummarySchema = z.object({
+  id: z.string(),
+  organization_id: z.string(),
+  namespace: z.string(),
+  hostname: z.string(),
+  os: z.string(),
+  architecture: z.string(),
+  installed_version: z.string(),
+  desired_version: z.string().optional().default(""),
+  state: z.string(),
+  config_version: z.number().int().nonnegative(),
+  desired_config_version: z.number().int().nonnegative(),
+  last_heartbeat_at: z.string().nullable().optional(),
+  online: z.boolean(),
+  heartbeat: collectorHeartbeatSchema.nullable().optional(),
+});
+
+export const collectorsSchema = z.object({
+  items: z.array(collectorSummarySchema),
+});
+
 export const analysisFeedbackSchema = z.object({
   id: z.number(),
   feedback_type: z.enum(["true_positive", "false_positive", "false_negative", "inconclusive"]),
@@ -226,6 +287,8 @@ export type Case = z.infer<typeof caseSchema>;
 export type CaseActivity = z.infer<typeof caseActivitySchema>;
 export type Member = z.infer<typeof memberSchema>;
 export type Principal = z.infer<typeof principalSchema>;
+export type SourceInstance = z.infer<typeof sourceSchema>;
+export type CollectorSummary = z.infer<typeof collectorSummarySchema>;
 export type Overview = z.infer<typeof overviewSchema>;
 export type OperationsStatus = z.infer<typeof operationsStatusSchema>;
 export type AnalysisFeedback = z.infer<typeof analysisFeedbackSchema>;

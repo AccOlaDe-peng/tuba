@@ -24,7 +24,7 @@ const AuthContext = createContext<AuthValue | undefined>(undefined);
 
 declare global {
   interface Window {
-    TUBA_CONFIG?: { oidcIssuer?: string; oidcClientId?: string };
+    TUBA_CONFIG?: { oidcIssuer?: string; oidcClientId?: string; basePath?: string };
   }
 }
 

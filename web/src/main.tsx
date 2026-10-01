@@ -21,6 +21,7 @@ const AnomalyDetail = load("AnomalyDetail");
 const Cases = load("Cases");
 const CaseDetail = load("CaseDetail");
 const Operations = load("Operations");
+const Sources = load("Sources");
 const Access = load("Access");
 
 function wait(value: ReactNode) {
@@ -41,21 +42,25 @@ function guard(permission: string, value: ReactNode) {
   return <RequirePermission permission={permission}>{wait(value)}</RequirePermission>;
 }
 
-const router = createBrowserRouter([
-  {
-    path: "/",
-    element: <AppShell />,
-    children: [
-      { path: "overview", element: wait(<Overview />) },
-      { path: "anomalies", element: guard("anomaly:read", <Anomalies />) },
-      { path: "anomalies/:id", element: guard("anomaly:read", <AnomalyDetail />) },
-      { path: "cases", element: guard("case:read", <Cases />) },
-      { path: "cases/:id", element: guard("case:read", <CaseDetail />) },
-      { path: "operations", element: guard("operations:read", <Operations />) },
-      { path: "access", element: guard("user:manage", <Access />) },
-    ],
-  },
-]);
+const router = createBrowserRouter(
+  [
+    {
+      path: "/",
+      element: <AppShell />,
+      children: [
+        { path: "overview", element: wait(<Overview />) },
+        { path: "anomalies", element: guard("anomaly:read", <Anomalies />) },
+        { path: "anomalies/:id", element: guard("anomaly:read", <AnomalyDetail />) },
+        { path: "cases", element: guard("case:read", <Cases />) },
+        { path: "cases/:id", element: guard("case:read", <CaseDetail />) },
+        { path: "operations", element: guard("operations:read", <Operations />) },
+        { path: "sources", element: guard("source:manage", <Sources />) },
+        { path: "access", element: guard("user:manage", <Access />) },
+      ],
+    },
+  ],
+  { basename: window.TUBA_CONFIG?.basePath ?? "/" },
+);
 
 const queryClient = new QueryClient({
   defaultOptions: {

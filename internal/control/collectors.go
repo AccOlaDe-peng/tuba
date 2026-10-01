@@ -75,6 +75,10 @@ type CollectorSummary struct {
 	DesiredConfigVersion int64      `json:"desired_config_version"`
 	LastHeartbeatAt      *time.Time `json:"last_heartbeat_at,omitempty"`
 	Online               bool       `json:"online"`
+	// Heartbeat is the last reported payload, kept separate from the
+	// management-plane fields above: queue depth and per-source flow counters
+	// describe the collection plane and must not be collapsed into State.
+	Heartbeat *CollectorHeartbeat `json:"heartbeat,omitempty"`
 }
 
 type CollectorConfig struct {
@@ -203,7 +207,7 @@ func (s *Store) ReportCollectorHeartbeat(ctx context.Context, credential string,
 }
 
 func (s *Store) ListCollectors(ctx context.Context, p auth.Principal) ([]CollectorSummary, error) {
-	rows, err := s.Pool.Query(ctx, `SELECT ca.id,o.id::text,ca.namespace,ca.hostname,ca.os,ca.architecture,ca.installed_version,COALESCE(ca.desired_version,''),ca.state,ca.config_version,COALESCE((SELECT max(c.version) FROM collector_agent_configs c WHERE c.collector_id=ca.id),0),ca.last_heartbeat_at,COALESCE(ca.last_heartbeat_at>now()-interval '90 seconds',false) FROM collector_agents ca JOIN organizations o ON o.id=ca.organization_id WHERE o.slug=$1 ORDER BY ca.hostname,ca.id`, p.Organization)
+	rows, err := s.Pool.Query(ctx, `SELECT ca.id,o.id::text,ca.namespace,ca.hostname,ca.os,ca.architecture,ca.installed_version,COALESCE(ca.desired_version,''),ca.state,ca.config_version,COALESCE((SELECT max(c.version) FROM collector_agent_configs c WHERE c.collector_id=ca.id),0),ca.last_heartbeat_at,COALESCE(ca.last_heartbeat_at>now()-interval '90 seconds',false),ca.heartbeat FROM collector_agents ca JOIN organizations o ON o.id=ca.organization_id WHERE o.slug=$1 ORDER BY ca.hostname,ca.id`, p.Organization)
 	if err != nil {
 		return nil, err
 	}
@@ -211,8 +215,15 @@ func (s *Store) ListCollectors(ctx context.Context, p auth.Principal) ([]Collect
 	items := make([]CollectorSummary, 0)
 	for rows.Next() {
 		var x CollectorSummary
-		if err := rows.Scan(&x.ID, &x.Organization, &x.Namespace, &x.Hostname, &x.OS, &x.Architecture, &x.InstalledVersion, &x.DesiredVersion, &x.State, &x.ConfigVersion, &x.DesiredConfigVersion, &x.LastHeartbeatAt, &x.Online); err != nil {
+		var heartbeat []byte
+		if err := rows.Scan(&x.ID, &x.Organization, &x.Namespace, &x.Hostname, &x.OS, &x.Architecture, &x.InstalledVersion, &x.DesiredVersion, &x.State, &x.ConfigVersion, &x.DesiredConfigVersion, &x.LastHeartbeatAt, &x.Online, &heartbeat); err != nil {
 			return nil, err
+		}
+		if len(heartbeat) > 0 && string(heartbeat) != "{}" {
+			var payload CollectorHeartbeat
+			if err := json.Unmarshal(heartbeat, &payload); err == nil && payload.State != "" {
+				x.Heartbeat = &payload
+			}
 		}
 		items = append(items, x)
 	}

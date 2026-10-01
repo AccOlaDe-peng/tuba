@@ -8,6 +8,7 @@ import {
   LayoutDashboard,
   LogOut,
   Radar,
+  Radio,
   ShieldCheck,
   Users,
 } from "lucide-react";
@@ -20,6 +21,7 @@ const routeTitles: Record<string, string> = {
   anomalies: "异常调查",
   cases: "案件中心",
   operations: "系统运行",
+  sources: "来源与采集器",
   access: "用户与权限",
 };
 
@@ -133,9 +135,14 @@ export function AppShell() {
     {
       type: "group",
       label: "运营",
-      children: auth.can("operations:read")
-        ? [{ key: "/operations", label: "系统运行", icon: <Activity size={17} /> }]
-        : [],
+      children: [
+        ...(auth.can("operations:read")
+          ? [{ key: "/operations", label: "系统运行", icon: <Activity size={17} /> }]
+          : []),
+        ...(auth.can("source:manage")
+          ? [{ key: "/sources", label: "来源与采集器", icon: <Radio size={17} /> }]
+          : []),
+      ],
     },
     {
       type: "group",

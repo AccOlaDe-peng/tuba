@@ -4,4 +4,4 @@
 
 开发环境需要设置 `VITE_OIDC_ISSUER` 和 `VITE_OIDC_CLIENT_ID`。开发用 `tuba-web` public client 需开启 Direct Access Grants，并允许本机开发源访问 token endpoint。
 
-已实现路由：安全总览、异常列表/详情、案件列表/详情/创建、成员权限和系统运行。路由和操作按钮使用 `/api/v1/me` 返回的有效权限控制。列表查询通过 React Query 支持缓存、取消和错误恢复；响应由 Zod 校验。
+已实现路由：安全总览、异常列表/详情、案件列表/详情/创建、成员权限、系统运行和来源/采集器（管理面与采集面状态分列）。路由和操作按钮使用 `/api/v1/me` 返回的有效权限控制。列表查询通过 React Query 支持缓存、取消和错误恢复；响应由 Zod 校验。

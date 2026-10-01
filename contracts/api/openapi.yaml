@@ -947,6 +947,9 @@ components:
         desired_config_version: {type: integer}
         last_heartbeat_at: {type: [string, "null"], format: date-time}
         online: {type: boolean}
+        heartbeat:
+          description: Last reported heartbeat payload; carries the collection-plane signal (queue depth and per-source flow counters). Absent until the agent reports.
+          $ref: "#/components/schemas/CollectorHeartbeat"
     CollectorHeartbeat:
       type: object
       additionalProperties: false

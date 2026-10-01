@@ -55,14 +55,18 @@ import {
   caseSchema,
   casesSchema,
   evidencePageSchema,
+  collectorsSchema,
   formatDuration,
   membersSchema,
   operationsStatusSchema,
   overviewSchema,
   queryString,
+  sourcesSchema,
   type AnomalySummary,
   type Case,
+  type CollectorSummary,
   type Member,
+  type SourceInstance,
 } from "./api";
 import { useAuth } from "./auth";
 import {
@@ -1397,6 +1401,301 @@ export function Operations() {
           </>
         ) : (
           <EmptyState title="暂无分析运行" description="启动 Python analysis worker 后会显示运行元数据。" />
+        )}
+      </section>
+    </div>
+  );
+}
+
+const collectorStateMeta: Record<string, { label: string; className: string }> = {
+  enrolled: { label: "已注册", className: "progress" },
+  running: { label: "运行中", className: "open" },
+  buffering: { label: "缓冲中", className: "progress" },
+  backpressured: { label: "背压", className: "progress" },
+  paused: { label: "已暂停", className: "muted" },
+  error: { label: "错误", className: "danger" },
+  disabled: { label: "已禁用", className: "danger" },
+};
+
+const sourceStateMeta: Record<string, { label: string; className: string }> = {
+  active: { label: "启用", className: "open" },
+  paused: { label: "暂停", className: "progress" },
+  revoked: { label: "已撤销", className: "danger" },
+};
+
+function StateTag({ meta, value }: { meta: Record<string, { label: string; className: string }>; value: string }) {
+  const current = meta[value] ?? { label: value || "未知", className: "muted" };
+  return <Tag className={`signal-tag status-${current.className}`}>{current.label}</Tag>;
+}
+
+export function Sources() {
+  const { token } = useAuth();
+  const sources = useQuery({
+    queryKey: ["sources"],
+    queryFn: ({ signal }) => api("/sources", token, undefined, sourcesSchema, signal),
+    refetchInterval: 30_000,
+  });
+  const collectors = useQuery({
+    queryKey: ["collectors"],
+    queryFn: ({ signal }) => api("/collectors", token, undefined, collectorsSchema, signal),
+    refetchInterval: 30_000,
+  });
+
+  const collectionBySource = useMemo(() => {
+    const map = new Map<string, { collector: CollectorSummary; status: NonNullable<CollectorSummary["heartbeat"]>["sources"][number] }>();
+    for (const collector of collectors.data?.items ?? []) {
+      for (const status of collector.heartbeat?.sources ?? []) {
+        map.set(status.source_id, { collector, status });
+      }
+    }
+    return map;
+  }, [collectors.data]);
+
+  const collectorColumns: TableProps<CollectorSummary>["columns"] = [
+    {
+      title: "采集器",
+      key: "collector",
+      render: (_, value) => (
+        <div className="primary-cell">
+          <strong>{value.hostname || value.id}</strong>
+          <small>{value.id} · {value.os}/{value.architecture} · Agent {value.installed_version || "未知"}</small>
+        </div>
+      ),
+    },
+    {
+      title: "管理面状态",
+      key: "management",
+      children: [
+        {
+          title: "管理状态",
+          dataIndex: "state",
+          width: 110,
+          render: (value: string, row) => (
+            <Space size={4} wrap>
+              <StateTag meta={collectorStateMeta} value={value} />
+              {row.online ? (
+                <Tag className="signal-tag status-open">在线</Tag>
+              ) : (
+                <Tag className="signal-tag status-muted">离线</Tag>
+              )}
+            </Space>
+          ),
+        },
+        {
+          title: "最后心跳",
+          dataIndex: "last_heartbeat_at",
+          width: 112,
+          render: (value: string | null | undefined) =>
+            value ? <TimeValue value={value} /> : <span className="muted">从未上报</span>,
+        },
+        {
+          title: "配置版本",
+          key: "config",
+          width: 130,
+          render: (_, value) => (
+            <Tooltip title={value.config_version === value.desired_config_version ? "期望配置已生效" : "期望配置尚未生效"}>
+              <span>
+                生效 v{value.config_version} / 期望 v{value.desired_config_version}
+                {value.config_version !== value.desired_config_version && (
+                  <Tag className="signal-tag status-progress">待生效</Tag>
+                )}
+              </span>
+            </Tooltip>
+          ),
+        },
+      ],
+    },
+    {
+      title: "采集面状态",
+      key: "collection",
+      children: [
+        {
+          title: "队列积压",
+          key: "queue",
+          width: 130,
+          render: (_, value) => {
+            const heartbeat = value.heartbeat;
+            if (!heartbeat) return <span className="muted">无采集信号</span>;
+            return (
+              <Tooltip title={heartbeat.oldest_queued_at ? `最早排队 ${heartbeat.oldest_queued_at}` : "队列为空"}>
+                <span>{heartbeat.queue_depth} 条</span>
+              </Tooltip>
+            );
+          },
+        },
+        {
+          title: "已发送事件",
+          key: "sent",
+          width: 110,
+          render: (_, value) => {
+            const heartbeat = value.heartbeat;
+            if (!heartbeat) return <span className="muted">无采集信号</span>;
+            const sent = heartbeat.sources.reduce((total, item) => total + item.events_sent, 0);
+            return `${sent} 条`;
+          },
+        },
+        {
+          title: "采集健康",
+          key: "health",
+          width: 120,
+          render: (_, value) => {
+            const heartbeat = value.heartbeat;
+            if (!heartbeat) return <span className="muted">无采集信号</span>;
+            const broken = heartbeat.sources.filter((item) => item.state === "error" || item.last_error);
+            if (heartbeat.state === "error" || broken.length > 0) {
+              return (
+                <Tooltip title={heartbeat.diagnostic || broken[0]?.last_error || "采集异常"}>
+                  <Tag className="signal-tag status-danger">异常</Tag>
+                </Tooltip>
+              );
+            }
+            return <Tag className="signal-tag status-open">数据在流动</Tag>;
+          },
+        },
+      ],
+    },
+  ];
+
+  const sourceColumns: TableProps<SourceInstance>["columns"] = [
+    {
+      title: "来源",
+      key: "source",
+      render: (_, value) => (
+        <div className="primary-cell">
+          <strong>{value.vendor_product} / {value.vendor_dataset}</strong>
+          <small>{value.id} · epoch {value.source_epoch}</small>
+        </div>
+      ),
+    },
+    {
+      title: "管理面状态",
+      key: "management",
+      children: [
+        {
+          title: "管理状态",
+          dataIndex: "state",
+          width: 100,
+          render: (value: string) => <StateTag meta={sourceStateMeta} value={value} />,
+        },
+        {
+          title: "限速",
+          dataIndex: "rate_limit",
+          width: 100,
+          render: (value: number) => `${value} 条/秒`,
+        },
+        {
+          title: "Release",
+          dataIndex: "release_id",
+          width: 150,
+          render: (value: string) => value || <span className="muted">未绑定</span>,
+        },
+      ],
+    },
+    {
+      title: "采集面状态",
+      key: "collection",
+      children: [
+        {
+          title: "数据流动",
+          key: "flow",
+          width: 150,
+          render: (_, value) => {
+            const signal = collectionBySource.get(value.id);
+            if (!signal) return <span className="muted">无采集信号</span>;
+            const { collector, status } = signal;
+            return (
+              <Tooltip title={`由 ${collector.hostname || collector.id} 上报 · 读取 ${status.events_read} / 发送 ${status.events_sent} / 丢弃 ${status.events_drop}`}>
+                <Space size={4} wrap>
+                  {collector.online && status.state === "running" ? (
+                    <Tag className="signal-tag status-open">流动中</Tag>
+                  ) : (
+                    <Tag className="signal-tag status-progress">{status.state === "paused" ? "采集暂停" : collector.online ? status.state : "采集器离线"}</Tag>
+                  )}
+                  <span>{status.events_sent} 条</span>
+                </Space>
+              </Tooltip>
+            );
+          },
+        },
+        {
+          title: "最近错误",
+          key: "error",
+          render: (_, value) => {
+            const signal = collectionBySource.get(value.id);
+            if (!signal?.status.last_error) return <span className="muted">无</span>;
+            return (
+              <Tooltip title={signal.status.last_error}>
+                <Tag className="signal-tag status-danger">有错误</Tag>
+              </Tooltip>
+            );
+          },
+        },
+      ],
+    },
+    {
+      title: "最近更新",
+      dataIndex: "updated_at",
+      width: 112,
+      render: (value: string) => <TimeValue value={value} />,
+    },
+  ];
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="接入治理"
+        title="来源与采集器"
+        description="管理面（启用/禁用、心跳、配置版本）与采集面（数据流动、队列积压）分列呈现，互不混用。"
+      />
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">01</span>
+            <h2>采集器</h2>
+            <p>Management Agent 注册、心跳与配置下发状态（管理面），与队列/流量（采集面）分列</p>
+          </div>
+          {(collectors.isFetching || sources.isFetching) && (
+            <span className="fetching"><RefreshCw size={13} /> 更新中</span>
+          )}
+        </header>
+        {collectors.isLoading ? (
+          <LoadingBlock rows={4} />
+        ) : collectors.error ? (
+          <ErrorState message={errorMessage(collectors.error)} retry={() => void collectors.refetch()} />
+        ) : collectors.data?.items.length ? (
+          <Table
+            rowKey="id"
+            columns={collectorColumns}
+            dataSource={collectors.data.items}
+            pagination={false}
+            scroll={{ x: 980 }}
+          />
+        ) : (
+          <EmptyState title="暂无已注册采集器" description="Management Agent 完成 enroll 后会出现在这里。" />
+        )}
+      </section>
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">02</span>
+            <h2>来源</h2>
+            <p>来源生命周期为管理面状态；数据是否流动来自采集器心跳上报，单独成列</p>
+          </div>
+        </header>
+        {sources.isLoading ? (
+          <LoadingBlock rows={4} />
+        ) : sources.error ? (
+          <ErrorState message={errorMessage(sources.error)} retry={() => void sources.refetch()} />
+        ) : sources.data?.items.length ? (
+          <Table
+            rowKey="id"
+            columns={sourceColumns}
+            dataSource={sources.data.items}
+            pagination={false}
+            scroll={{ x: 980 }}
+          />
+        ) : (
+          <EmptyState title="暂无来源" description="通过来源注册 API 建立来源后会出现在这里。" />
         )}
       </section>
     </div>
