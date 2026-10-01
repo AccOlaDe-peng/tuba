@@ -11,6 +11,8 @@ All components use the UTF-8 byte length followed by `:` and the field bytes, in
 
 For attribution.id v1 the entity snapshot is `role|state|entity_id|canonical_key|sorted_candidate_entity_ids` (empty segments for unresolved). Recomputing the same event role at the same event time yields the same ID; attribution is a projection of the event and never rewrites event.id.
 | `relation.id` | tenant, from entity, relation type, to entity, event ID, resolution snapshot | `rel:` + lowercase SHA-256 hex; entity worker |
+
+For relation.id v1 the resolution snapshot is `relation_type|relation_mapping|rule_version|asserting_event_id`. Re-asserting the same fact from the same event re-derives the same ID (idempotent replay); a different event, endpoint, type or rule version produces a different ID.
 | `feature.id` | tenant, entity, feature/version, window start/end, generation | `feat:` + lowercase SHA-256 hex; analysis worker |
 | `anomaly.id` | tenant, rule/version, entity-or-event key, stable window key, generation | `ano:` + lowercase SHA-256 hex; analysis worker |
 | `risk_event.id` | tenant, contribution type, anomaly ID, anomaly revision, policy version | `risk:` + lowercase SHA-256 hex; risk processor |
