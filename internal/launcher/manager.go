@@ -340,7 +340,19 @@ func statusTo(w io.Writer, manifestPath string, services []string) error {
 	if state.RunnerPID <= 0 {
 		fmt.Fprintln(w, "TUBA launcher is stopped")
 	} else if !processInstanceAlive(state.RunnerPID, state.RunnerIdentity) {
-		fmt.Fprintln(w, "TUBA launcher is stopped (stale state file)")
+		// The recorded supervisor is gone: either the state file survived a
+		// reboot, the pid died, or the pid was reused by an unrelated process.
+		// Per-service rows below come from that dead supervisor and must not be
+		// presented as live; callers (tuba-boot) rely on status failing here.
+		detail := fmt.Sprintf("supervisor pid %d is not alive", state.RunnerPID)
+		if processAlive(state.RunnerPID) {
+			detail = fmt.Sprintf("supervisor pid %d now belongs to a different process", state.RunnerPID)
+		}
+		if boot := stateBoot(state.RunnerIdentity); boot != "" {
+			detail += " (stale state from boot " + boot + ")"
+		}
+		fmt.Fprintf(w, "TUBA launcher has no live supervisor: %s\n", detail)
+		return fmt.Errorf("no live supervisor for manifest %s: %s", manifest.path, detail)
 	} else {
 		fmt.Fprintf(w, "TUBA launcher pid=%d started=%s stopping=%t\n", state.RunnerPID, state.Started.Format(time.RFC3339), state.Stopping)
 	}
@@ -356,6 +368,17 @@ func statusTo(w io.Writer, manifestPath string, services []string) error {
 		fmt.Fprintln(w)
 	}
 	return nil
+}
+
+// stateBoot extracts the boot ID prefix from a recorded runner identity
+// ("<boot_id>:<starttime>" on Linux). Identities without a boot component
+// (Windows process creation tokens) yield an empty string.
+func stateBoot(identity string) string {
+	boot, _, ok := strings.Cut(identity, ":")
+	if !ok {
+		return ""
+	}
+	return boot
 }
 
 func containsName(names []string, name string) bool {

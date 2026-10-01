@@ -374,6 +374,103 @@ func TestStatusFiltersServices(t *testing.T) {
 	}
 }
 
+func TestStatusFailsOnStaleState(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := writeBlockingManifest(t, root, "alpha", "bravo")
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	writeState := func(t *testing.T, state State) {
+		t.Helper()
+		encoded, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(stateDir, stateFileName), encoded, 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	staleServices := map[string]ServiceStatus{
+		"alpha": {State: "running", PID: 111, LastChanged: time.Now().UTC()},
+		"bravo": {State: "running", PID: 222, LastChanged: time.Now().UTC()},
+	}
+
+	t.Run("state from another boot or reused pid", func(t *testing.T) {
+		identity, err := processIdentity(os.Getpid())
+		if err != nil {
+			t.Fatal(err)
+		}
+		writeState(t, State{
+			RunnerPID:      os.Getpid(),
+			RunnerIdentity: identity + "-from-another-boot",
+			Started:        time.Now().UTC(),
+			Services:       staleServices,
+		})
+		var output bytes.Buffer
+		err = statusTo(&output, manifestPath, nil)
+		if err == nil {
+			t.Fatalf("status against a mismatched runner identity must fail, output=%q", output.String())
+		}
+		if !strings.Contains(output.String(), "no live supervisor") {
+			t.Fatalf("status must report the missing supervisor, output=%q", output.String())
+		}
+		if strings.Contains(output.String(), "alpha") || strings.Contains(output.String(), "bravo") {
+			t.Fatalf("stale per-service rows must not be printed, output=%q", output.String())
+		}
+	})
+
+	t.Run("dead supervisor pid", func(t *testing.T) {
+		cmd := exec.Command(os.Args[0], "-test.run=^TestLauncherHelperProcess$")
+		cmd.Env = append(os.Environ(), "TUBA_LAUNCHER_HELPER_PROCESS=1")
+		if err := cmd.Run(); err == nil {
+			t.Fatal("helper process should have exited with a failure code")
+		}
+		deadPID := cmd.Process.Pid
+		if processAlive(deadPID) {
+			t.Fatalf("helper pid %d is still alive; cannot simulate a dead supervisor", deadPID)
+		}
+		writeState(t, State{
+			RunnerPID:      deadPID,
+			RunnerIdentity: "whatever-identity-the-dead-runner-had",
+			Started:        time.Now().UTC(),
+			Services:       staleServices,
+		})
+		var output bytes.Buffer
+		err := statusTo(&output, manifestPath, nil)
+		if err == nil {
+			t.Fatalf("status against a dead supervisor pid must fail, output=%q", output.String())
+		}
+		if !strings.Contains(output.String(), "no live supervisor") {
+			t.Fatalf("status must report the missing supervisor, output=%q", output.String())
+		}
+		if strings.Contains(output.String(), "alpha") || strings.Contains(output.String(), "bravo") {
+			t.Fatalf("stale per-service rows must not be printed, output=%q", output.String())
+		}
+	})
+}
+
+func TestStatusReportsLiveSupervisor(t *testing.T) {
+	root := t.TempDir()
+	manifestPath := writeBlockingManifest(t, root, "alpha")
+	stateDir := filepath.Join(root, "state")
+	if err := os.MkdirAll(stateDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	store, err := newStateStore(stateDir, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	store.setService("alpha", ServiceStatus{State: "running", PID: 111, LastChanged: time.Now().UTC()})
+	var output bytes.Buffer
+	if err := statusTo(&output, manifestPath, nil); err != nil {
+		t.Fatalf("status against a live supervisor must succeed: %v", err)
+	}
+	if !strings.Contains(output.String(), "TUBA launcher pid=") || !strings.Contains(output.String(), "alpha") {
+		t.Fatalf("status must report the live supervisor and its services, output=%q", output.String())
+	}
+}
+
 func TestSupervisorRestartsExitedServiceAndStops(t *testing.T) {
 	root := t.TempDir()
 	manifestPath := filepath.Join(root, "tuba-services.json")
