@@ -39,6 +39,26 @@ func ListenAddress(serviceEnv, fallback string) (string, error) {
 
 func (r *Registry) Inc(name string) { r.Add(name, 1) }
 func (r *Registry) Add(name string, n uint64) {
+	r.series(name).Add(n)
+}
+
+// Set records a gauge-style value, overwriting any previous value.
+func (r *Registry) Set(name string, n uint64) {
+	r.series(name).Store(n)
+}
+
+// Value reports the current counter or gauge value; absent series read as zero.
+func (r *Registry) Value(name string) uint64 {
+	r.mu.Lock()
+	v := r.c[name]
+	r.mu.Unlock()
+	if v == nil {
+		return 0
+	}
+	return v.Load()
+}
+
+func (r *Registry) series(name string) *atomic.Uint64 {
 	r.mu.Lock()
 	v := r.c[name]
 	if v == nil {
@@ -46,7 +66,7 @@ func (r *Registry) Add(name string, n uint64) {
 		r.c[name] = v
 	}
 	r.mu.Unlock()
-	v.Add(n)
+	return v
 }
 
 func (r *Registry) SetReady(ready bool) {

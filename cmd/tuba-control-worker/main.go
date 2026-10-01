@@ -69,9 +69,10 @@ func main() {
 	errCh := make(chan error, 2)
 	go func() {
 		errCh <- (controlworker.OutboxPublisher{Config: controlworker.OutboxConfig{
-			Pool: pool, Writer: writer, WorkerID: workerID, BatchSize: 10,
+			Pool: pool, Writer: writer, WorkerID: workerID, Metrics: metrics, BatchSize: 10,
 			PollInterval: 500 * time.Millisecond, LeaseDuration: 2 * time.Minute,
-			PublishTimeout: 10 * time.Second,
+			PublishTimeout: 10 * time.Second, MaxAttempts: 8, MaxConcurrentKeys: 4,
+			StuckThreshold: 5 * time.Minute,
 		}}).Run(runCtx)
 	}()
 	go func() {
