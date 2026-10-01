@@ -8,12 +8,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"tuba/product/internal/component"
 )
@@ -27,7 +29,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tuba-component <verify|apply|confirm|rollback|status|stamp-format> [flags]")
+		return errors.New("usage: tuba-component <verify|apply|confirm|rollback|upgrade|status|stamp-format> [flags]")
 	}
 	command, rest := args[0], args[1:]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -37,6 +39,12 @@ func run(args []string) error {
 	componentName := flags.String("component", "", "component name (defaults to the package manifest)")
 	instances := flags.String("instance", "", "comma-separated data instance names whose state format must stay readable")
 	formatVersion := flags.Int("format", 0, "state format version to stamp")
+	manifestPath := flags.String("manifest", "", "launcher manifest supervising the component (upgrade command)")
+	serviceName := flags.String("service", "", "launcher service name of the component (upgrade command)")
+	healthURL := flags.String("health-url", "", "readiness endpoint polled during the observation window (upgrade command)")
+	observe := flags.Duration("observe", 5*time.Minute, "health observation window before confirm")
+	grace := flags.Duration("grace", time.Minute, "time the component may take to become healthy after start")
+	poll := flags.Duration("poll", 2*time.Second, "health/liveness poll interval")
 	if err := flags.Parse(rest); err != nil {
 		return err
 	}
@@ -44,7 +52,7 @@ func run(args []string) error {
 		return errors.New("--root is required")
 	}
 	upgrader := &component.Upgrader{Root: *root}
-	needKeyring := map[string]bool{"verify": true, "apply": true, "confirm": true, "rollback": true}
+	needKeyring := map[string]bool{"verify": true, "apply": true, "confirm": true, "rollback": true, "upgrade": true}
 	if needKeyring[command] {
 		if *keyringPath == "" {
 			return errors.New("--keyring is required")
@@ -79,6 +87,34 @@ func run(args []string) error {
 		}
 		fmt.Printf("applied %s: %s -> %s (pending health confirmation)\n", result.Component, printable(result.FromVersion), result.ToVersion)
 		return nil
+	case "upgrade":
+		if *packageDir == "" {
+			return errors.New("--package is required")
+		}
+		if *manifestPath == "" || *serviceName == "" || *healthURL == "" {
+			return errors.New("upgrade requires --manifest, --service and --health-url")
+		}
+		orchestrator := &component.Orchestrator{
+			Upgrader:      upgrader,
+			Processes:     &component.LauncherProcessManager{ManifestPath: *manifestPath, Service: *serviceName},
+			Health:        &component.HTTPHealthChecker{URL: *healthURL},
+			ObserveWindow: *observe,
+			StartGrace:    *grace,
+			PollInterval:  *poll,
+		}
+		err := orchestrator.Upgrade(context.Background(), *packageDir, *componentName, instanceList)
+		var rolledBack *component.RolledBackError
+		switch {
+		case err == nil:
+			fmt.Printf("upgraded %s and confirmed after %s observation\n", *componentName, *observe)
+			return nil
+		case errors.As(err, &rolledBack):
+			fmt.Printf("upgrade of %s to %s failed health observation; rolled back to %s and recovered\n",
+				rolledBack.Component, rolledBack.ToVersion, rolledBack.FromVersion)
+			return err
+		default:
+			return err
+		}
 	case "confirm":
 		if *componentName == "" {
 			return errors.New("--component is required")

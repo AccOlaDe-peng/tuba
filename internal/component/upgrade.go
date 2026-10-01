@@ -370,6 +370,9 @@ type Status struct {
 	PendingFrom     string   `json:"pending_from,omitempty"`
 	PendingTo       string   `json:"pending_to,omitempty"`
 	Installed       []string `json:"installed"`
+	// Orchestration is the persisted upgrade state machine record, when any
+	// orchestrated upgrade ever ran for this component.
+	Orchestration *OrchestrationState `json:"orchestration,omitempty"`
 }
 
 func (u *Upgrader) Status(componentName string) (*Status, error) {
@@ -403,5 +406,10 @@ func (u *Upgrader) Status(componentName string) (*Status, error) {
 			status.Installed = append(status.Installed, entry.Name())
 		}
 	}
+	orchestration, err := u.Orchestration(componentName)
+	if err != nil {
+		return nil, err
+	}
+	status.Orchestration = orchestration
 	return status, nil
 }
