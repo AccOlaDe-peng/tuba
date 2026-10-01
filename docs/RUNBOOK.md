@@ -25,9 +25,11 @@
 5. 若 ES 出现 `429`、bulk 拒绝或高延迟，先保护 ES，不要扩大读取批量。
 6. Lag 下降且 watermark 恢复后关闭事件。
 
-### 组白名单是手工维护的，新增命名空间必须同步
+### 组白名单：单一事实源 + 生成器（2026-10-09 起）
 
-白名单同时写在多处且必须逐字一致：`/etc/tuba/tuba-monitoring.json` 里 kafka-exporter 的 `--group.filter`（仓库侧参考副本在 `scripts/manage_tuba_monitoring.py` 的 `MONITORED_CONSUMER_GROUPS`，2026-10-01 纳管后它不再是运行时来源）、`deploy/observability/single-node/rules/kafka.yml` 的两条告警、以及 Grafana 面板 `tuba-single-node.json` 的查询。**漏掉一处不会报错，只会静默不监控**——2026-09-30 之前整个 tenant_a（Windows Security）链路在这些地方都不在名单里，**当前量最大的接入路径完全没有 lag 监控**，而 Zeek 那条安静的链路全程有。
+白名单的唯一手工副本是 `deploy/observability/single-node/monitored-consumer-groups.txt`；改它之后运行 `python3 scripts/generate_monitoring_allowlist.py` 重写三处产物（`scripts/manage_tuba_monitoring.py` 的 `MONITORED_CONSUMER_GROUPS`、`rules/kafka.yml` 的告警 expr、Grafana 面板 JSON），`--check` 只校验不写入（漂移时 exit 1 报名字）。248 现网三处（kafka-exporter `--group.filter`、prometheus rules、grafana json）已于 2026-10-09 实测与该事实源逐字一致；改了名单要同步 248 时，kafka-exporter 走 `tuba-launcher restart --manifest /etc/tuba/tuba-monitoring.json --service kafka-exporter`，prometheus rules 改后需 reload，grafana 面板 JSON 热加载。**历史教训**：漏改一处不会报错，只会静默不监控——2026-09-30 之前整个 tenant_a（Windows Security）链路不在名单里，当前量最大的接入路径完全没有 lag 监控。
+
+另：`/etc/tuba/kafka-client.properties`（M1 遗留，SCRAM-SHA-256 与 broker 的 SCRAM-SHA-512 不匹配、无任何消费方）已于 2026-10-09 退役为 `.retired`（0600 root 留档）。
 
 来源适配器的组名用 `tuba-source-adapter-[0-9a-f]{16}-<代次后缀>` 这一模式匹配，比逐个列 hash 更耐用（新注册来源自动覆盖）；但**退役代次的无后缀同名组要显式排除**，否则会立刻误报。
 

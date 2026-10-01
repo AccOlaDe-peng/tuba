@@ -1,0 +1,41 @@
+# TUBA 监控消费组白名单 —— 单一事实源（single source of truth）。
+#
+# 这是唯一的手工维护副本。改动后运行：
+#     python3 scripts/generate_monitoring_allowlist.py          # 重写三处产物
+#     python3 scripts/generate_monitoring_allowlist.py --check  # 只校验，CI/测试用
+# 由 scripts/generate_monitoring_allowlist.py 逐字分发到：
+#   1. scripts/manage_tuba_monitoring.py 的 MONITORED_CONSUMER_GROUPS
+#      （运行时来源是 248 上 /etc/tuba/tuba-monitoring.json 里 kafka-exporter 的
+#      --group.filter，由该常量派生；仓库副本是参考与回滚退路）
+#   2. deploy/observability/single-node/rules/kafka.yml 的两条告警
+#      （TubaKafkaConsumerLag、TubaKafkaConsumerInactiveWithBacklog）
+#   3. deploy/observability/single-node/grafana/provisioning/dashboards/
+#      tuba-single-node.json 的 lag 面板查询
+# 漏改一处的历史后果：2026-09-30 之前整条 tenant_a（Windows Security）链路
+# 不在名单里，当前量最大的接入路径完全没有 lag 监控（见 RUNBOOK 与
+# IMPLEMENTATION-TODO 2026-09-30 记录）。
+#
+# 为什么是白名单而不是 tuba-.*：退役代次会留下"有已提交 offset、没有成员"
+# 的消费组，lag 冻结不动，TubaKafkaConsumerInactiveWithBacklog 会在它们身上
+# 常驻误报。新增命名空间时必须在此追加对应的分支。
+#
+# 格式：# 开头为注释；其余每行是一条正则分支，生成时按顺序以 | 连接。
+# 分隔线以下的注释会随条目一起进入 Python 常量块；分隔线以上的本说明不会。
+---
+# Active source adapters all carry the current generation suffix. The
+# unsuffixed tuba-source-adapter-* names in the same range are retired
+# placeholders whose committed offsets stopped moving: their lag is frozen
+# and they have no members, so listing them would make
+# TubaKafkaConsumerInactiveWithBacklog fire forever. A pattern rather than
+# six hashes also covers sources registered later.
+tuba-source-adapter-[0-9a-f]{16}-zeeklive20260927r2
+tuba-raw-indexer-zeek_validation_20260927_001-zeeklive20260927r2
+tuba-normalizer-zeek_validation_20260927_001-zeeklive20260927r2
+# The quarantine indexer kept its pre-generation group name on purpose, so
+# renaming it would restart its offsets.
+tuba-quarantine-indexer-zeek_validation_20260927_001-zeeklive20260927
+tuba-raw-indexer-tenant_a-tenanta20260929
+tuba-normalizer-tenant_a-tenanta20260929
+tuba-quarantine-indexer-tenant_a-tenanta20260929
+tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-zeek_validation_20260927_001-zeeklive20260927r2
+tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-tenant_a-tenanta20260929

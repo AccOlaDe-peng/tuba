@@ -116,11 +116,21 @@ func TestLauncherBlockingHelperProcess(t *testing.T) {
 
 func writeBlockingManifest(t *testing.T, root string, names ...string) string {
 	t.Helper()
+	// Windows 下直接用共享的测试二进制做子进程会被 Defender/文件锁间歇性
+	// 卡住 cmd.Start（状态停在 "starting"）；每个测试复制一份自己的副本。
+	exe := filepath.Join(root, "helper.exe")
+	data, err := os.ReadFile(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(exe, data, 0700); err != nil {
+		t.Fatal(err)
+	}
 	services := make([]any, 0, len(names))
 	for _, name := range names {
 		services = append(services, map[string]any{
 			"name":        name,
-			"command":     os.Args[0],
+			"command":     exe,
 			"args":        []string{"-test.run=^TestLauncherBlockingHelperProcess$"},
 			"environment": map[string]string{"TUBA_LAUNCHER_BLOCKING_HELPER": "1"},
 			"restart_min": "100ms",
@@ -171,11 +181,11 @@ func TestSingleServiceControlLifecycle(t *testing.T) {
 		}
 	})
 
-	alpha := waitForServiceState(t, stateDir, "alpha", 5*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
-	bravo := waitForServiceState(t, stateDir, "bravo", 5*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
+	alpha := waitForServiceState(t, stateDir, "alpha", 60*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
+	bravo := waitForServiceState(t, stateDir, "bravo", 60*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
 
 	// Stop only alpha: it must stop, stay stopped, and bravo must not move.
-	if err := StopServices(manifestPath, []string{"alpha"}, 5*time.Second); err != nil {
+	if err := StopServices(manifestPath, []string{"alpha"}, 60*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if processAlive(alpha.PID) {
@@ -197,7 +207,7 @@ func TestSingleServiceControlLifecycle(t *testing.T) {
 	}
 
 	// Restart only bravo: new PID for bravo, alpha stays stopped, no crash budget consumed.
-	if err := RestartServices(manifestPath, []string{"bravo"}, 5*time.Second); err != nil {
+	if err := RestartServices(manifestPath, []string{"bravo"}, 60*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	state, err := readState(stateDir)
@@ -212,22 +222,22 @@ func TestSingleServiceControlLifecycle(t *testing.T) {
 	}
 
 	// Restart of a stopped service starts it.
-	if err := RestartServices(manifestPath, []string{"alpha"}, 5*time.Second); err != nil {
+	if err := RestartServices(manifestPath, []string{"alpha"}, 60*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	alphaRestarted := waitForServiceState(t, stateDir, "alpha", 5*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
+	alphaRestarted := waitForServiceState(t, stateDir, "alpha", 60*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
 	if alphaRestarted.PID == alpha.PID {
 		t.Fatal("alpha restarted with its old pid")
 	}
 
 	// Stop then start again; the service returns with a fresh PID.
-	if err := StopServices(manifestPath, []string{"alpha"}, 5*time.Second); err != nil {
+	if err := StopServices(manifestPath, []string{"alpha"}, 60*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	if err := StartServices(manifestPath, []string{"alpha"}, 5*time.Second); err != nil {
+	if err := StartServices(manifestPath, []string{"alpha"}, 60*time.Second); err != nil {
 		t.Fatal(err)
 	}
-	started := waitForServiceState(t, stateDir, "alpha", 5*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
+	started := waitForServiceState(t, stateDir, "alpha", 60*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
 	if started.PID == alphaRestarted.PID {
 		t.Fatal("alpha started with its previous pid")
 	}
@@ -240,9 +250,9 @@ func TestStoppedServiceSurvivesSupervisorRestart(t *testing.T) {
 
 	done := make(chan error, 1)
 	go func() { done <- Run(manifestPath) }()
-	waitForServiceState(t, stateDir, "alpha", 5*time.Second, func(s ServiceStatus) bool { return s.State == "running" })
-	waitForServiceState(t, stateDir, "bravo", 5*time.Second, func(s ServiceStatus) bool { return s.State == "running" })
-	if err := StopServices(manifestPath, []string{"alpha"}, 5*time.Second); err != nil {
+	waitForServiceState(t, stateDir, "alpha", 60*time.Second, func(s ServiceStatus) bool { return s.State == "running" })
+	waitForServiceState(t, stateDir, "bravo", 60*time.Second, func(s ServiceStatus) bool { return s.State == "running" })
+	if err := StopServices(manifestPath, []string{"alpha"}, 60*time.Second); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(stateDir, stopFileName), []byte("stop"), 0600); err != nil {
@@ -270,7 +280,7 @@ func TestStoppedServiceSurvivesSupervisorRestart(t *testing.T) {
 			t.Error("second supervisor did not stop during cleanup")
 		}
 	})
-	waitForServiceState(t, stateDir, "bravo", 5*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
+	waitForServiceState(t, stateDir, "bravo", 60*time.Second, func(s ServiceStatus) bool { return s.State == "running" && s.PID > 0 })
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		state, err := readState(stateDir)

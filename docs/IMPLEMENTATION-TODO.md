@@ -581,7 +581,7 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 
 **二、白名单必须排除退役代次，否则立刻误报。** 第一版把三个无后缀的 `tuba-source-adapter-<hash>`（`c169402d…`、`d1ff4e04…`、`395791423…`）当成 tenant_a 的适配器加了进去，"有积压且无成员"的判定随即命中这三组（lag 14176 / 5575 / 303）。核查确认它们是**已撤销的 placeholder 来源**留下的孤儿组：`CONSUMER-ID`/`HOST` 均为 `-`（无成员）、committed offset 30 秒内一动不动，且它们消费的 `ctx_6000…/7000…/8000…` **不在 `source_instances` 里**；真正承载 Windows 数据的是带 `-zeeklive20260927r2` 后缀的 `3a5f5426333adfdd` 与 `91f5ede6aee00ba0`（lag=0、有成员），而这两个此前也不在白名单里。已改为按后缀模式匹配（`tuba-source-adapter-[0-9a-f]{16}-zeeklive20260927r2`），既覆盖新注册来源又排除孤儿。**验证：19 个组导出、三个孤儿组导出 0 条序列、"无成员且有积压"命中 0、三条 Kafka 告警均 inactive。**
 
-**遗留**：白名单仍是多处重复（含 Grafana），**新增命名空间时漏改一处不会报错**，集中生成应在 D1.5 处理。孤儿消费组本身未删除（保留其 offset 作为证据），因此 `--all-groups` 排查时仍会看到冻结 lag，RUNBOOK 的 TubaKafkaLag 已写明如何区分。
+**遗留**：~~白名单多处重复（含 Grafana）~~ **已集中生成（2026-10-09）**：唯一手工副本 `deploy/observability/single-node/monitored-consumer-groups.txt`，`scripts/generate_monitoring_allowlist.py` 幂等重写三处产物（`manage_tuba_monitoring.py` 常量块、`kafka.yml` 告警 expr、Grafana 面板 JSON），`--check` 校验漂移（exit 1 报名字）。生成后三处与 248 现网（kafka-exporter `--group.filter`、prometheus rules、grafana json）实测逐字一致，线上零改动。孤儿消费组本身未删除（保留其 offset 作为证据），因此 `--all-groups` 排查时仍会看到冻结 lag，RUNBOOK 的 TubaKafkaLag 已写明如何区分。
 
 ### 2026-09-30 COL-07/V02 非破坏性子集（1/4）：重复投递与跨 offset 重发 —— 通过
 

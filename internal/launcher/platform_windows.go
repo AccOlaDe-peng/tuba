@@ -62,10 +62,21 @@ func terminateChild(cmd *exec.Cmd) error {
 		if !processAlive(int(pid)) {
 			return os.ErrProcessDone
 		}
-		return fmt.Errorf("attach to child console: %w", err)
+		// 附控制台失败时回退为直接终止：返回错误会让 os/exec 放弃取消，
+		// 子进程继续运行，调用方将无限期等待。
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			return fmt.Errorf("attach to child console: %w (fallback kill: %v)", err, killErr)
+		}
+		return nil
 	}
 	err := windows.GenerateConsoleCtrlEvent(ctrlBreakEvent, pid)
 	restore()
+	if err != nil && processAlive(int(pid)) {
+		if killErr := cmd.Process.Kill(); killErr != nil {
+			return fmt.Errorf("send ctrl-break: %w (fallback kill: %v)", err, killErr)
+		}
+		return nil
+	}
 	return err
 }
 

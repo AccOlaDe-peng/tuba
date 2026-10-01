@@ -36,6 +36,8 @@ BROKER = "10.6.68.248:29292"
 # Prometheus rules and the Grafana dashboard, which cannot import from here;
 # when this changes, those change too.
 MONITORED_CONSUMER_GROUPS = "|".join((
+    # GENERATED from deploy/observability/single-node/monitored-consumer-groups.txt
+    # by scripts/generate_monitoring_allowlist.py — edit the source, not this block.
     # Active source adapters all carry the current generation suffix. The
     # unsuffixed tuba-source-adapter-* names in the same range are retired
     # placeholders whose committed offsets stopped moving: their lag is frozen
