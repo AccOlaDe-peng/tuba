@@ -127,7 +127,7 @@ func run() error {
 			},
 			NewConsumer: func(context.Context) (sourceadapter.Consumer, error) {
 				fresh := newReader()
-				log.Printf("source adapter topic=%s re-creating Kafka reader after topic deletion", binding.Topic)
+				log.Printf("source adapter topic=%s building fresh Kafka reader after topic recreate", binding.Topic)
 				return fresh, nil
 			},
 		}

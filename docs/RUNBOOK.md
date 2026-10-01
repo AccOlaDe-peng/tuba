@@ -238,5 +238,5 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 ## Topic 删除重建
 
 1. 先导出全部 ACL（`kafka-acls.sh --list`）与目标 topic 的逐条 ACL、分区数与动态配置。KRaft 下 literal ACL **不随 topic 删除而删除**，重建后核对即可，通常无需重加。
-2. **topic 删除会连带删除消费组对该 topic 的已提交 offset**；且当前 source-adapter（kafka-go）对"topic 删除+重建"**不自愈**：其余 topic 照常消费，被重建那路静默停滞，无错误日志。重建后必须 `tuba-launcher restart` 重启消费组件，adapter 会按 `StartOffset: kafka.FirstOffset` 从 0 重读，积压由 receipt 去重吸收，无丢失无重复（2026-09-30 COL-07b 4/5 实测）。
+2. **topic 删除会连带删除消费组对该 topic 的已提交 offset**。**自 2026-10-01 部署的新版 source-adapter 起，运行期自愈**：停滞 watchdog（60 秒）发现 fetch 无进展后经 broker 元数据探测确认 topic 不存在（仅认 `UnknownTopicOrPartition`，瞬时故障不误判），记录周期停滞日志并抬起 `tuba_source_adapter_stall_events_total` / `topic_missing_events_total` 指标，关闭死 reader；探测到 topic 重建后自动新建 reader，按 `StartOffset: kafka.FirstOffset` 从 0 重读，积压由 receipt 去重吸收，无丢失无重复，**无需重启组件**（2026-10-01 COL-07b 4/5 复验实测：删除后 64 秒检出，重建后 16 秒恢复消费）。历史行为（2026-09-30 及更早版本）：旧版 source-adapter 对 topic 删除+重建**不自愈**，被重建那路静默停滞、无错误日志，必须 `tuba-launcher restart` 才能恢复（2026-09-30 COL-07b 4/5 实测）。若运行的是旧版二进制，仍按此处理。
 3. 重建前确认目标 topic 消费组 lag=0，避免删除时丢弃未消费数据。

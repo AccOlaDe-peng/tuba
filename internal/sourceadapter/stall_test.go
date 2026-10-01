@@ -212,8 +212,27 @@ func TestRunSelfHealsAfterTopicDeletedAndRecreated(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- adapter.Run(ctx) }()
 
-	// The topic is "recreated": the fresh consumer can now fetch from offset 0.
+	// While the topic is missing the dead consumer is closed but the factory
+	// must NOT run: a reader that joins the group before the recreate would get
+	// a zero-partition assignment that nothing rebalances.
 	deadline := time.Now().Add(2 * time.Second)
+	for !dead.isClosed() {
+		if time.Now().After(deadline) {
+			t.Fatal("stalled consumer was not closed while the topic was missing")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	factoryMu.Lock()
+	early := factoryCalls
+	factoryMu.Unlock()
+	if early != 0 {
+		t.Fatalf("factory ran %d times while the topic was still missing, want 0", early)
+	}
+
+	// The topic is "recreated": the probe sees it again and the fresh consumer
+	// can now fetch from offset 0.
+	prober.setErr(nil)
+	deadline = time.Now().Add(2 * time.Second)
 	for {
 		factoryMu.Lock()
 		replaced := factoryCalls
@@ -222,7 +241,7 @@ func TestRunSelfHealsAfterTopicDeletedAndRecreated(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatal("consumer was not replaced while the topic was missing")
+			t.Fatal("consumer was not replaced after the topic returned")
 		}
 		time.Sleep(time.Millisecond)
 	}
@@ -230,9 +249,6 @@ func TestRunSelfHealsAfterTopicDeletedAndRecreated(t *testing.T) {
 
 	if err := <-done; err != nil {
 		t.Fatalf("adapter Run() error = %v", err)
-	}
-	if !dead.isClosed() {
-		t.Fatal("stalled consumer was not closed when replaced")
 	}
 	if revived.fetches == 0 {
 		t.Fatal("replacement consumer never fetched")
@@ -262,9 +278,9 @@ func TestRunSelfHealsAfterTopicDeletedAndRecreated(t *testing.T) {
 	}
 }
 
-// While the topic stays missing the adapter keeps waiting with bounded
-// backoff, replaces the consumer at most once per stall, and keeps logging so
-// an operator can see the binding is stuck.
+// While the topic stays missing the adapter closes the dead consumer, does
+// not build a replacement early (it would join with a zero-partition
+// assignment), and keeps logging so an operator can see the binding is stuck.
 func TestRunLogsPeriodicallyWhileTopicMissing(t *testing.T) {
 	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
 	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
@@ -294,16 +310,19 @@ func TestRunLogsPeriodicallyWhileTopicMissing(t *testing.T) {
 	if got := logs.count("consumption stalled"); got < 2 {
 		t.Fatalf("stall log lines = %d, want periodic repeats while the topic is missing", got)
 	}
+	if !dead.isClosed() {
+		t.Fatal("stalled consumer was not closed while the topic was missing")
+	}
 	factoryMu.Lock()
 	defer factoryMu.Unlock()
-	if factoryCalls != 1 {
-		t.Fatalf("factory calls = %d, want 1: replacement is bounded to once per stall", factoryCalls)
+	if factoryCalls != 0 {
+		t.Fatalf("factory calls = %d, want 0: no replacement may join before the topic returns", factoryCalls)
 	}
 }
 
 // The error-shaped variant of topic deletion: fetch keeps returning
-// UnknownTopicOrPartition and the adapter replaces the consumer instead of
-// retrying the dead reader forever.
+// UnknownTopicOrPartition, so the adapter closes the dead reader and replaces
+// it once the probe sees the topic again, instead of retrying it forever.
 func TestRunReplacesConsumerOnUnknownTopicFetchError(t *testing.T) {
 	topic := "tuba.source.ctx_0123456789abcdef0123456789abcdef.v1"
 	body := beatEventBody()
@@ -328,8 +347,8 @@ func TestRunReplacesConsumerOnUnknownTopicFetchError(t *testing.T) {
 		Binding: Binding{Topic: topic}, IngestURL: server.URL + "/api/v1/internal/ingest/beat-events",
 		AdapterToken: "test-adapter-token-with-more-than-32-characters",
 		Consumer:     &unknownTopicConsumer{}, DeadLetter: unusedDeadLetter{}, HTTPClient: server.Client(),
-		RetryBackoff: time.Millisecond, StallWatchdog: time.Minute, StallLogInterval: time.Millisecond,
-		NewConsumer: factory, Metrics: metrics, Logf: logs.logf,
+		RetryBackoff: time.Millisecond, StallWatchdog: 5 * time.Millisecond, StallLogInterval: time.Millisecond,
+		Probe: &scriptedProber{}, NewConsumer: factory, Metrics: metrics, Logf: logs.logf,
 	}
 	if err := adapter.Run(ctx); err != nil {
 		t.Fatalf("adapter Run() error = %v", err)
