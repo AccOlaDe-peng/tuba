@@ -1,8 +1,8 @@
 # 248 数据面非 root 转换方案
 
-> 状态：**方案已备（2026-10-01 只读侦察），待维护窗口执行**。对应 [IMPLEMENTATION-TODO.md](IMPLEMENTATION-TODO.md) O01 接管后遗留第 2 条。本文只含方案；转换动作（chown/chmod/改清单/重启 Launcher）影响生产权限边界，一律留到窗口。
+> 状态：**已执行（2026-10-01 维护窗口）**。对应 [IMPLEMENTATION-TODO.md](IMPLEMENTATION-TODO.md) O01 接管后遗留第 2 条（已勾选）。执行记录与实测差异见文末「执行结果」。
 >
-> 侦察方法：经 SSH 对 248 全程只读（`ls/stat/find/getent/id/readlink`/`/proc`/`ss`），未 chown/chmod、未重启、未读取任何密钥内容（`tuba.env`/`secrets.json`/`admin.properties` 只看权限位与属主）。
+> 侦察方法：经 SSH 对 248 全程只读（`ls/stat/find/getent/id/readlink`/`/proc`/`ss`），未读取任何密钥内容（`tuba.env`/`secrets.json`/`admin.properties` 只看权限位与属主）。
 
 ## 1. 现状权限清单（2026-10-01 实测）
 
@@ -116,3 +116,14 @@
 - 同一 uid（tuba）的 11 个服务可通过 `/proc/<pid>/environ` 互读注入的共享密钥——与现状（共享 root）相比已大幅收窄，且密钥本来就是共享值；逐服务独立身份属更大的改造，不在本条范围。
 - 清单更换需要整份数据面清单重启一次（Launcher 无运行期 reload），这是本转换唯一的停机点。
 - 转换后 `tuba-launcher status/logs/stop/start` 等运维命令仍由 root 执行，运维流程不变。
+
+## 8. 执行结果（2026-10-01 维护窗口实测）
+
+按第 4 节步骤执行，实测差异：
+
+- **停机时长约 10 秒**（05:51:19–29Z：stop 优雅回收 11 服务 → 换清单 → start）。
+- **无需上传 Launcher 二进制**：磁盘上已是目标版（sha256 `750947ad…f5a4`，`sha256sum -c` 通过），整清单重启即激活新映像（`service_control: true`，能力门顺带关闭遗留第 4 条）。
+- **额外收紧一项**：`tuba-launcher` 二进制由 0755 收紧为 0750 root:root（避免 tuba 身份执行 Launcher 操控命令；其写 state 会失败，收紧是纵深防御）。
+- 验收清单（第 5 节）全部通过：11/11 uid=967 且 NoNewPrivs=1、Launcher 仍 root、loopback 端口齐全、active 消费组 lag=0、ES 计数恢复增长、DLQ 三 topic 末端与基线一致、tuba 对 `tuba.env`/`secrets.json`/`tuba-monitoring.env` 均 DENIED、Prometheus 6/6 UP、稳定 10 分钟 restarts=0；转换后重启整机一次后身份与功能依旧（uid=967 ×11）。
+- 同窗口顺带完成 O04 两次真实整机重启验收（见 IMPLEMENTATION-TODO「O04 目标机重启验收执行记录」），并修复 tuba-boot 幂等探测缺陷、补 29292 broker 开机入口。
+- 第 5 节中"quarantine/standard indexer metrics 端口未观察到监听"在转换前后一致，确认为与身份无关的既有现象，转入遗留观察项。

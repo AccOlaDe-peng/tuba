@@ -151,10 +151,10 @@ tuba-launcher restart --manifest <清单> --service <名字>     # 只重启该�
 - `status` 里被 `stop --service` 停掉的服务显示 `stopped` 而 Launcher 仍在运行；这不是故障，是**期望状态**。
 - **`stop --service` 是持久期望状态，不是一次性动作**：标记写在 state 目录（`<名字>.stop-request`），服务不会被自动拉起，**跨 Launcher 主进程重启和 248 整机重启都保持停止**（`@reboot tuba-boot` 拉起整份清单时该服务仍保持 stopped），只有 `start --service`（或对已停服务的 `restart --service`）能解除。要单独回滚一个服务到旧监督器：先 `stop --service` 再按旧监督器流程起它，回切前按旧监督器的不完整 stop 问题核对无孤儿进程。
 - `restart --service` 由监督器优雅终止并立即拉起目标服务，**不消耗崩溃退避计数**（`restarts` 不变），其余服务的 PID 与 `restarts` 不动。
-- **能力门**：单服务操作要求运行中的监督器是新二进制（state 里 `service_control: true`）。老监督器在跑时会直接报错拒绝且不写任何标记——此时**不要**手工往 state 目录写 `*.stop-request` 文件绕过：老监督器会忽略它，而日后新监督器启动时会突然兑现它。2026-10-01 现状：监控栈实例已是新 supervisor；**数据面实例的主进程仍是旧映像**（重启它等于整份清单重启 11 个服务，属红线，待批准窗口执行），在那之前数据面单服务操作会被拒绝，临时手段仍是 `kill -TERM <子进程 pid>` 让监督器按退避拉起（这只管"重启"，没有"保持停止"）。
+- **能力门**：单服务操作要求运行中的监督器是新二进制（state 里 `service_control: true`）。老监督器在跑时会直接报错拒绝且不写任何标记——此时**不要**手工往 state 目录写 `*.stop-request` 文件绕过：老监督器会忽略它，而日后新监督器启动时会突然兑现它。~~2026-10-01 现状：监控栈实例已是新 supervisor；**数据面实例的主进程仍是旧映像**……在那之前数据面单服务操作会被拒绝~~ **2026-10-01 维护窗口后两份清单的 supervisor 均为新映像，单服务操作在数据面也已实测可用**（`restart --service zeek-raw-indexer` 实测：新 PID、`restarts` 不增、身份仍 tuba）。
 
 - `status` 里的 `restarts` 是自本次 `start` 以来的累计重启次数，`backoff` 表示该服务在指数退避中（默认 1s 起、上限 30s）。`backoff` 一定伴随日志里的真实退出原因，先看 `logs` 再动手。
-- Launcher 以 root 运行（`/opt/tuba/collector-live` 为 `0700 root`）；`command` 必须是可执行文件本身，**不能**写成 `python3 <binary>`。
+- Launcher 以 root 运行；**自 2026-10-01 起 11 个数据面服务经 `setpriv --reuid=967 --regid=965 --clear-groups --no-new-privs` 以 tuba 账号运行**（混合模型，与监控栈同源；`tuba.env` 等密钥文件保持 0600 root，由 Launcher 读取注入）。`command` 必须是可执行文件本身（setpriv 包装时 `command` 为 `/usr/bin/setpriv`，真实二进制在 `args`），**不能**写成 `python3 <binary>`。
 - 服务环境只来自清单显式字段与 0600 环境文件；子进程只额外继承 `PATH/HOME/USER/LANG` 等基础变量。**清单里没有的变量，服务就看不到**，且 Launcher 读环境文件时会 `TrimSpace`，值不能带首尾空白。
 - `restart` 会先 `stop`（写 `stop.request`，runner 轮询到后向**整个进程组**发 SIGTERM，10 秒后强杀）再 `start`，因此是一次全量重启；`stop` 用 `LoadManifestForControl`，不读环境文件、不校验二进制，环境文件损坏时仍可停。
 
@@ -168,7 +168,7 @@ python3 /opt/tuba/collector-live/tenant_a_chain.py start              # 4 个 te
 
 监督器的 `start` 会去 `/proc` 里找**正在运行的 `tuba-api`** 取环境基座，所以顺序必须是"先 api、后监督器"；api 若没起来，监督器会直接报 `source registry has no enabled source contexts` 或取不到环境。旧监督器的 `stop` **不完整**（实测 6 个 zeek 子进程只回收 2 个，其余成为孤儿继续消费），所以回滚或重切之前务必用 `pgrep -af collector-live/pipeline/bin` 核对没有残留进程——两名消费者在同一消费组内会导致索引重复写入。
 
-**开机恢复：cron `@reboot` 受控入口**（2026-09-30 安装，不注册 systemd 仍是设计决定）。root crontab 有一行 `@reboot /opt/tuba/bin/tuba-boot`；该脚本（0700 root）向 `/var/log/tuba/boot.log` 写带时间戳的日志后依次对**两份清单**执行 `tuba-launcher start`：数据面 `/etc/tuba/tuba-services.json` 与监控栈 `/etc/tuba/tuba-monitoring.json`（2026-10-01 起监控栈已纳管，见下节）。脚本幂等：每份清单先用 `status` 探测，对应 Launcher 已在运行则跳过、退出 0（launcher 的 `start` 在已运行时会以 `already running` 退出 1，不能直接当幂等用）。Launcher 的 state 带 `runner_identity`（boot ID + 启动时刻），重启后 PID 被复用也不会被误判为"已在运行"。**注意：该入口未经真实重启验收**（用户决定本轮不做目标机重启测试），只做过手动执行的静态验证（两份清单均实测 no-op 退出 0）。重启窗口的执行步骤与对照脚本见下文「O04 主机重启验收步骤」。
+**开机恢复：cron `@reboot` 受控入口**（2026-09-30 安装，不注册 systemd 仍是设计决定；**2026-10-01 已经两次真实整机重启验收，见「O04 主机重启验收步骤」**）。root crontab 有一行 `@reboot /opt/tuba/bin/tuba-boot`；该脚本（0700 root，**仓库副本 `scripts/tuba-boot.sh`，改动须同步**）向 `/var/log/tuba/boot.log` 写带时间戳的日志后：① 探测并在需要时拉起 TUBA 验证 Kafka broker（10.6.68.248:29292，无 systemd 管理，2026-10-01 重启验收发现其无开机入口后补入）；② 依次对**两份清单**执行 `tuba-launcher start`：数据面 `/etc/tuba/tuba-services.json` 与监控栈 `/etc/tuba/tuba-monitoring.json`。脚本幂等：每份清单先用 `status` 探测，**探测是正证据门槛**——必须匹配到 `^TUBA launcher pid=[0-9]` 头部行才算在运行（2026-10-01 重启验收实测：`status` 对陈旧 state 文件仍退出 0 且打印残留 "running" 行，按退出码判断会误判为已监督；这是 Launcher 代码层的待修缺陷）。Launcher 的 state 带 `runner_identity`（boot ID + 启动时刻），重启后 PID 被复用也不会被误判为"已在运行"。**外部依赖注意**：共享 PostgreSQL 由另一产品的 adms daemon 管理，2026-10-01 两次重启中它都因自身状态闭锁（STATUS_FILE=1）未拉起 PG，TUBA 数据面因此卡在 PG 连接退避直到人工 `pg_ctl` 拉起——TUBA 的无人值守恢复事实上受这一外部依赖阻塞。
 
 ## 监控栈由 Launcher 纳管（248 现状，2026-10-01 起）
 
@@ -180,13 +180,14 @@ tuba-launcher logs    --manifest /etc/tuba/tuba-monitoring.json --service promet
 ```
 
 - **为什么是两份清单而不是并入主清单**：Launcher 的默认 start/stop/restart 是整份清单粒度，且没有运行期 reload；把监控并入 `tuba-services.json` 意味着每次监控变更都要连带重启 11 个数据面服务。两份清单各自有独立 state_dir，互不影响；单服务操作（`--service`，见上节）在其中一份清单内部生效，不跨清单。
-- **非 root 身份通过 `setpriv` 保留**：Launcher 以 root 运行且不支持 per-service 用户切换，四个组件的清单 `command` 是 `/usr/bin/setpriv`（`--reuid/--regid/--clear-groups/--no-new-privs` 后 exec 真实二进制），进程身份与切换前完全一致（tuba-prometheus 971、tuba-node-exporter 970、tuba-kafka-exporter 969、tuba-grafana 968）；setpriv 是 exec 语义，PID 不变、SIGTERM 直达服务。capacity-guard 切换前就是 root，保持 root。**不得把 setpriv 包装去掉后直接以前端二进制为 command**——那会让组件以 root 运行，是安全倒退。
-- **重启单个监控组件**：监控栈实例的 Launcher 已是支持单服务粒度的新二进制（2026-10-01），用 `tuba-launcher restart --manifest /etc/tuba/tuba-monitoring.json --service <名字>`；语义与注意事项（stop 是持久期望状态、跨主进程/整机重启保留、能力门）见上节「单服务操作」。prometheus 的 TSDB 在磁盘上，重启不丢历史。
+- **非 root 身份通过 `setpriv` 保留**：Launcher 以 root 运行且不支持 per-service 用户切换，四个组件的清单 `command` 是 `/usr/bin/setpriv`（`--reuid/--regid/--clear-groups/--no-new-privs` 后 exec 真实二进制），进程身份与切换前完全一致（tuba-prometheus 971、tuba-node-exporter 970、tuba-kafka-exporter 969、tuba-grafana 968）；setpriv 是 exec 语义，PID 不变、SIGTERM 直达服务。capacity-guard 切换前就是 root，保持 root。**不得把 setpriv 包装去掉后直接以前端二进制为 command**——那会让组件以 root 运行，是安全倒退。- **重启单个监控组件**：监控栈实例的 Launcher 已是支持单服务粒度的新二进制（2026-10-01），用 `tuba-launcher restart --manifest /etc/tuba/tuba-monitoring.json --service <名字>`；语义与注意事项（stop 是持久期望状态、跨主进程/整机重启保留、能力门）见上节「单服务操作」。prometheus 的 TSDB 在磁盘上，重启不丢历史。
 - 旧的 `scripts/manage_tuba_monitoring.py` 与 capacity-guard 的 `manage_tuba_capacity_guard.py` 保留在磁盘上仅作回滚退路（先 `tuba-launcher stop --manifest /etc/tuba/tuba-monitoring.json` 再用旧脚本 start）；其自带的 log-rotator 已退役，监控组件日志由 Launcher 按 16 MiB×3 轮转（Grafana 自身文件日志仍由 Grafana 内部轮转）。Prometheus 数据目录 `/opt/tuba/monitoring/data/prometheus` 切换前后未动，15 天历史连续。
 
 **不要执行 `/opt/tuba/start.sh`**：那是 M1 遗留脚本，会 source `/etc/tuba/tuba.env`。该文件在切换后语义已变——从"api 的完整环境文件"变成"Launcher 的密钥文件"，只含密钥。照旧执行会拉起一个**缺 `ES_URL`** 的 api，症状是日志里的 `ES_URL and ES_API_KEY are required`，而在同一个端口上掩盖掉正常运行的 api。数据面的启停一律经 `tuba-launcher`；`start.sh` 已于 2026-09-30 废止——改名为 `/opt/tuba/start.sh.retired`（0600 root，不可执行，仅留档）。
 
 ## O04 主机重启验收步骤（248）
+
+> **已于 2026-10-01 完成两次真实重启验收**（详见 IMPLEMENTATION-TODO 的「O04 目标机重启验收执行记录」）：第一次暴露了 tuba-boot 幂等探测缺陷与 29292 broker 无开机入口（均已修复），第二次全自动恢复成功。以下步骤保留供后续重启窗口复用；注意共享 PG 需人工拉起（见「开机恢复」一节）。
 
 开机恢复入口是 root crontab 的 `@reboot /opt/tuba/bin/tuba-boot`（见上节）：它对数据面 `/etc/tuba/tuba-services.json` 与监控栈 `/etc/tuba/tuba-monitoring.json` 两份清单逐一幂等拉起，日志写 `/var/log/tuba/boot.log`。对照脚本 `scripts/o04_reboot_acceptance.sh` 在运维端（本机 Git Bash）经 SSH 对 248 执行，分 precheck / baseline / verify 三个阶段，**全程只读**：不重启、不停服务、不改配置。SSH 凭据从仓库根 `.env.local` 读取，经 `.codex-ssh-askpass.cmd` 非交互登录。
 
@@ -210,7 +211,7 @@ tuba-launcher logs    --manifest /etc/tuba/tuba-monitoring.json --service promet
 
 1. **boot.log 无新行**（@reboot 未触发）：查 `systemctl status crond` 与 `crontab -l` 是否仍有该条目；随后手动执行 `/opt/tuba/bin/tuba-boot`（幂等，先 status 探测），再重跑 verify。
 2. **tuba-boot 执行了但服务没起来**：读 boot.log 和 `tuba-launcher logs --manifest <清单> --service <名>`。最常见原因是 PG/Kafka/ES 尚未就绪——Launcher 按 1s→30s 退避自动重试，确认依赖恢复后等待即可；`backoff` 状态一定先看日志再动手。
-3. **个别服务持续 failed**：修配置/凭据后，监控栈清单可直接 `tuba-launcher restart --manifest /etc/tuba/tuba-monitoring.json --service <名字>`；数据面清单在其主进程换成新二进制之前（能力门，见「Launcher 管理数据面」）用 `kill -TERM <pid>` 让 Launcher 按退避拉起，或接受全量 `tuba-launcher restart --manifest <清单>`（注意这会重启整份清单）。
+3. **个别服务持续 failed**：修配置/凭据后，两份清单均可直接 `tuba-launcher restart --manifest <清单> --service <名字>`（两实例自 2026-10-01 起均为新 supervisor，能力门已通过）；临时手段也可用 `kill -TERM <pid>` 让 Launcher 按退避拉起（这只管"重启"，没有"保持停止"）。
 
 ### 回滚/降级路径
 

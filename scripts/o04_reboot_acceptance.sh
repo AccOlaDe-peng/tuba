@@ -172,9 +172,13 @@ EOF
 # --- 解析辅助（本地，读采集到的文本） ----------------------------------------
 
 # 输入: launcher status 文本; 输出: "running=X total=Y bad=badstate列表 restartsum=N"
+# 注意：supervisor 不在运行时 status 仍退出 0，并打印 "stopped (stale state file)"
+# 加上 state 文件里残留的陈旧 per-service "running" 行——必须先看头部行，
+# 头部没有 "pid=<数字>"（活监督者）时一律判死，否则会把陈旧状态误报为 11/11 running
+#（2026-10-01 重启验收实测踩中：监督者未起，旧解析报全部 running）。
 parse_launcher_status() {
   awk '
-    /^TUBA launcher/ { next }
+    /^TUBA launcher/ { if ($0 !~ /pid=[0-9]+/) dead=1; next }
     NF >= 4 {
       state=$2; total++
       if (state == "running") running++
@@ -183,7 +187,9 @@ parse_launcher_status() {
         if ($i ~ /^restarts=/) { sub(/^restarts=/, "", $i); restarts += $i }
       }
     }
-    END { printf "running=%d total=%d bad=%s restartsum=%d\n", running+0, total+0, bad, restarts+0 }
+    END {
+      if (dead) { printf "running=0 total=0 bad=supervisor-not-running restartsum=0\n"; exit }
+      printf "running=%d total=%d bad=%s restartsum=%d\n", running+0, total+0, bad, restarts+0 }
   '
 }
 
