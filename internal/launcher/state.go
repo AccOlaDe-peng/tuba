@@ -12,11 +12,17 @@ import (
 const stateFileName = "launcher-state.json"
 
 type State struct {
-	RunnerPID      int                      `json:"runner_pid"`
-	RunnerIdentity string                   `json:"runner_identity,omitempty"`
-	Started        time.Time                `json:"started_at"`
-	Updated        time.Time                `json:"updated_at"`
-	Stopping       bool                     `json:"stopping"`
+	RunnerPID      int       `json:"runner_pid"`
+	RunnerIdentity string    `json:"runner_identity,omitempty"`
+	Started        time.Time `json:"started_at"`
+	Updated        time.Time `json:"updated_at"`
+	Stopping       bool      `json:"stopping"`
+	// ServiceControl marks a supervisor that honors per-service stop/restart
+	// requests. States written by older supervisors lack the field, and
+	// single-service CLI operations must fail closed against them: an old
+	// supervisor would silently ignore request files that a future new
+	// supervisor would later honor.
+	ServiceControl bool                     `json:"service_control,omitempty"`
 	Services       map[string]ServiceStatus `json:"services"`
 }
 
@@ -48,7 +54,7 @@ func newStateStore(path string, services []ServiceSpec) (*stateStore, error) {
 		}
 		return nil, fmt.Errorf("identify launcher process: %w", err)
 	}
-	data := State{RunnerPID: os.Getpid(), RunnerIdentity: identity, Started: time.Now().UTC(), Services: map[string]ServiceStatus{}}
+	data := State{RunnerPID: os.Getpid(), RunnerIdentity: identity, Started: time.Now().UTC(), ServiceControl: true, Services: map[string]ServiceStatus{}}
 	for _, service := range services {
 		data.Services[service.Name] = ServiceStatus{State: "starting", LastChanged: time.Now().UTC()}
 	}

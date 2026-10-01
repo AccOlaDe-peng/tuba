@@ -5,10 +5,21 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"tuba/product/internal/launcher"
 )
+
+// serviceNames collects repeated --service flags.
+type serviceNames []string
+
+func (s *serviceNames) String() string { return strings.Join(*s, ",") }
+
+func (s *serviceNames) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -25,7 +36,8 @@ func run(args []string) error {
 	command := args[0]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
 	manifest := flags.String("manifest", "tuba-services.json", "service manifest path")
-	service := flags.String("service", "", "service name for logs")
+	var services serviceNames
+	flags.Var(&services, "service", "service name; repeat to select several (logs accepts exactly one)")
 	tail := flags.Int("tail", 100, "number of log lines to print")
 	timeout := flags.Duration("timeout", 30*time.Second, "maximum graceful stop wait")
 	defaults := flags.String("defaults", "", "new release example manifest path")
@@ -48,18 +60,27 @@ func run(args []string) error {
 		}
 		return launcher.MergeManifest(*manifest, *previousDefaults, *defaults, *output, *currentPath, *releasePath)
 	case "start":
+		if len(services) > 0 {
+			return launcher.StartServices(*manifest, services, *timeout)
+		}
 		return launcher.Start(*manifest)
 	case "stop":
+		if len(services) > 0 {
+			return launcher.StopServices(*manifest, services, *timeout)
+		}
 		return launcher.Stop(*manifest, *timeout)
 	case "restart":
+		if len(services) > 0 {
+			return launcher.RestartServices(*manifest, services, *timeout)
+		}
 		return launcher.Restart(*manifest)
 	case "status":
-		return launcher.Status(*manifest)
+		return launcher.Status(*manifest, services)
 	case "logs":
-		if *service == "" {
-			return errors.New("logs requires --service NAME (use launcher for supervisor log)")
+		if len(services) != 1 {
+			return errors.New("logs requires exactly one --service NAME (use launcher for supervisor log)")
 		}
-		return launcher.Logs(*manifest, *service, *tail)
+		return launcher.Logs(*manifest, services[0], *tail)
 	case "run":
 		return launcher.Run(*manifest)
 	case "help", "-h", "--help":
@@ -73,6 +94,7 @@ func run(args []string) error {
 
 func usage() {
 	fmt.Fprintln(os.Stderr, "usage: tuba-launcher <validate|merge-manifest|start|stop|restart|status|logs> [--manifest PATH]")
+	fmt.Fprintln(os.Stderr, "       tuba-launcher <start|stop|restart|status> [--service NAME ...] [--manifest PATH]")
 	fmt.Fprintln(os.Stderr, "       tuba-launcher merge-manifest --manifest OLD --previous-defaults OLD-EXAMPLE --defaults NEW-EXAMPLE --output CANDIDATE --current-path CURRENT --release-path RELEASE")
 	fmt.Fprintln(os.Stderr, "       tuba-launcher logs --service NAME [--tail N] [--manifest PATH]")
 }
