@@ -64,13 +64,25 @@ type Registered struct {
 // Heartbeat mirrors control.CollectorHeartbeat on the server side. It carries
 // operational metadata only; event payloads must never be sent.
 type Heartbeat struct {
-	Version        string         `json:"version"`
-	ConfigVersion  int64          `json:"config_version"`
-	State          string         `json:"state"`
-	Sources        []SourceStatus `json:"sources"`
-	QueueDepth     int64          `json:"queue_depth"`
-	OldestQueuedAt *time.Time     `json:"oldest_queued_at,omitempty"`
-	Diagnostic     string         `json:"diagnostic,omitempty"`
+	Version        string            `json:"version"`
+	ConfigVersion  int64             `json:"config_version"`
+	State          string            `json:"state"`
+	Sources        []SourceStatus    `json:"sources"`
+	QueueDepth     int64             `json:"queue_depth"`
+	OldestQueuedAt *time.Time        `json:"oldest_queued_at,omitempty"`
+	Diagnostic     string            `json:"diagnostic,omitempty"`
+	Components     []ComponentStatus `json:"components,omitempty"`
+}
+
+// ComponentStatus is the per-managed-component summary (COL-09), mirroring
+// control.CollectorComponentStatus.
+type ComponentStatus struct {
+	Component string `json:"component"`
+	Version   string `json:"version"`
+	Phase     string `json:"phase,omitempty"`
+	State     string `json:"state"`
+	Restarts  int64  `json:"restarts"`
+	LastError string `json:"last_error,omitempty"`
 }
 
 // SourceStatus is the per-source operational summary included in heartbeats.

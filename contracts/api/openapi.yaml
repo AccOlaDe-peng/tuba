@@ -975,6 +975,21 @@ components:
               events_sent: {type: integer, minimum: 0}
               events_drop: {type: integer, minimum: 0}
               last_error: {type: string, maxLength: 512}
+        components:
+          description: Per-managed-component status reported by the COL-09 supervisor (version, upgrade state-machine phase, restarts). Absent until the agent supervises components.
+          type: array
+          maxItems: 64
+          items:
+            type: object
+            additionalProperties: false
+            required: [component, version, state, restarts]
+            properties:
+              component: {type: string, minLength: 1, maxLength: 64}
+              version: {type: string, maxLength: 64}
+              phase: {type: string, enum: [idle, applying, observing, confirming, rolling-back, recovering, failed]}
+              state: {type: string, enum: [running, paused, error]}
+              restarts: {type: integer, minimum: 0}
+              last_error: {type: string, maxLength: 512}
     Principal:
       type: object
       required: [subject, organization_id, permissions]

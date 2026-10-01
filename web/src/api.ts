@@ -238,6 +238,15 @@ export const collectorSourceStatusSchema = z.object({
   last_error: z.string().optional().default(""),
 });
 
+export const collectorComponentStatusSchema = z.object({
+  component: z.string(),
+  version: z.string(),
+  phase: z.string().optional().default(""),
+  state: z.string(),
+  restarts: z.number().int().nonnegative(),
+  last_error: z.string().optional().default(""),
+});
+
 export const collectorHeartbeatSchema = z.object({
   version: z.string().optional().default(""),
   config_version: z.number().int().nonnegative().optional().default(0),
@@ -246,6 +255,7 @@ export const collectorHeartbeatSchema = z.object({
   oldest_queued_at: z.string().nullable().optional(),
   diagnostic: z.string().optional().default(""),
   sources: z.array(collectorSourceStatusSchema).optional().default([]),
+  components: z.array(collectorComponentStatusSchema).optional().default([]),
 });
 
 export const collectorSummarySchema = z.object({

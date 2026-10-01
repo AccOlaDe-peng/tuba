@@ -23,6 +23,10 @@ type Runner struct {
 	// Sources reports per-source operational status for heartbeats. It may be
 	// nil while no component supervision is attached (COL-09).
 	Sources func() []SourceStatus
+	// Supervisor drives managed-component upgrades from accepted
+	// configurations and reports per-component status in heartbeats. Nil
+	// means this agent supervises no components.
+	Supervisor *Supervisor
 	// Logger defaults to log.Default().
 	Logger *log.Logger
 }
@@ -86,6 +90,16 @@ func (r *Runner) Run(ctx context.Context) error {
 				agentState = "running"
 				diagnostic = ""
 				r.logger().Printf("agent %s: applied configuration version %d", state.CollectorID, cfg.Version)
+				if r.Supervisor != nil {
+					// Directives act on the new configuration only after it is
+					// durably accepted; invalid directives fail closed (no
+					// upgrade) and surface as an error diagnostic.
+					if err := r.Supervisor.ApplyConfig(ctx, cfg.Configuration); err != nil {
+						agentState = "error"
+						diagnostic = truncateDiagnostic("component directives rejected: " + err.Error())
+						r.logger().Printf("agent %s: %s", state.CollectorID, diagnostic)
+					}
+				}
 			}
 		}
 		beat := Heartbeat{
@@ -100,6 +114,9 @@ func (r *Runner) Run(ctx context.Context) error {
 			if sources := r.Sources(); sources != nil {
 				beat.Sources = sources
 			}
+		}
+		if r.Supervisor != nil {
+			beat.Components = r.Supervisor.ComponentStatus()
 		}
 		if err := r.Client.SendHeartbeat(ctx, state.Credential, beat); err != nil {
 			if errors.Is(err, ErrDisabled) {

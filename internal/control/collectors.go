@@ -41,13 +41,32 @@ type RegisteredCollector struct {
 }
 
 type CollectorHeartbeat struct {
-	Version        string                  `json:"version"`
-	ConfigVersion  int64                   `json:"config_version"`
-	State          string                  `json:"state"`
-	Sources        []CollectorSourceStatus `json:"sources"`
-	QueueDepth     int64                   `json:"queue_depth"`
-	OldestQueuedAt *time.Time              `json:"oldest_queued_at,omitempty"`
-	Diagnostic     string                  `json:"diagnostic,omitempty"`
+	Version        string                     `json:"version"`
+	ConfigVersion  int64                      `json:"config_version"`
+	State          string                     `json:"state"`
+	Sources        []CollectorSourceStatus    `json:"sources"`
+	QueueDepth     int64                      `json:"queue_depth"`
+	OldestQueuedAt *time.Time                 `json:"oldest_queued_at,omitempty"`
+	Diagnostic     string                     `json:"diagnostic,omitempty"`
+	Components     []CollectorComponentStatus `json:"components,omitempty"`
+}
+
+// CollectorComponentStatus is the per-managed-component operational summary
+// (COL-09): the version the supervisor's current pointer selects, the upgrade
+// state-machine phase, process state and restart count.
+type CollectorComponentStatus struct {
+	Component string `json:"component"`
+	Version   string `json:"version"`
+	Phase     string `json:"phase,omitempty"`
+	State     string `json:"state"`
+	Restarts  int64  `json:"restarts"`
+	LastError string `json:"last_error,omitempty"`
+}
+
+// ComponentPhases are the orchestration phases a heartbeat may report.
+var ComponentPhases = map[string]bool{
+	"idle": true, "applying": true, "observing": true, "confirming": true,
+	"rolling-back": true, "recovering": true, "failed": true,
 }
 
 // CollectorSourceStatus is deliberately limited to operational metadata; event
@@ -185,7 +204,7 @@ func (s *Store) AuthenticateCollector(ctx context.Context, credential string) (s
 	return id, err
 }
 
-func (s *Store) ReportCollectorHeartbeat(ctx context.Context, credential string, in CollectorHeartbeat) error {
+func validateCollectorHeartbeat(in CollectorHeartbeat) error {
 	if len(in.Version) > 64 || in.ConfigVersion < 0 || in.QueueDepth < 0 || !map[string]bool{"running": true, "buffering": true, "backpressured": true, "paused": true, "error": true}[in.State] || len(in.Diagnostic) > 2048 || in.Sources == nil || len(in.Sources) > 256 {
 		return ErrInvalidCollectorHeartbeat
 	}
@@ -195,6 +214,26 @@ func (s *Store) ReportCollectorHeartbeat(ctx context.Context, credential string,
 			return ErrInvalidCollectorHeartbeat
 		}
 		seenSources[source.SourceID] = true
+	}
+	if len(in.Components) > 64 {
+		return ErrInvalidCollectorHeartbeat
+	}
+	seenComponents := make(map[string]bool, len(in.Components))
+	for _, component := range in.Components {
+		if !bounded(component.Component, 1, 64) || seenComponents[component.Component] || !bounded(component.Version, 0, 64) ||
+			(component.Phase != "" && !ComponentPhases[component.Phase]) ||
+			!map[string]bool{"running": true, "paused": true, "error": true}[component.State] ||
+			component.Restarts < 0 || len(component.LastError) > 512 {
+			return ErrInvalidCollectorHeartbeat
+		}
+		seenComponents[component.Component] = true
+	}
+	return nil
+}
+
+func (s *Store) ReportCollectorHeartbeat(ctx context.Context, credential string, in CollectorHeartbeat) error {
+	if err := validateCollectorHeartbeat(in); err != nil {
+		return err
 	}
 	result, err := s.Pool.Exec(ctx, `UPDATE collector_agents SET state=$2,installed_version=$3,config_version=$4,last_heartbeat_at=now(),heartbeat=$5::jsonb,updated_at=now() WHERE credential_ref=$1 AND state<>'disabled'`, digestCredential(credential), in.State, in.Version, in.ConfigVersion, heartbeatJSON(in))
 	if err != nil {
