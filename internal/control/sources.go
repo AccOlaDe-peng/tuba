@@ -214,7 +214,7 @@ func (s *Store) ListSources(ctx context.Context, principal auth.Principal) ([]So
 	items := make([]SourceInstance, 0)
 	for rows.Next() {
 		var item SourceInstance
-		if err := rows.Scan(&item.ID, &item.Organization, &item.Namespace, &item.VendorName, &item.VendorProduct, &item.VendorDataset, &item.SourceEpoch, &item.ReleaseID, &item.Enabled, &item.RateLimit, &item.SourceContextID, &item.CreatedAt, &item.UpdatedAt); err != nil {
+		if err := rows.Scan(&item.ID, &item.Organization, &item.Namespace, &item.VendorName, &item.VendorProduct, &item.VendorDataset, &item.SourceEpoch, &item.ReleaseID, &item.State, &item.Enabled, &item.RateLimit, &item.SourceContextID, &item.CreatedAt, &item.UpdatedAt); err != nil {
 			return nil, err
 		}
 		items = append(items, item)
