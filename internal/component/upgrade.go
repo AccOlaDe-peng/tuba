@@ -363,13 +363,13 @@ func (u *Upgrader) installedManifest(componentName, version string) (*Manifest, 
 
 // Status reports the installed versions and pointer state of a component.
 type Status struct {
-	Component       string   `json:"component"`
-	Current         string   `json:"current,omitempty"`
-	Previous        string   `json:"previous,omitempty"`
-	PendingUpgrade  bool     `json:"pending_upgrade"`
-	PendingFrom     string   `json:"pending_from,omitempty"`
-	PendingTo       string   `json:"pending_to,omitempty"`
-	Installed       []string `json:"installed"`
+	Component      string   `json:"component"`
+	Current        string   `json:"current,omitempty"`
+	Previous       string   `json:"previous,omitempty"`
+	PendingUpgrade bool     `json:"pending_upgrade"`
+	PendingFrom    string   `json:"pending_from,omitempty"`
+	PendingTo      string   `json:"pending_to,omitempty"`
+	Installed      []string `json:"installed"`
 	// Orchestration is the persisted upgrade state machine record, when any
 	// orchestrated upgrade ever ran for this component.
 	Orchestration *OrchestrationState `json:"orchestration,omitempty"`

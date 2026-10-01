@@ -53,16 +53,16 @@ type Signature struct {
 // directory. It pins the component, version, OS/architecture, the state
 // format compatibility range, and the SHA-256 of every file in the package.
 type Manifest struct {
-	SchemaVersion int    `json:"schema_version"`
-	Component     string `json:"component"`
-	Version       string `json:"version"`
-	OS            string `json:"os"`
-	Architecture  string `json:"architecture"`
+	SchemaVersion int         `json:"schema_version"`
+	Component     string      `json:"component"`
+	Version       string      `json:"version"`
+	OS            string      `json:"os"`
+	Architecture  string      `json:"architecture"`
 	StateFormat   StateFormat `json:"state_format"`
 	// Files maps slash-separated package-relative paths to lowercase hex
 	// SHA-256 digests.
 	Files     map[string]string `json:"files"`
-	Signature Signature       `json:"signature"`
+	Signature Signature         `json:"signature"`
 
 	path string
 }

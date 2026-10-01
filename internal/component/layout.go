@@ -23,10 +23,10 @@ import (
 // same commands and semantics work identically on Windows and Unix without
 // symlink privileges. Pointer writes are tmp+rename atomic and 0600.
 const (
-	componentsDirName  = "components"
-	currentPointerName = "current.json"
+	componentsDirName   = "components"
+	currentPointerName  = "current.json"
 	previousPointerName = "previous.json"
-	pendingJournalName = "upgrade-pending.json"
+	pendingJournalName  = "upgrade-pending.json"
 )
 
 // pointer records which version of a component is active (or next in line for

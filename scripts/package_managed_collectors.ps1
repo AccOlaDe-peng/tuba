@@ -1,6 +1,10 @@
 param(
     [ValidatePattern('^[A-Za-z0-9._-]+$')][string]$Tag = "dev",
     [string]$ArtifactCache = "",
+    [string]$SignKeyFile = "",
+    [string]$SignKeyID = "",
+    [int]$StateFormatVersion = 1,
+    [int]$StateFormatMin = 1,
     [switch]$Offline
 )
 
@@ -19,6 +23,13 @@ if (-not $resolvedStage.StartsWith($resolvedDistributionRoot, [System.StringComp
 
 if (-not (Test-Path -LiteralPath $manifestPath -PathType Leaf)) { throw "Component manifest is missing" }
 if (-not (Test-Path -LiteralPath $elasticLicensePath -PathType Leaf)) { throw "Elastic License 2.0 text is missing: $elasticLicensePath" }
+if (($SignKeyFile -eq "") -ne ($SignKeyID -eq "")) { throw "-SignKeyFile and -SignKeyID must be given together" }
+if ($SignKeyFile -ne "") {
+    if (-not (Test-Path -LiteralPath $SignKeyFile -PathType Leaf)) { throw "Signing key file is missing: $SignKeyFile" }
+    if ($StateFormatVersion -lt 1 -or $StateFormatMin -lt 1 -or $StateFormatMin -gt $StateFormatVersion) {
+        throw "Invalid state format range"
+    }
+}
 if (Test-Path -LiteralPath $outputPath) { throw "Output already exists: $outputPath" }
 if ($ArtifactCache -eq "") { $ArtifactCache = Join-Path $root "dist\component-cache" }
 $ArtifactCache = [System.IO.Path]::GetFullPath($ArtifactCache)
@@ -57,6 +68,15 @@ $manifest.artifacts | ForEach-Object {
             }
         }
         Copy-Item -LiteralPath $roots[0].FullName -Destination $componentPath -Recurse
+        if ($SignKeyFile -ne "") {
+            # Sign the staged component directory for the managed supervisor
+            # (internal/component manifest format). The private key stays on
+            # the operator machine; only the signed manifest.json ships.
+            & go run ./cmd/tuba-component sign --package $componentPath --component $artifact.component --version $artifact.version `
+                --os $artifact.os --arch $artifact.architecture --format $StateFormatVersion --format-min $StateFormatMin `
+                --key-file $SignKeyFile --key-id $SignKeyID
+            if ($LASTEXITCODE -ne 0) { throw "Signing failed for $($artifact.component) $($artifact.version)" }
+        }
     } finally {
         if (Test-Path -LiteralPath $extractPath) { Remove-Item -LiteralPath $extractPath -Recurse -Force }
     }
@@ -69,7 +89,7 @@ TUBA managed collection components $Tag
 
 This archive contains the pinned Filebeat and Winlogbeat distributions with their upstream license and notice files. It does not contain the TUBA Management Agent or production-ready source configuration. Do not run a Beat directly from this archive until COL-03/08 configuration and topic bindings are installed.
 
-Component versions and SHA-512 values are in manifest.v1.json. The packaging script verifies each archive before extraction and confirms each upstream package retains its LICENSE.txt and NOTICE.txt. The upstream distributions are governed by the Elastic License 2.0; a copy of the license text is included at the root of this archive as ELASTIC-LICENSE-2.0.txt.
+Component versions and SHA-512 values are in manifest.v1.json. The packaging script verifies each archive before extraction and confirms each upstream package retains its LICENSE.txt and NOTICE.txt. The upstream distributions are governed by the Elastic License 2.0; a copy of the license text is included at the root of this archive as ELASTIC-LICENSE-2.0.txt. When built with -SignKeyFile/-SignKeyID, each component directory additionally carries a manifest.json signed for the TUBA managed component supervisor (tuba-component verify).
 "@
 Set-Content -LiteralPath (Join-Path $stage "README.txt") -Value $readme -Encoding utf8
 $null = New-Item -ItemType Directory -Force -Path $distributionRoot

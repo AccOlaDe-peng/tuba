@@ -25,13 +25,13 @@ const (
 
 // OrchestrationState is the durable record of the upgrade state machine.
 type OrchestrationState struct {
-	Component   string    `json:"component"`
-	Phase       string    `json:"phase"`
-	FromVersion string    `json:"from_version,omitempty"`
-	ToVersion   string    `json:"to_version,omitempty"`
+	Component   string `json:"component"`
+	Phase       string `json:"phase"`
+	FromVersion string `json:"from_version,omitempty"`
+	ToVersion   string `json:"to_version,omitempty"`
 	// RolledBack marks a completed cycle whose upgrade did not stick.
-	RolledBack bool   `json:"rolled_back,omitempty"`
-	Error      string `json:"error,omitempty"`
+	RolledBack bool      `json:"rolled_back,omitempty"`
+	Error      string    `json:"error,omitempty"`
 	Updated    time.Time `json:"updated_at"`
 }
 
@@ -205,6 +205,39 @@ func (o *Orchestrator) rollback(ctx context.Context, state *OrchestrationState, 
 		return err
 	}
 	return &RolledBackError{Component: state.Component, FromVersion: state.FromVersion, ToVersion: state.ToVersion, Cause: cause}
+}
+
+// Revert rolls a component back to its previous version through the same
+// stop → guarded rollback → start → observe sequence the orchestrator uses
+// after a failed upgrade. Used by gray rollouts to retract already-confirmed
+// targets when a later batch fails.
+func (o *Orchestrator) Revert(ctx context.Context, componentName string, instances []string) error {
+	o.withDefaults()
+	current, err := CurrentVersion(o.Upgrader.Root, componentName)
+	if err != nil {
+		return err
+	}
+	state := OrchestrationState{Component: componentName, FromVersion: current}
+	o.setPhase(&state, PhaseRollingBack, "")
+	if err := o.Processes.StopService(ctx); err != nil {
+		return o.fail(&state, fmt.Errorf("stop component for revert: %w", err))
+	}
+	result, err := o.Upgrader.Rollback(componentName, instances)
+	if err != nil {
+		return o.fail(&state, fmt.Errorf("revert rollback: %w", err))
+	}
+	state.ToVersion = result.ToVersion
+	if err := o.Processes.StartService(ctx); err != nil {
+		return o.fail(&state, fmt.Errorf("restart previous version: %w", err))
+	}
+	o.setPhase(&state, PhaseRecovering, "")
+	if err := o.observe(ctx); err != nil {
+		stopErr := o.Processes.StopService(ctx)
+		return o.fail(&state, errors.Join(fmt.Errorf("reverted version did not recover: %w", err), stopErr))
+	}
+	o.setPhase(&state, PhaseIdle, "")
+	state.RolledBack = true
+	return o.write(&state)
 }
 
 // observe holds the health gate: within StartGrace the component must become

@@ -9,6 +9,7 @@ package main
 
 import (
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -29,7 +30,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: tuba-component <verify|apply|confirm|rollback|upgrade|status|stamp-format> [flags]")
+		return errors.New("usage: tuba-component <verify|apply|confirm|rollback|upgrade|status|stamp-format|genkey|sign|fetch> [flags]")
 	}
 	command, rest := args[0], args[1:]
 	flags := flag.NewFlagSet(command, flag.ContinueOnError)
@@ -39,20 +40,31 @@ func run(args []string) error {
 	componentName := flags.String("component", "", "component name (defaults to the package manifest)")
 	instances := flags.String("instance", "", "comma-separated data instance names whose state format must stay readable")
 	formatVersion := flags.Int("format", 0, "state format version to stamp")
+	formatMin := flags.Int("format-min", 0, "oldest readable state format version (sign command)")
 	manifestPath := flags.String("manifest", "", "launcher manifest supervising the component (upgrade command)")
 	serviceName := flags.String("service", "", "launcher service name of the component (upgrade command)")
 	healthURL := flags.String("health-url", "", "readiness endpoint polled during the observation window (upgrade command)")
 	observe := flags.Duration("observe", 5*time.Minute, "health observation window before confirm")
 	grace := flags.Duration("grace", time.Minute, "time the component may take to become healthy after start")
 	poll := flags.Duration("poll", 2*time.Second, "health/liveness poll interval")
+	keyFile := flags.String("key-file", "", "ed25519 private key file (sign) or output path (genkey)")
+	keyID := flags.String("key-id", "", "signing key identifier")
+	keyringOut := flags.String("keyring-out", "", "keyring file to create/update with the public key (genkey)")
+	versionName := flags.String("version", "", "component version (sign/fetch commands)")
+	targetOS := flags.String("os", "", "target OS for the signed package (default: this host)")
+	targetArch := flags.String("arch", "", "target architecture for the signed package (default: this host)")
+	repoURL := flags.String("repo", "", "release repository base URL (fetch command)")
+	destDir := flags.String("dest", "", "destination directory for the downloaded package (fetch command)")
+	rateLimitKBps := flags.Int64("rate-limit-kbps", 0, "download rate limit in KiB/s (fetch command, 0 = unlimited)")
 	if err := flags.Parse(rest); err != nil {
 		return err
 	}
-	if *root == "" {
+	needRoot := map[string]bool{"apply": true, "confirm": true, "rollback": true, "upgrade": true, "status": true, "stamp-format": true}
+	if needRoot[command] && *root == "" {
 		return errors.New("--root is required")
 	}
 	upgrader := &component.Upgrader{Root: *root}
-	needKeyring := map[string]bool{"verify": true, "apply": true, "confirm": true, "rollback": true, "upgrade": true}
+	needKeyring := map[string]bool{"verify": true, "apply": true, "confirm": true, "rollback": true, "upgrade": true, "fetch": true}
 	if needKeyring[command] {
 		if *keyringPath == "" {
 			return errors.New("--keyring is required")
@@ -65,6 +77,51 @@ func run(args []string) error {
 	}
 	instanceList := splitNames(*instances)
 	switch command {
+	case "genkey":
+		if *keyFile == "" || *keyID == "" {
+			return errors.New("genkey requires --key-file and --key-id")
+		}
+		public, private, err := component.GenerateSigningKey()
+		if err != nil {
+			return err
+		}
+		if err := component.SavePrivateKey(*keyFile, private); err != nil {
+			return err
+		}
+		fmt.Printf("signing key %q written to %s (keep it offline; it never enters the repository)\n", *keyID, *keyFile)
+		if *keyringOut != "" {
+			if err := addToKeyring(*keyringOut, *keyID, public); err != nil {
+				return err
+			}
+			fmt.Printf("public key added to keyring %s\n", *keyringOut)
+		}
+		return nil
+	case "sign":
+		if *packageDir == "" || *keyFile == "" || *keyID == "" || *componentName == "" || *versionName == "" || *formatVersion < 1 || *formatMin < 1 {
+			return errors.New("sign requires --package, --key-file, --key-id, --component, --version, --format >= 1 and --format-min >= 1")
+		}
+		key, err := component.LoadPrivateKey(*keyFile)
+		if err != nil {
+			return err
+		}
+		err = component.SignPackage(*packageDir, *componentName, *versionName,
+			component.StateFormat{Version: *formatVersion, MinReadable: *formatMin}, *targetOS, *targetArch, *keyID, key)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("signed %s %s in %s\n", *componentName, *versionName, *packageDir)
+		return nil
+	case "fetch":
+		if *repoURL == "" || *componentName == "" || *versionName == "" || *destDir == "" {
+			return errors.New("fetch requires --repo, --component, --version and --dest")
+		}
+		downloader := &component.Downloader{Keyring: upgrader.Keyring, RateLimitBytesPerSecond: *rateLimitKBps << 10}
+		manifest, err := downloader.Fetch(context.Background(), *repoURL, *componentName, *versionName, *destDir)
+		if err != nil {
+			return err
+		}
+		fmt.Printf("fetched %s %s (%d files, signature verified)\n", manifest.Component, manifest.Version, len(manifest.Files))
+		return nil
 	case "verify":
 		if *packageDir == "" {
 			return errors.New("--package is required")
@@ -182,4 +239,27 @@ func printable(version string) string {
 		return "(none)"
 	}
 	return version
+}
+
+// addToKeyring merges a public key into a keyring file (created if missing),
+// refusing to silently change an existing key ID.
+func addToKeyring(path, keyID string, public []byte) error {
+	ring := map[string]string{}
+	if data, err := os.ReadFile(path); err == nil {
+		if err := json.Unmarshal(data, &ring); err != nil {
+			return fmt.Errorf("decode keyring: %w", err)
+		}
+	} else if !os.IsNotExist(err) {
+		return err
+	}
+	encoded := hex.EncodeToString(public)
+	if existing, ok := ring[keyID]; ok && existing != encoded {
+		return fmt.Errorf("keyring already contains a different key for %q; rotating it requires a deliberate edit", keyID)
+	}
+	ring[keyID] = encoded
+	data, err := json.MarshalIndent(ring, "", "  ")
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, append(data, '\n'), 0600)
 }

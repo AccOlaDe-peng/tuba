@@ -33,3 +33,7 @@ __pycache__/
 # 曾被提交到公开仓库,其中凭据在轮换前一律视为已泄露。
 claude.md
 CLAUDE.md
+
+# 组件签名私钥(COL-09;离线保管,永不入库)
+*.ed25519.key
+component-signing-key*
