@@ -32,6 +32,9 @@ type Binding struct {
 type Config struct {
 	IngestURL string    `json:"ingest_url"`
 	Bindings  []Binding `json:"bindings"`
+	// Filter is the optional versioned admission policy. Shadow mode only: it
+	// counts what enforcement would drop and never changes the event flow.
+	Filter *FilterPolicy `json:"filter,omitempty"`
 }
 
 type Consumer interface {
@@ -94,6 +97,10 @@ type Adapter struct {
 	StallWatchdog    time.Duration
 	StallLogInterval time.Duration
 	Logf             func(format string, args ...any)
+	// Filter is evaluated after local event validation and before delivery.
+	// Shadow counting only: a match is counted with its rule and reason code
+	// and the event is delivered unchanged.
+	Filter *FilterPolicy
 }
 
 func (c Config) Validate() error {
@@ -113,6 +120,11 @@ func (c Config) Validate() error {
 			return fmt.Errorf("duplicate source topic binding %q", binding.Topic)
 		}
 		seen[binding.Topic] = struct{}{}
+	}
+	if c.Filter != nil {
+		if err := c.Filter.Validate(); err != nil {
+			return fmt.Errorf("filter policy: %w", err)
+		}
 	}
 	return nil
 }
@@ -412,6 +424,19 @@ func (a Adapter) inc(name string) {
 func (a Adapter) deliver(ctx context.Context, message kafka.Message) (permanent bool, code string, err error) {
 	if err := validateBeatEvent(message.Value); err != nil {
 		return true, "BEAT_EVENT_INVALID", nil
+	}
+	if a.Filter != nil {
+		decision, filterErr := a.Filter.Evaluate(message.Value)
+		switch {
+		case filterErr != nil:
+			// The event passed validation above, so an evaluation error is a
+			// defect signal, never a reason to hold or drop the event.
+			a.inc("tuba_source_adapter_filter_evaluation_errors_total")
+		case decision.Protected:
+			a.inc(a.Filter.protectedMetric(decision))
+		case decision.RuleID != "":
+			a.inc(a.Filter.shadowMatchMetric(decision))
+		}
 	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, a.IngestURL, bytes.NewReader(message.Value))
 	if err != nil {

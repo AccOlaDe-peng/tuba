@@ -56,6 +56,10 @@ func run() error {
 	if err := cfg.Validate(); err != nil {
 		return fmt.Errorf("validate source adapter config: %w", err)
 	}
+	if cfg.Filter != nil {
+		log.Printf("source adapter filter policy %s version %s mode=%s rules=%d protected=%d (shadow counting only; the event flow is unchanged)",
+			cfg.Filter.PolicyID, cfg.Filter.Version, cfg.Filter.Mode, len(cfg.Filter.Rules), len(cfg.Filter.Protected))
+	}
 	adapterToken := os.Getenv("SOURCE_ADAPTER_TOKEN")
 	if len(adapterToken) < 32 {
 		return errors.New("SOURCE_ADAPTER_TOKEN must contain at least 32 characters")
@@ -121,6 +125,7 @@ func run() error {
 		adapter := sourceadapter.Adapter{
 			Binding: binding, IngestURL: cfg.IngestURL, AdapterToken: adapterToken,
 			Consumer: reader, DeadLetter: dlq, HTTPClient: client, Metrics: metrics,
+			Filter: cfg.Filter,
 			Probe: sourceadapter.TopicProber{
 				Topic:          binding.Topic,
 				ReadPartitions: kafkaPartitionsFunc(dialer, brokers),
