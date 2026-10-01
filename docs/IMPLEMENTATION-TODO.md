@@ -431,6 +431,42 @@ Kafka 与 Elasticsearch 各自有保留期、会封顶；**receipt 表每个事�
 
 **V07 仍未勾选**：端到端 P95、PG 事务预算上限、多来源同时有压的压测本轮未做；本轮只回答了 adapter 单实例吞吐上限与追平速率。
 
+### 2026-10-01 V07 再续：source-adapter 吞吐上限实测（自然积压法，零合成注入）
+
+上一轮的「造压」靠向源 topic 灌入改写后的消息，虽未污染下游（receipt 去重 / 用一次性标记），但**向生产 topic 写入测试消息这一动作本身有污染风险，已被用户叫停**。本轮改用与 COL-07b 5/5 同源的**自然积压法**：暂停 adapter 让 21 侧 Filebeat 的真实日志在源 topic 里自然堆积，恢复后测追平速率。**全程未向任何 topic 灌入一条消息**，未改 adapter 任何配置/二进制，未触碰 tenant_a 链与监控栈。实测约 12:17–12:39 +08:00。
+
+**手段侦察（Launcher 无单服务粒度）**：`cmd/tuba-launcher/main.go` 只暴露 `validate|merge-manifest|start|stop|restart|status|logs`，无单服务 stop/start；`internal/launcher/manager.go:255` 的 `runService` 是 `for ctx.Err()==nil` 的无限重启循环（退避 1s→30s），杀死子进程只会触发自动拉起，**无法用它单独停住一个服务**。选定的最小影响手段是：对**唯一一个 adapter 进程**发 `SIGSTOP`——`cmd.Wait()` 阻塞在僵直进程上，Launcher 视其「running」而不会重启；指标端口随进程整体僵直，因此采样用 `curl --max-time`；进程内 6 个绑定 goroutine 一起冻结，Kafka 端凭 24h 保留、21 侧凭 Filebeat 磁盘队列缓冲，不丢数据。窗口结束用 `SIGCONT` 原样恢复，无需重启、无需改配置、不波及其他 10 个数据面服务。脚本以 `trap 'kill -CONT' EXIT` 兜底，保证不会把进程留在冻结态。
+
+**基线（SIGSTOP 前，t=12:17:23）**：六路源 topic log-end = conn 1,797,039 / dns 481,370 / http 253,543 / ssl 6,904 / win(`0332…`) 8,478 / win(`a6b2…`) 32,793，合计 2,580,127；adapter `fetched=committed=56,802`、`accepted=56,800`、`rejected=2`、`dlq_written=2`；六个 adapter 组 lag 全 0；DLQ log-end 10,472；`ingest_receipts` 1,257,882 行。**自然到达速率**（90 秒被动观测）：合计 **4.41 条/秒**（conn 2.73、dns 0.76、http 0.49、ssl 0.23、Windows 两路 0.20），即 09-30 记的「稳态 3–4 条/秒」就是到达速率本身，因 lag 恒 0、消费速率被迫等于到达速率，**根本不是处理上限的表现**。
+
+**造出的积压**：SIGSTOP 于 12:17:29、SIGCONT 于 12:22:29，冻结 **300 秒**。恢复瞬间六路 lag 合计 **≈1,350 条**（≈5.1 分钟的真实数据）。积压落在 conn 约 810、dns 约 230、http 约 150、ssl 约 70，Windows 两路可忽略。
+
+**追平曲线**（SIGCONT 后每秒采样 adapter `events_fetched_total`，`t=0` 为 SIGCONT）：
+
+| t (s) | fetched | 备注 |
+| --- | --- | --- |
+| 0–6.2 | 56,802→56,806 | **重组静默 ≈6.5s**：冻结 300s 超过 broker session 超时，kafka-go 被移出消费组后重加入 |
+| 7.2 | 56,825 | 开始消费 |
+| 8.2–11.3 | 56,988→57,383 | 冷启动峰值，8.2→9.3 的 1.1s 内 +169 ≈ **154 条/秒** |
+| 11.3–17.3 | 57,383→57,760 | +377/6.0s ≈ 63/s |
+| 17.3–26.5 | 57,760→58,253 | +493/9.2s ≈ **54 条/秒** |
+| 27.5 起 | 58,258 后回落至 4–6/s | 追平，此后仅跟踪到达 |
+
+**实测吞吐**：纯消费窗口 t=7.2→27.5（20.3s）内 fetched +1,456，扣除同期到达约 120 → **积压追平速率 ≈ 66–72 条/秒（聚合，6 绑定并发）**，瞬时峰值 >150 条/秒；含 6.5s 重组静默的端到端追平 ≈ 47–53 条/秒。**1,350 条积压 28 秒追平**（其中已含 6.5s 重组停顿）。据此外推 09-30 那批 **11,700 条 ≈ 3–4 分钟**，与 2026-10-01 造压轮「3–5 分钟」的估算一致。**3–4 条/秒 既不是配置限速（配置无 rate_limit/batch/wait），也不是能力上限（实测 66–72/s，差 15–20 倍）**。
+
+**瓶颈层判定（按证据逐层排除）**：
+
+- **不是 Kafka fetch / offset commit**：整段追平 `kafka_fetch_retries` 保持 1（未增）、`stall_events` 保持 1（未增）、`consumer_replacements` 保持 1（未增）；唯一代价是 300s 冻结诱发的约 6.5s 组重组，属 `SIGSTOP` 手段的固有开销，不是稳态瓶颈。
+- **不是索引 / ES 侧**：追平结束后 raw-indexer、normalizer、standard-indexer、quarantine-indexer 各现役组 lag 全 0（network 组瞬态 4），ES `status=green`、unassigned 0——索引侧完全吸收了这次突发，与既有「raw-indexer 约 250 条/秒余量」的记录吻合。
+- **adapter 自身无批量无并发，单绑定串行 fetch→HTTP receipt→同步 commit** 是结构性上限（`internal/sourceadapter/adapter.go:120-205`，`CommitInterval:0`）。聚合 66–72/s、6 绑定并发，等价单绑定约 15–30 ms/条的串行延迟，与 2026-10-01 轮测得的 40–60 条/秒/绑定同量级但本轮聚合值更低，符合「共享同步段先饱和」的形态。
+- **共享同步段 = adapter→ingest 的 HTTP POST（PG `ingest_receipts` GetOrCreate + 同步写 raw topic + `MarkKafkaAcked`）**：本轮 `ingest_receipts` 在 448s 内 +1,979 行、adapter fetched +1,983，**逐条对齐、无背离**，说明 PG receipt 表当前健康（1.26M 行，远低于 09-30 的 175 万行/2.5GB）并未成为限速点。因此当前一阶限制是 adapter 逐条串行的设计本身，其上限由 ingest 同步段的往返延迟决定；PG receipt 表健康度仍是该链路吞吐的一阶变量，2 天清理任务必须保持运行。
+
+**恢复校验（红线）**：结束后六个 adapter 组 lag 全 0、DLQ log-end 仍为 10,472（**零新增**）、`rejected`/`dlq_written` 保持 2；11/11 服务 running，`zeek-source-adapter` **pid 1842191 不变、restarts=0**（全程未重启）；`api` 的 `restarts=1` 发生在 11:26（早于本轮 12:17，与本次测试无关）。下游现役组 lag 全 0。tenant_a 链与第二个 Launcher（监控栈 `/etc/tuba/tuba-monitoring.json`）全程未动。
+
+**复现方法**：`PID=$(pgrep -f '^/opt/tuba/collector-live/pipeline/bin/tuba-source-adapter$')`；`kill -STOP $PID` 保持 N 秒（本环境到达 4.4 条/秒，N=300 得 ≈1,350 条积压，要凑 3,000–8,000 条需 N≈680–1,800 秒，**超出「<5 分钟停机窗口」约束，故本轮按 5 分钟上限执行，积压量低于目标值但已足以定性上限**）；用 `kafka-get-offsets.sh`（`JAVA_HOME=/opt/adms/adms-jdk`，`--command-config /opt/tuba/collector-live/kafka/admin.properties`，broker 10.6.68.248:29292）采源 topic log-end，同时 `curl --max-time 5 127.0.0.1:19185/metrics` 采 `events_fetched_total`；`kill -CONT $PID` 后按 1s 采样至 fetched 停止跃升（lag 归 0）即为追平点。**采样脚本必须以 trap 保证 SIGCONT**，且不得向任何 topic 生产消息。
+
+**V07 仍未勾选**：本轮只补强了「积压恢复速率」一项，且积压量（≈1,350 条）低于预设的 3,000–8,000 目标（受 5 分钟停机窗口与 4.4 条/秒到达速率共同限制）。**端到端 P95、峰值 EPS、内存/PG 事务预算上限、多来源同时有压**仍未测；据此 V07 保持未勾选。
+
 ### 2026-09-30 异机备份首轮落地（B04 部分完成；V08 未通过）
 
 备份目的地按用户决定选 21（可用空间 130 GB+）。架构：**ES 快照直接写进 21 上的仓库** `/opt/tuba-backup/esrepo-248`（NFS 导出后挂载在 248 的 `/var/lib/elasticsearch/backups`；`path.repo` 路径不变，故 ES 无需重启），PostgreSQL 转储、Keycloak realm 导出、发布包经 rsync 推到 `21:/opt/tuba-backup/248/<stamp>/`。`scripts/backup_tuba_to_offsite.sh` 每日 02:37 执行，另产出一份记录水位（库大小、receipt 行数、来源数、release 数）的 MANIFEST。免密通道为 248 上限定来源地址的密钥。
