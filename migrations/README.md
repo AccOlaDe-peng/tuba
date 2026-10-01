@@ -16,6 +16,8 @@ M4 analysis runtime schema starts at `00005_analysis_runtime.sql` and adds worke
 
 `00012_source_context_scope.sql` enforces that a newly created immutable source context exactly snapshots the owning source instance's tenant slug, namespace, vendor tuple, epoch, and release. This closes a database integrity gap where a malformed context row could otherwise claim another tenant while referencing a valid source instance.
 
+`00016_identity_spaces.sql` adds the identity space registry (organization-scoped, normalized name unique per tenant, stable `is:`-prefixed ID) and a composite FK so `entities.authority` can only reference a registered space of the same tenant. Entity rows are therefore impossible without prior space registration.
+
 `00013_release_publishing.sql` adds a global platform-publisher grant table and publisher-scoped idempotency records. These grants are separate from tenant memberships; release API permissions are resolved from this table after validating the caller's tenant membership. Release transition APIs write state and audit records in one transaction.
 
 Migrations use goose annotations. Shared and production environments must run them with a dedicated DDL identity. Application credentials receive DML permissions only. Applied migrations are immutable; corrections require a new numbered file.

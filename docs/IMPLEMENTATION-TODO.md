@@ -328,7 +328,14 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
 
 ## 阶段 6：实体与归因（P1；依赖阶段 4、阶段 5、C03）
 
-- [ ] E01（G/D）实现 Account/Device 身份空间注册、强弱标识优先级、规范化和 entity.id 生成。
+- [x] E01（G/D）实现 Account/Device 身份空间注册、强弱标识优先级、规范化和 entity.id 生成。
+  - **2026-10-02 完成并勾选（代码+单测全绿，集成测试经 SSH 隧道对 248 真实库实跑通过）**。实现为新包 `internal/entity`（`normalize.go`/`id.go`/`registry.go`），存储复用 `00007` 的 `entities` 表，新增唯一迁移 `00016_identity_spaces.sql`（`identity_spaces` 注册表 + `entities(organization_id, authority)` 到空间的复合 FK，未注册空间无法写实体；248 台账推进至 00016，checksum 与仓库文件一致，expand-only，无存量数据改动）。
+  - **身份空间注册**：`Registry.RegisterSpace` 幂等——空间名规范化（小写、受限字符集）后按 (organization, name) 去重，重放返回同一 `is:` 前缀稳定 ID；同名不同 kind 报 `ErrSpaceKindConflict` fail-closed。
+  - **规范化（fail-closed）**：SID 小写+格式校验；GUID/device UUID 去花括号小写校验 8-4-4-4-12；`DOMAIN\user` 分拆 namespace/name 双侧小写；UPN/邮箱小写（原值保留在 document）；hostname 小写去尾点、不擅自补域；IP 走 `netip` 标准文本形式。未知 kind、空值、畸形值一律拒绝。
+  - **强弱优先级**：强标识（sid/guid/device_uuid/agent_id）恒定胜过弱标识（ntname/upn/email/username/hostname/ip），同类两值冲突判 `ErrAmbiguousInput`；同优先级按 kind 字典序确定性裁决，与输入顺序无关。
+  - **entity.id**：按 contracts/ids.md 的长度前缀哈希从 (tenant, entity_type, authority, canonical_key) 派生 `ent:` + sha256，同一真实身份任意次注册得到同一 id；跨租户/类型/空间/键均不冲突（单测断言）。
+  - **弱标识易主**：弱标识 occurrence 语义——活跃 occurrence 内重注册幂等返回同 id；`TransferWeak` 关闭活跃 occurrence（`valid_to`，时间不晚于 `valid_from` 则拒绝；强标识不可易主）后，同一弱键再注册生成 `base#N` 新 canonical key 与新 entity.id，复用的用户名/主机名绝不并入前任。注册经 `pg_advisory_xact_lock` 串行化，并发注册同一身份只落一行同 id。
+  - **测试**：单测 `entity_test.go`（规范化正例 11/反例 16、强弱裁决、同类冲突、ID 稳定性与隔离、空间名正反例）；集成 `registry_integration_test.go` 5 例经隧道对 248 实跑通过（`-count=2` 稳定）：空间注册幂等+kind 冲突、entity.id 跨注册稳定+并发 8 路单行、跨空间同键不合并、弱易主全生命周期（幂等→Transfer→新 occurrence 新 id→无活跃拒绝→强标识拒绝易主）、未注册空间/非法类型/非法标识/空标识全部 fail-closed 且零写入。夹具为一次性 `entity_it_*` organization，跑完清理，实测 248 上 orgs/spaces/entities 三处 `entity_it_%` 计数均为 0。`go build ./...`、`go vet ./...` 干净，全量 `go test ./...` 32 包 0 FAIL。**范围说明**：实体注册尚无 worker/API 接线（E02 归因与后续条目的消费方）；248 未部署任何新二进制。
 - [ ] E02（G）实现多角色 attribution，包含 resolved/unresolved/ambiguous 和证据；event.id 不被改写。
 - [ ] E03（G/D）实现时态关系、有效区间、规则快照与冲突处理；缺少关系不阻止单实体特征。
 - [ ] E04（G）输出按 entity.id 分区的 attributed 消息，多角色具有独立贡献键；支持事件级未归因检测输入。
