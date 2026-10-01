@@ -65,8 +65,8 @@ func main() {
 			log.Fatalf("metrics server: %v", err)
 		}
 	}()
-	log.Printf("control worker running job lease maintenance and PostgreSQL outbox publisher")
-	errCh := make(chan error, 2)
+	log.Printf("control worker running job lease maintenance, PostgreSQL outbox publisher, and retention cleaner")
+	errCh := make(chan error, 3)
 	go func() {
 		errCh <- (controlworker.OutboxPublisher{Config: controlworker.OutboxConfig{
 			Pool: pool, Writer: writer, WorkerID: workerID, Metrics: metrics, BatchSize: 10,
@@ -79,6 +79,17 @@ func main() {
 		errCh <- (controlworker.JobWorker{Config: controlworker.JobWorkerConfig{
 			Pool: pool, WorkerID: workerID, Handlers: map[string]controlworker.JobHandler{},
 			PollInterval: time.Second, LeaseDuration: 30 * time.Second,
+		}}).Run(runCtx)
+	}()
+	go func() {
+		errCh <- (controlworker.RetentionCleaner{Config: controlworker.RetentionConfig{
+			Pool: pool, Metrics: metrics,
+			InboxRetention:        envDuration("CONTROL_WORKER_INBOX_RETENTION", 48*time.Hour),
+			OutboxRetention:       envDuration("CONTROL_WORKER_OUTBOX_RETENTION", 48*time.Hour),
+			SucceededJobRetention: envDuration("CONTROL_WORKER_SUCCEEDED_JOB_RETENTION", 7*24*time.Hour),
+			FailedJobRetention:    envDuration("CONTROL_WORKER_FAILED_JOB_RETENTION", 30*24*time.Hour),
+			PollInterval:          envDuration("CONTROL_WORKER_RETENTION_POLL_INTERVAL", time.Hour),
+			TempRoot:              os.Getenv("CONTROL_WORKER_JOB_TEMP_ROOT"),
 		}}).Run(runCtx)
 	}()
 	probeDependencies := func() error {
@@ -121,10 +132,26 @@ func main() {
 	metrics.SetReady(false)
 	cancel()
 	secondErr := <-errCh
+	thirdErr := <-errCh
+	for i, err := range []error{secondErr, thirdErr} {
+		if err != nil {
+			log.Printf("control worker stopped (%d): %v", i+2, err)
+		}
+	}
 	if firstErr != nil {
 		log.Printf("control worker stopped: %v", firstErr)
 	}
-	if secondErr != nil {
-		log.Printf("control worker stopped: %v", secondErr)
+}
+
+func envDuration(name string, fallback time.Duration) time.Duration {
+	value := os.Getenv(name)
+	if value == "" {
+		return fallback
 	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil || parsed <= 0 {
+		log.Printf("invalid %s %q; using %s", name, value, fallback)
+		return fallback
+	}
+	return parsed
 }
