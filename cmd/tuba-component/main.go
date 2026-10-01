@@ -56,10 +56,11 @@ func run(args []string) error {
 	repoURL := flags.String("repo", "", "release repository base URL (fetch command)")
 	destDir := flags.String("dest", "", "destination directory for the downloaded package (fetch command)")
 	rateLimitKBps := flags.Int64("rate-limit-kbps", 0, "download rate limit in KiB/s (fetch command, 0 = unlimited)")
+	runBin := flags.String("bin", "", "package-relative binary path (run command)")
 	if err := flags.Parse(rest); err != nil {
 		return err
 	}
-	needRoot := map[string]bool{"apply": true, "confirm": true, "rollback": true, "upgrade": true, "status": true, "stamp-format": true}
+	needRoot := map[string]bool{"apply": true, "confirm": true, "rollback": true, "upgrade": true, "status": true, "stamp-format": true, "run": true}
 	if needRoot[command] && *root == "" {
 		return errors.New("--root is required")
 	}
@@ -215,6 +216,17 @@ func run(args []string) error {
 			}
 		}
 		fmt.Printf("stamped %s instance(s) at format %d\n", *componentName, *formatVersion)
+		return nil
+	case "run":
+		if *componentName == "" || *runBin == "" {
+			return errors.New("run requires --component and --bin")
+		}
+		if err := component.ExecCurrent(*root, *componentName, *runBin, flags.Args()); err != nil {
+			if code, ok := component.ExitCode(err); ok {
+				os.Exit(code)
+			}
+			return err
+		}
 		return nil
 	default:
 		return fmt.Errorf("unknown command %q", command)
