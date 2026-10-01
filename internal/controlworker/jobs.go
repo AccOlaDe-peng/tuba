@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"time"
@@ -114,12 +115,7 @@ func (w JobWorker) heartbeat(ctx context.Context, c JobWorkerConfig, cancel cont
 			return
 		case <-ticker.C:
 			heartbeatCtx, heartbeatCancel := context.WithTimeout(context.Background(), 5*time.Second)
-			var cancelRequested bool
-			err := c.Pool.QueryRow(heartbeatCtx, `
-				UPDATE processing_jobs
-				SET lease_until = now() + make_interval(secs => $4::double precision)
-				WHERE id = $1 AND state = 'running' AND lease_owner = $2 AND fencing_token = $3
-				RETURNING cancel_requested_at IS NOT NULL`, job.ID, c.WorkerID, job.FencingToken, c.LeaseDuration.Seconds()).Scan(&cancelRequested)
+			cancelRequested, err := renewJobLease(heartbeatCtx, c.Pool, c.WorkerID, job, c.LeaseDuration)
 			heartbeatCancel()
 			if err != nil {
 				slog.Error("processing job lease heartbeat failed", "job_id", job.ID, "error", err)
@@ -132,6 +128,22 @@ func (w JobWorker) heartbeat(ctx context.Context, c JobWorkerConfig, cancel cont
 			}
 		}
 	}
+}
+
+// renewJobLease extends the lease of a running job only while the caller still
+// holds it: a stale fencing token or lost lease matches no row and fails
+// closed. It also reports whether cancellation was requested.
+func renewJobLease(ctx context.Context, pool *pgxpool.Pool, workerID string, job Job, leaseDuration time.Duration) (bool, error) {
+	var cancelRequested bool
+	err := pool.QueryRow(ctx, `
+		UPDATE processing_jobs
+		SET lease_until = now() + make_interval(secs => $4::double precision)
+		WHERE id = $1 AND state = 'running' AND lease_owner = $2 AND fencing_token = $3
+		RETURNING cancel_requested_at IS NOT NULL`, job.ID, workerID, job.FencingToken, leaseDuration.Seconds()).Scan(&cancelRequested)
+	if err != nil {
+		return false, err
+	}
+	return cancelRequested, nil
 }
 
 func claimJob(ctx context.Context, c JobWorkerConfig, types []string) (Job, error) {
@@ -181,7 +193,6 @@ func finishJob(ctx context.Context, c JobWorkerConfig, job Job, handlerErr error
 		return err
 	}
 	defer tx.Rollback(ctx)
-	var state string
 	errorText := ""
 	if handlerErr != nil {
 		errorText = handlerErr.Error()
@@ -189,42 +200,38 @@ func finishJob(ctx context.Context, c JobWorkerConfig, job Job, handlerErr error
 			errorText = errorText[:2048]
 		}
 	}
+	// Lock the row and re-read the cancellation flag; the fencing token guard
+	// makes a stale lease holder match no row and fail closed.
+	var cancelRequested bool
 	err = tx.QueryRow(ctx, `
-		UPDATE processing_jobs
-		SET state = CASE
-		      WHEN cancel_requested_at IS NOT NULL THEN 'cancelled'
-		      WHEN $4::boolean THEN 'queued'
-		      WHEN $5::text = '' THEN 'succeeded'
-		      WHEN attempt < max_attempts THEN 'queued'
-		      ELSE 'failed'
-		    END,
-		    lease_owner = NULL, lease_until = NULL,
-		    next_attempt_at = CASE
-		      WHEN $4::boolean THEN now()
-		      WHEN $5::text <> '' AND attempt < max_attempts THEN now() + make_interval(secs => LEAST(300, power(2, LEAST(attempt, 8)))::double precision)
-		      ELSE next_attempt_at
-		    END,
-		    finished_at = CASE
-		      WHEN cancel_requested_at IS NOT NULL OR (NOT $4::boolean AND ($5::text = '' OR attempt >= max_attempts)) THEN now()
-		      ELSE NULL
-		    END,
-		    last_error = CASE WHEN cancel_requested_at IS NOT NULL THEN 'cancelled by requester' ELSE NULLIF($5::text,'') END
+		SELECT cancel_requested_at IS NOT NULL
+		FROM processing_jobs
 		WHERE id = $1 AND state = 'running' AND lease_owner = $2 AND fencing_token = $3
-		RETURNING state`, job.ID, c.WorkerID, job.FencingToken, stopping, errorText).Scan(&state)
+		FOR UPDATE`, job.ID, c.WorkerID, job.FencingToken).Scan(&cancelRequested)
 	if err != nil {
 		return err
 	}
-	attemptState := state
-	if state == "queued" && handlerErr != nil && !stopping {
-		attemptState = "failed"
-	} else if state == "queued" && stopping {
-		attemptState = "lease_expired"
+	outcome := FinishTransition(cancelRequested, stopping, handlerErr, job.Attempt, job.MaxAttempts)
+	if !CanTransition(JobStateRunning, outcome.JobState) {
+		return fmt.Errorf("illegal job state transition running -> %s", outcome.JobState)
+	}
+	_, err = tx.Exec(ctx, `
+		UPDATE processing_jobs
+		SET state = $4,
+		    lease_owner = NULL, lease_until = NULL,
+		    next_attempt_at = CASE WHEN $4::text = 'queued' THEN now() + make_interval(secs => $5::double precision) ELSE next_attempt_at END,
+		    finished_at = CASE WHEN $6::boolean THEN now() ELSE NULL END,
+		    last_error = CASE WHEN $4::text = 'cancelled' THEN 'cancelled by requester' ELSE NULLIF($7::text,'') END
+		WHERE id = $1 AND state = 'running' AND lease_owner = $2 AND fencing_token = $3`,
+		job.ID, c.WorkerID, job.FencingToken, string(outcome.JobState), outcome.RequeueDelay.Seconds(), outcome.Finished, errorText)
+	if err != nil {
+		return err
 	}
 	_, err = tx.Exec(ctx, `
 		UPDATE processing_job_attempts
 		SET state = $3, finished_at = now(), error_code = CASE WHEN $4::text <> '' THEN 'HANDLER_FAILED' END,
 		    error_message = NULLIF($4::text,'')
-		WHERE job_id = $1 AND attempt = $2 AND fencing_token = $5`, job.ID, job.Attempt, attemptState, errorText, job.FencingToken)
+		WHERE job_id = $1 AND attempt = $2 AND fencing_token = $5`, job.ID, job.Attempt, string(outcome.AttemptState), errorText, job.FencingToken)
 	if err != nil {
 		return err
 	}
@@ -266,17 +273,20 @@ func reapExpiredJobs(ctx context.Context, pool *pgxpool.Pool, limit int) error {
 	}
 	rows.Close()
 	for _, job := range jobs {
-		state := "queued"
+		state := JobStateQueued
 		if job.attempt >= job.max {
-			state = "failed"
+			state = JobStateFailed
+		}
+		if !CanTransition(JobStateRunning, state) {
+			return fmt.Errorf("illegal job state transition running -> %s", state)
 		}
 		_, err := tx.Exec(ctx, `
 			UPDATE processing_jobs
 			SET state=$2, lease_owner=NULL, lease_until=NULL,
-			    next_attempt_at=CASE WHEN $2='queued' THEN now()+make_interval(secs => LEAST(300,power(2,LEAST(attempt,8)))::double precision) ELSE next_attempt_at END,
-			    finished_at=CASE WHEN $2='failed' THEN now() ELSE NULL END,
+			    next_attempt_at=CASE WHEN $2::text='queued' THEN now()+make_interval(secs => $4::double precision) ELSE next_attempt_at END,
+			    finished_at=CASE WHEN $2::text='failed' THEN now() ELSE NULL END,
 			    last_error='worker lease expired'
-			WHERE id=$1 AND state='running' AND fencing_token=$3`, job.id, state, job.token)
+			WHERE id=$1 AND state='running' AND fencing_token=$3`, job.id, string(state), job.token, RetryBackoff(job.attempt).Seconds())
 		if err != nil {
 			return err
 		}
