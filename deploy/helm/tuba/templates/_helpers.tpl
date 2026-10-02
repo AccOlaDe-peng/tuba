@@ -40,6 +40,8 @@ KAFKA_RAW_TOPIC: {{ .Values.common.kafka.rawTopic | quote }}
 KAFKA_QUARANTINE_TOPIC: {{ .Values.common.kafka.quarantineTopic | quote }}
 KAFKA_EVENTS_TOPIC: {{ .Values.common.kafka.eventsTopic | quote }}
 KAFKA_ANALYSIS_RESULTS_TOPIC: {{ .Values.common.kafka.analysisResultsTopic | quote }}
+KAFKA_ATTRIBUTED_TOPIC: {{ .Values.common.kafka.attributedTopic | quote }}
+KAFKA_ANALYSIS_RESULTS_V2_TOPIC: {{ .Values.common.kafka.analysisResultsV2Topic | quote }}
 KAFKA_DLQ_TOPIC: {{ .Values.common.kafka.dlqTopic | quote }}
 KAFKA_SECURITY_PROTOCOL: {{ .Values.common.kafka.securityProtocol | quote }}
 KAFKA_SASL_MECHANISM: {{ .Values.common.kafka.saslMechanism | quote }}

@@ -37,6 +37,8 @@ common:
     quarantineTopic: tuba.quarantine.v1
     eventsTopic: tuba.events.authentication.v1
     analysisResultsTopic: tuba.analysis.results.v1
+    attributedTopic: tuba.attributed.events.v1
+    analysisResultsV2Topic: tuba.analysis.results.v2
     dlqTopic: tuba.indexing.dlq.v1
     securityProtocol: sasl_tls
     saslMechanism: scram-sha512

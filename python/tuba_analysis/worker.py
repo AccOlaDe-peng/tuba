@@ -1,4 +1,15 @@
-"""Durable event-time Kafka worker for authentication detections."""
+"""Durable event-time Kafka worker for authentication detections.
+
+F08: ``main`` is the single authoritative analysis scheduling entry (design
+baseline §6). It consumes the attributed stream (E04), drives the unified
+pipeline (tuba_analysis.pipeline: windows -> features -> three detection
+scenarios -> v2 envelopes) and schedules the periodic baseline training job,
+producing analysis-result v2 objects to ``tuba.analysis.results.v2``. The
+legacy ``AuthenticationProcessor`` (v1 envelopes over the UIM authentication
+topic) is retained unchanged for the offline replay path (tuba_analysis.replay)
+— v1 compatibility on the wire is handled by the analysis-sink migration
+adapter (F07), not by double-producing from here.
+"""
 
 from __future__ import annotations
 
@@ -13,10 +24,12 @@ from typing import Any
 
 from confluent_kafka import Consumer, KafkaError, Producer
 
+from .baseline import PostgresBaselineModelStore, PostgresFeatureSampleStore
 from .detection import detect_failure_then_success, parse_time
 from .features import FeatureWindows
 from .metrics import Metrics, start_http_server
-from .registry import AnalysisRegistry, RuleDefinition, load_registry
+from .pipeline import AttributedAnalysisProcessor, TrainingScheduler, run_due_training
+from .registry import RuleDefinition, load_registry
 from .runtime import Checkpoint, PostgresRuntimeStore, RuntimeStore
 
 
@@ -193,17 +206,20 @@ def publish_dead_letter(
 
 def main() -> None:
     brokers = required("KAFKA_BROKERS")
-    source_topic = os.getenv("KAFKA_EVENTS_TOPIC", "tuba.events.authentication.v1")
-    result_topic = os.getenv("KAFKA_ANALYSIS_RESULTS_TOPIC", "tuba.analysis.results.v1")
+    source_topic = os.getenv("KAFKA_ATTRIBUTED_TOPIC", "tuba.attributed.events.v1")
+    result_topic = os.getenv("KAFKA_ANALYSIS_RESULTS_V2_TOPIC", "tuba.analysis.results.v2")
     dead_letter_topic = os.getenv("KAFKA_DLQ_TOPIC", "tuba.indexing.dlq.v1")
     organization = required("TUBA_ORGANIZATION_ID")
     namespace = required("TUBA_NAMESPACE")
-    group_id = os.getenv("KAFKA_ANALYSIS_GROUP", f"tuba-analysis-auth-{namespace}")
+    group_id = os.getenv("KAFKA_ANALYSIS_GROUP", f"tuba-analysis-attributed-{namespace}")
     registry = load_registry()
-    rule = registry.rule("auth.failure-then-success")
     run_id = f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4()}"
-    store: RuntimeStore = PostgresRuntimeStore(required("DATABASE_URL"))
-    store.start_run(run_id, "authentication", run_id, group_id, registry.version)
+    dsn = required("DATABASE_URL")
+    store: RuntimeStore = PostgresRuntimeStore(dsn)
+    sample_store = PostgresFeatureSampleStore(dsn)
+    model_store = PostgresBaselineModelStore(dsn)
+    store.start_run(run_id, "attributed-analysis", run_id, group_id, registry.version)
+    scheduler = TrainingScheduler(registry.models.values())
     metrics = Metrics()
     start_http_server(os.getenv("METRICS_LISTEN", "127.0.0.1:9090"), metrics)
 
@@ -225,7 +241,7 @@ def main() -> None:
     )
     consumer.subscribe([source_topic])
     metrics.set_ready(True)
-    processors: dict[int, AuthenticationProcessor] = {}
+    processors: dict[int, AttributedAnalysisProcessor] = {}
     processed = 0
     emitted = 0
     last_heartbeat = 0.0
@@ -237,10 +253,28 @@ def main() -> None:
                 producer.poll(0)
                 now = time.monotonic()
                 # Idle partitions still advance their watermark so windows
-                # close without waiting for new input.
+                # close without waiting for new input; newly closed windows
+                # emit their feature/statistical results.
                 wall_now = datetime.now(timezone.utc)
+                idle_results: list[dict[str, Any]] = []
                 for processor in processors.values():
-                    processor.windows.advance(wall_now)
+                    idle_results.extend(processor.advance(wall_now, run_id))
+                # Periodic baseline training (F04): reads persisted feature
+                # samples only, publishes immutable versions / cold_start.
+                idle_results.extend(
+                    run_due_training(
+                        scheduler,
+                        sample_store,
+                        model_store,
+                        organization=organization,
+                        namespace=namespace,
+                        now=wall_now,
+                        run_id=run_id,
+                    )
+                )
+                publish_results(producer, result_topic, idle_results)
+                emitted += len(idle_results)
+                metrics.inc("tuba_analysis_emitted_results_total", len(idle_results))
                 if now - last_heartbeat >= 5:
                     store.heartbeat(run_id, processed, emitted)
                     last_heartbeat = now
@@ -254,12 +288,19 @@ def main() -> None:
             processor = processors.get(partition)
             if processor is None:
                 state = store.load_processor_state(group_id, source_topic, partition)
-                processor = AuthenticationProcessor.from_state(organization, namespace, rule, state)
+                processor = AttributedAnalysisProcessor.from_state(
+                    organization,
+                    namespace,
+                    registry,
+                    state,
+                    sample_store=sample_store,
+                    model_store=model_store,
+                )
                 processors[partition] = processor
 
             try:
-                event = json.loads(message.value())
-                results = processor.process(event, run_id, registry_version=registry.version)
+                contribution = json.loads(message.value())
+                results = processor.process(contribution, run_id)
             except (json.JSONDecodeError, ValueError) as error:
                 publish_dead_letter(
                     producer,
@@ -316,6 +357,8 @@ def main() -> None:
         store.finish_run(run_id, "failed" if shutdown_error else "stopped", shutdown_error)
         producer.flush(10)
         consumer.close()
+        sample_store.close()
+        model_store.close()
         store.close()
 
 

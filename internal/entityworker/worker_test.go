@@ -204,3 +204,39 @@ func TestWorkerRejectsUndecodableEvent(t *testing.T) {
 		t.Fatal("garbage input must not publish or commit")
 	}
 }
+
+func TestEventSummaryEmbeddedOnOutboundContributions(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"@timestamp": "2026-10-12T01:00:00Z",
+		"event":      map[string]any{"id": "evt:auth1", "outcome": "failure"},
+		"host":       map[string]any{"id": "web01"},
+		"source":     map[string]any{"ip": "10.0.0.7"},
+		"ueba":       map[string]any{"quality": map[string]any{"status": "qualified"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var events []string
+	consumer := &fakeConsumer{messages: []kafka.Message{{Value: body}}, events: &events}
+	writer := &fakeWriter{events: &events}
+	runOnce(t, "org1", consumer, writer, fakeProcessor{attrs: sampleAttrs()})
+	if len(writer.messages) == 0 {
+		t.Fatal("no contributions published")
+	}
+	for _, m := range writer.messages {
+		var c entity.Contribution
+		if err := json.Unmarshal(m.Value, &c); err != nil {
+			t.Fatal(err)
+		}
+		if c.Evidence.Event["outcome"] != "failure" || c.Evidence.Event["host_id"] != "web01" ||
+			c.Evidence.Event["source_ip"] != "10.0.0.7" || c.Evidence.Event["quality"] != "qualified" {
+			t.Fatalf("outbound contribution missing event summary: %v", c.Evidence.Event)
+		}
+	}
+}
+
+func TestEventSummaryOmittedWhenEventCarriesNoSemantics(t *testing.T) {
+	if summary := EventSummary(map[string]any{"event": map[string]any{"id": "evt:abc"}}); summary != nil {
+		t.Fatalf("expected nil summary, got %v", summary)
+	}
+}

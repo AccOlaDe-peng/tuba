@@ -79,11 +79,18 @@ type IdentifierEvidence struct {
 
 // Evidence is the auditable record of an attribution decision: every input
 // identifier with its normalization input/output, the candidates it hit, the
-// adjudication path taken, and the reason code for non-resolved states.
+// adjudication path taken, and the reason code for non-resolved states. Event
+// optionally carries a minimal summary of the source event's detection
+// semantics (outcome/quality/host/source ip); the entity-worker embeds it on
+// outbound attributed-event messages so the F08 analysis pipeline can
+// reconstruct detection input without re-reading the UIM stream (the
+// attributed-event v1 schema is closed at the top level; evidence is the
+// contract-legal carrier). It is nil on stored attribution rows.
 type Evidence struct {
 	Identifiers  []IdentifierEvidence `json:"identifiers"`
 	Adjudication []string             `json:"adjudication"`
 	Reason       string               `json:"reason,omitempty"`
+	Event        map[string]any       `json:"event,omitempty"`
 }
 
 // RoleAttribution is the projection of one event role onto the entity

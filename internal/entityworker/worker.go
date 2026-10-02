@@ -56,6 +56,41 @@ func (p AttributionProcessor) Attribute(ctx context.Context, organizationID stri
 	return attrs, nil
 }
 
+// EventSummary extracts the minimal detection semantics of one UIM event
+// (outcome, quality status, host id, source ip) for the F08 analysis
+// pipeline, which reconstructs its detection input from attributed-event
+// contributions. Keys with no value are omitted; nil means the event carries
+// none of them.
+func EventSummary(event map[string]any) map[string]any {
+	summary := map[string]any{}
+	if meta, ok := event["event"].(map[string]any); ok {
+		if outcome, ok := meta["outcome"].(string); ok && outcome != "" {
+			summary["outcome"] = outcome
+		}
+	}
+	if ueba, ok := event["ueba"].(map[string]any); ok {
+		if quality, ok := ueba["quality"].(map[string]any); ok {
+			if status, ok := quality["status"].(string); ok && status != "" {
+				summary["quality"] = status
+			}
+		}
+	}
+	if host, ok := event["host"].(map[string]any); ok {
+		if id, ok := host["id"].(string); ok && id != "" {
+			summary["host_id"] = id
+		}
+	}
+	if source, ok := event["source"].(map[string]any); ok {
+		if ip, ok := source["ip"].(string); ok && ip != "" {
+			summary["source_ip"] = ip
+		}
+	}
+	if len(summary) == 0 {
+		return nil
+	}
+	return summary
+}
+
 // Worker consumes one UIM domain topic and publishes attributed-event
 // contributions. The input offset is committed only after every contribution
 // of the event has been accepted by the output writer, so a crash redelivers
@@ -94,6 +129,14 @@ func (w Worker) Run(ctx context.Context) error {
 		contributions, err := entity.Contributions(w.Organization, w.Domain, eventID, eventTime, attrs)
 		if err != nil {
 			return err
+		}
+		// Embed the detection event summary on outbound messages only (stored
+		// attribution rows were already persisted without it): the F08
+		// analysis pipeline rebuilds its detection input from this carrier.
+		if summary := EventSummary(event); summary != nil {
+			for i := range contributions {
+				contributions[i].Evidence.Event = summary
+			}
 		}
 		messages := make([]kafka.Message, 0, len(contributions))
 		for _, c := range contributions {

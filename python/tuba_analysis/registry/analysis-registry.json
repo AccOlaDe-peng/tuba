@@ -1,5 +1,5 @@
 {
-  "registry_version": "1.0.0",
+  "registry_version": "1.1.0",
   "features": [
     {
       "id": "authentication.failure-burst",
@@ -23,7 +23,47 @@
         "window_seconds": 1800,
         "allowed_lateness_seconds": 300
       }
+    },
+    {
+      "id": "auth.failure-burst",
+      "version": "1.0.0",
+      "algorithm": "failure_burst",
+      "feature_id": "authentication.failure-burst",
+      "severity": "medium",
+      "parameters": {
+        "threshold": 10,
+        "lookback_seconds": 600,
+        "window_seconds": 300,
+        "allowed_lateness_seconds": 300
+      }
+    },
+    {
+      "id": "auth.baseline-deviation",
+      "version": "1.0.0",
+      "algorithm": "baseline_deviation",
+      "feature_id": "authentication.failure-burst",
+      "severity": "medium",
+      "model_id": "auth.baseline",
+      "parameters": {
+        "z_threshold": 3.0,
+        "lookback_seconds": 1800,
+        "window_seconds": 600,
+        "allowed_lateness_seconds": 300
+      }
     }
   ],
-  "models": []
+  "models": [
+    {
+      "id": "auth.baseline",
+      "version": "1.0.0",
+      "feature_id": "authentication.failure-burst",
+      "feature_version": "1.0.0",
+      "generation": "g1",
+      "training": {
+        "interval_seconds": 86400,
+        "min_samples": 100,
+        "min_complete_days": 14
+      }
+    }
+  ]
 }

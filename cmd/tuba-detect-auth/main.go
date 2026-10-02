@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"flag"
+	"fmt"
 	"log"
 	"os"
 	"time"
@@ -14,11 +15,39 @@ import (
 	"tuba/product/internal/event"
 )
 
+// diagnosticPurpose marks this command as a diagnostic tool only (F08, design
+// baseline §6): the single authoritative analysis scheduling entry is the
+// Python tuba-analysis-worker. This CLI must never be wired into online
+// scheduling or production emission paths; the assembly guard in
+// internal/analysis/assembly_test.go asserts no other binary links the Go
+// detection packages.
+const diagnosticPurpose = "diagnostic"
+
+const diagnosticBanner = "tuba-detect-auth is a DIAGNOSTIC tool only. " +
+	"The authoritative production scheduling entry is the Python tuba-analysis-worker " +
+	"(design baseline §6, F08); this CLI is not part of any online scheduling or emission path."
+
+func summary(from, to string, events, anomalies int, write bool) map[string]any {
+	return map[string]any{
+		"purpose": diagnosticPurpose,
+		"window_start": from,
+		"window_end":   to,
+		"events":       events,
+		"anomalies":    anomalies,
+		"written":      write,
+	}
+}
+
 func main() {
+	flag.Usage = func() {
+		fmt.Fprintf(flag.CommandLine.Output(), "%s\n\nUsage of %s:\n", diagnosticBanner, os.Args[0])
+		flag.PrintDefaults()
+	}
 	from := flag.String("from", "", "inclusive RFC3339 event time")
 	to := flag.String("to", "", "exclusive RFC3339 event time")
-	write := flag.Bool("write", false, "write anomalies to Elasticsearch")
+	write := flag.Bool("write", false, "write anomalies to Elasticsearch (diagnostic inspection only)")
 	flag.Parse()
+	log.Printf("diagnostic use only: %s", diagnosticBanner)
 	start, err := time.Parse(time.RFC3339, *from)
 	if err != nil {
 		log.Fatal("invalid -from")
@@ -83,5 +112,5 @@ func main() {
 			}
 		}
 	}
-	_ = json.NewEncoder(os.Stdout).Encode(map[string]any{"window_start": *from, "window_end": *to, "events": len(events), "anomalies": count, "written": *write})
+	_ = json.NewEncoder(os.Stdout).Encode(summary(*from, *to, len(events), count, *write))
 }
