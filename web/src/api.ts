@@ -522,6 +522,54 @@ export type ReleaseAuditEntry = z.infer<typeof releaseAuditEntrySchema>;
 export type CatalogDataset = z.infer<typeof catalogDatasetSchema>;
 export type ExportJob = z.infer<typeof exportJobSchema>;
 
+export type EntityAggregate = {
+  id: string;
+  type: string;
+  anomalyCount: number;
+  openCount: number;
+  latest: string;
+  highestSeverity: AnomalySummary["severity"];
+};
+
+const severityRank: Record<AnomalySummary["severity"], number> = {
+  low: 0,
+  medium: 1,
+  high: 2,
+  critical: 3,
+};
+
+export function groupEntities(items: AnomalySummary[]): EntityAggregate[] {
+  const byId = new Map<string, EntityAggregate>();
+  for (const item of items) {
+    if (!item.entity.id) continue;
+    const current = byId.get(item.entity.id);
+    if (!current) {
+      byId.set(item.entity.id, {
+        id: item.entity.id,
+        type: item.entity.type,
+        anomalyCount: 1,
+        openCount: item.status === "open" ? 1 : 0,
+        latest: item.timestamp,
+        highestSeverity: item.severity,
+      });
+      continue;
+    }
+    current.anomalyCount += 1;
+    if (item.status === "open") current.openCount += 1;
+    if (item.timestamp > current.latest) current.latest = item.timestamp;
+    if (severityRank[item.severity] > severityRank[current.highestSeverity]) {
+      current.highestSeverity = item.severity;
+    }
+  }
+  return [...byId.values()].sort((a, b) => b.latest.localeCompare(a.latest));
+}
+
+export function anomalyWindow(hours: number): { from: string; to: string } {
+  const to = new Date();
+  const from = new Date(to.getTime() - hours * 3600 * 1000);
+  return { from: from.toISOString(), to: to.toISOString() };
+}
+
 export function queryString(values: Record<string, string | number | undefined>): string {
   const query = new URLSearchParams();
   for (const [key, value] of Object.entries(values)) {

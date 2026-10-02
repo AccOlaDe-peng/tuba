@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  anomalyPageSchema,
   anomalySummarySchema,
+  anomalyWindow,
   buildQueryBody,
   caseSchema,
   casesSchema,
@@ -9,6 +11,7 @@ import {
   collectorsSchema,
   eventProvenance,
   exportsSchema,
+  groupEntities,
   queryResultSchema,
   queryString,
   releasesSchema,
@@ -300,5 +303,63 @@ describe("API contracts", () => {
     });
     expect(value.items[0]!.state).toBe("queued");
     expect(value.items[0]!.row_count).toBeUndefined();
+  });
+
+  it("accepts an entity-filtered anomaly page", () => {
+    const value = anomalyPageSchema.parse({
+      items: [
+        {
+          id: "anom-e1",
+          type: "auth.failure-then-success",
+          severity: "critical",
+          status: "open",
+          timestamp: "2026-10-12T01:00:00Z",
+          score: 0.9,
+          entity: { id: "ent:abc", type: "account" },
+          rule_id: "auth.failure-then-success",
+          rule_version: "1.0.0",
+          summary: "多次失败后成功登录",
+          evidence_count: 6,
+        },
+      ],
+      next_cursor: "c",
+      total: 1,
+    });
+    expect(value.items[0]!.entity.id).toBe("ent:abc");
+    expect(value.total).toBe(1);
+  });
+
+  it("groups anomalies into entity aggregates", () => {
+    const parse = (item: Record<string, unknown>) => anomalySummarySchema.parse(item);
+    const aggregates = groupEntities([
+      parse({
+        id: "a1", type: "t", severity: "low", status: "closed",
+        timestamp: "2026-10-10T00:00:00Z", entity: { id: "ent:1", type: "account" },
+      }),
+      parse({
+        id: "a2", type: "t", severity: "critical", status: "open",
+        timestamp: "2026-10-11T00:00:00Z", entity: { id: "ent:1", type: "account" },
+      }),
+      parse({
+        id: "a3", type: "t", severity: "medium", status: "open",
+        timestamp: "2026-10-12T00:00:00Z", entity: { id: "ent:2", type: "host" },
+      }),
+    ]);
+    expect(aggregates).toHaveLength(2);
+    expect(aggregates[0]).toMatchObject({
+      id: "ent:2", type: "host", anomalyCount: 1, openCount: 1, highestSeverity: "medium",
+    });
+    expect(aggregates[1]).toMatchObject({
+      id: "ent:1", anomalyCount: 2, openCount: 1, highestSeverity: "critical",
+      latest: "2026-10-11T00:00:00Z",
+    });
+    expect(groupEntities([])).toEqual([]);
+  });
+
+  it("builds anomaly windows anchored to now", () => {
+    const { from, to } = anomalyWindow(24);
+    const delta = new Date(to).getTime() - new Date(from).getTime();
+    expect(delta).toBe(24 * 3600 * 1000);
+    expect(new Date(to).getTime()).toBeLessThanOrEqual(Date.now());
   });
 });

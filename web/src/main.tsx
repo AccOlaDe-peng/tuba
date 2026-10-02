@@ -19,6 +19,8 @@ const Overview = load("Overview");
 const Events = load("Events");
 const Anomalies = load("Anomalies");
 const AnomalyDetail = load("AnomalyDetail");
+const Entities = load("Entities");
+const EntityDetail = load("EntityDetail");
 const Cases = load("Cases");
 const CaseDetail = load("CaseDetail");
 const Operations = load("Operations");
@@ -56,6 +58,8 @@ const router = createBrowserRouter(
         { path: "events", element: guard("event:read", <Events />) },
         { path: "anomalies", element: guard("anomaly:read", <Anomalies />) },
         { path: "anomalies/:id", element: guard("anomaly:read", <AnomalyDetail />) },
+        { path: "entities", element: guard("anomaly:read", <Entities />) },
+        { path: "entities/:id", element: guard("anomaly:read", <EntityDetail />) },
         { path: "cases", element: guard("case:read", <Cases />) },
         { path: "cases/:id", element: guard("case:read", <CaseDetail />) },
         { path: "operations", element: guard("operations:read", <Operations />) },

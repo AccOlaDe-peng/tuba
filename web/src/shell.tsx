@@ -24,6 +24,7 @@ const routeTitles: Record<string, string> = {
   overview: "安全总览",
   events: "事件查询",
   anomalies: "异常调查",
+  entities: "实体画像",
   cases: "案件中心",
   operations: "系统运行",
   sources: "来源与采集器",
@@ -136,7 +137,10 @@ export function AppShell() {
           ? [{ key: "/events", label: "事件查询", icon: <FileSearch size={17} /> }]
           : []),
         ...(auth.can("anomaly:read")
-          ? [{ key: "/anomalies", label: "异常调查", icon: <Radar size={17} /> }]
+          ? [
+              { key: "/anomalies", label: "异常调查", icon: <Radar size={17} /> },
+              { key: "/entities", label: "实体画像", icon: <Users size={17} /> },
+            ]
           : []),
         ...(auth.can("case:read")
           ? [{ key: "/cases", label: "案件中心", icon: <FolderKanban size={17} /> }]

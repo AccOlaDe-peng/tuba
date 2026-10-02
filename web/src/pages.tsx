@@ -79,7 +79,10 @@ import {
   statsMetric,
   statsTotal,
   eventProvenance,
+  anomalyWindow,
+  groupEntities,
   type AnomalySummary,
+  type EntityAggregate,
   type Case,
   type CatalogDataset,
   type CollectorSummary,
@@ -3199,6 +3202,393 @@ export function Events() {
           </Form>
         </div>
       </Modal>
+    </div>
+  );
+}
+
+const entityWindowOptions = [
+  { value: 24, label: "最近 24 小时" },
+  { value: 24 * 7, label: "最近 7 天" },
+  { value: 24 * 31, label: "最近 31 天（API 请求上限）" },
+];
+
+export function Entities() {
+  const { token } = useAuth();
+  const navigate = useNavigate();
+  const [hours, setHours] = useState(24 * 7);
+  const [lookup, setLookup] = useState("");
+  const [window, setWindow] = useState(() => anomalyWindow(24 * 7));
+  const anomalies = useInfiniteQuery({
+    queryKey: ["entities", "anomaly-entities", window.from, window.to],
+    initialPageParam: "",
+    queryFn: ({ pageParam, signal }) =>
+      api(
+        `/anomalies${queryString({ limit: 100, cursor: pageParam, from: window.from, to: window.to })}`,
+        token,
+        undefined,
+        anomalyPageSchema,
+        signal,
+      ),
+    getNextPageParam: (last) => last.next_cursor || undefined,
+  });
+  const items = anomalies.data?.pages.flatMap((page) => page.items) ?? [];
+  const total = anomalies.data?.pages[0]?.total ?? items.length;
+  const entities = useMemo(() => groupEntities(items), [items]);
+
+  const columns: TableProps<EntityAggregate>["columns"] = [
+    {
+      title: "实体",
+      key: "entity",
+      render: (_, value) => (
+        <div className="entity-cell">
+          <Link to={`/entities/${encodeURIComponent(value.id)}`}>
+            <strong>{value.id}</strong>
+          </Link>
+          <small>{value.type}</small>
+        </div>
+      ),
+    },
+    {
+      title: "窗口内异常",
+      dataIndex: "anomalyCount",
+      width: 110,
+      render: (value: number) => `${value} 条`,
+    },
+    {
+      title: "开放中",
+      dataIndex: "openCount",
+      width: 90,
+      render: (value: number) => (value > 0 ? <Tag className="signal-tag status-danger">{value}</Tag> : "0"),
+    },
+    {
+      title: "最高严重度",
+      dataIndex: "highestSeverity",
+      width: 110,
+      render: (value: string) => <SeverityTag value={value} />,
+    },
+    {
+      title: "最近异常时间",
+      dataIndex: "latest",
+      width: 130,
+      render: (value: string) => <TimeValue value={value} />,
+    },
+    {
+      title: "",
+      key: "action",
+      width: 52,
+      render: (_, value) => (
+        <Tooltip title="实体详情">
+          <Link aria-label={`实体 ${value.id}`} className="icon-link" to={`/entities/${encodeURIComponent(value.id)}`}>
+            <ChevronRight size={18} />
+          </Link>
+        </Tooltip>
+      ),
+    },
+  ];
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="实体画像"
+        title="Account / Device 实体"
+        description="实体主档、角色关系、特征基线与风险解释的统一入口；后端缺失的区块如实标注，不展示模拟数据。"
+      />
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">01</span>
+            <h2>按实体 ID 直达</h2>
+            <p>已知实体标识（ent:… 或账户/主机名）可直接进入详情</p>
+          </div>
+        </header>
+        <Space.Compact style={{ width: "100%", maxWidth: 560 }}>
+          <Input
+            placeholder="输入实体 ID，如 ent:… 或账户名"
+            value={lookup}
+            onChange={(event) => setLookup(event.target.value)}
+            onPressEnter={() => lookup.trim() && navigate(`/entities/${encodeURIComponent(lookup.trim())}`)}
+          />
+          <Button
+            type="primary"
+            icon={<Search size={16} />}
+            onClick={() => lookup.trim() && navigate(`/entities/${encodeURIComponent(lookup.trim())}`)}
+          >
+            查看详情
+          </Button>
+        </Space.Compact>
+      </section>
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">02</span>
+            <h2>窗口内出现异常的实体</h2>
+            <p>
+              实体主档查询 API 待后端（PG entities 无查询端点）——本列表仅来自所选窗口内异常中的实体引用，
+              不是租户全量实体目录
+            </p>
+          </div>
+          <Space>
+            <Select
+              value={hours}
+              onChange={(value: number) => {
+                setHours(value);
+                setWindow(anomalyWindow(value));
+              }}
+              options={entityWindowOptions}
+              style={{ width: 220 }}
+            />
+            {anomalies.isFetching && <span className="fetching"><RefreshCw size={13} /> 更新中</span>}
+          </Space>
+        </header>
+        {anomalies.isLoading ? (
+          <LoadingBlock rows={6} />
+        ) : anomalies.error ? (
+          <ErrorState message={errorMessage(anomalies.error)} retry={() => void anomalies.refetch()} />
+        ) : entities.length === 0 ? (
+          <EmptyState
+            title="窗口内没有带异常的实体"
+            description="扩大时间窗口或改用上方实体 ID 直达；无异常的实体需待后端实体查询 API 提供。"
+          />
+        ) : (
+          <>
+            <div className="data-summary">
+              <span>窗口内共 {total} 条异常，聚合出 {entities.length} 个实体</span>
+            </div>
+            <Table
+              rowKey="id"
+              columns={columns}
+              dataSource={entities}
+              pagination={false}
+              scroll={{ x: 760 }}
+            />
+            {anomalies.hasNextPage && (
+              <div className="load-more">
+                <Button loading={anomalies.isFetchingNextPage} onClick={() => void anomalies.fetchNextPage()}>
+                  加载更多异常以聚合更多实体
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
+export function EntityDetail() {
+  const { id = "" } = useParams();
+  const entityId = decodeURIComponent(id);
+  const { token } = useAuth();
+  const [hours, setHours] = useState(24 * 7);
+  const [window, setWindow] = useState(() => anomalyWindow(24 * 7));
+  const anomalies = useInfiniteQuery({
+    queryKey: ["entities", entityId, "anomalies", window.from, window.to],
+    enabled: Boolean(entityId),
+    initialPageParam: "",
+    queryFn: ({ pageParam, signal }) =>
+      api(
+        `/anomalies${queryString({ limit: 50, cursor: pageParam, entity: entityId, from: window.from, to: window.to })}`,
+        token,
+        undefined,
+        anomalyPageSchema,
+        signal,
+      ),
+    getNextPageParam: (last) => last.next_cursor || undefined,
+  });
+  const items = anomalies.data?.pages.flatMap((page) => page.items) ?? [];
+  const total = anomalies.data?.pages[0]?.total ?? items.length;
+  const entityType = items.find((item) => item.entity.type)?.entity.type ?? "";
+
+  const findingColumns: TableProps<AnomalySummary>["columns"] = [
+    {
+      title: "风险",
+      dataIndex: "severity",
+      width: 82,
+      render: (value: string) => <SeverityTag value={value} />,
+    },
+    {
+      title: "Finding",
+      key: "finding",
+      render: (_, value) => (
+        <div className="primary-cell">
+          <Link to={`/anomalies/${encodeURIComponent(value.id)}`}>{anomalyTitle(value)}</Link>
+          <small>{value.rule_id}@{value.rule_version} · {value.id.slice(0, 22)}</small>
+        </div>
+      ),
+    },
+    {
+      title: "状态",
+      dataIndex: "status",
+      width: 96,
+      render: (value: string) => <AnomalyStatusTag value={value} />,
+    },
+    {
+      title: "分值",
+      dataIndex: "score",
+      width: 76,
+      render: (value: number) => value.toFixed(2),
+    },
+    {
+      title: "证据",
+      dataIndex: "evidence_count",
+      width: 72,
+      render: (value: number) => `${value} 条`,
+    },
+    {
+      title: "时间",
+      dataIndex: "timestamp",
+      width: 112,
+      render: (value: string) => <TimeValue value={value} />,
+    },
+    {
+      title: "",
+      key: "action",
+      width: 52,
+      render: (_, value) => (
+        <Tooltip title="五要素解释与证据">
+          <Link aria-label={`解释 ${value.id}`} className="icon-link" to={`/anomalies/${encodeURIComponent(value.id)}`}>
+            <ChevronRight size={18} />
+          </Link>
+        </Tooltip>
+      ),
+    },
+  ];
+
+  return (
+    <div className="page-stack">
+      <BackLink to="/entities">返回实体列表</BackLink>
+      <PageHeader
+        eyebrow="实体详情"
+        title={entityId}
+        description="实体主档、角色关系、特征基线、异常与风险解释；仅异常数据当前有真实 API，其余区块如实标注缺口。"
+        actions={entityType ? <Tag className="signal-tag">{entityType}</Tag> : undefined}
+      />
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">01</span>
+            <h2>实体主档</h2>
+            <p>标识、类型、身份空间与来源</p>
+          </div>
+        </header>
+        <Descriptions column={2} size="small" items={[
+          { key: "id", label: "实体标识", children: <code>{entityId}</code> },
+          {
+            key: "type",
+            label: "实体类型",
+            children: entityType || <span className="muted">窗口内无异常引用，无法从既有 API 得知</span>,
+          },
+          {
+            key: "space",
+            label: "身份空间 / 来源",
+            children: (
+              <span className="muted">
+                待后端——实体主档存于控制面 PG entities 表，当前无实体查询 API，UI 不推断
+              </span>
+            ),
+          },
+          {
+            key: "ref",
+            label: "可见性来源",
+            children: "本页信息来自异常（finding）中的实体引用与直接输入的实体 ID",
+          },
+        ]} />
+      </section>
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">02</span>
+            <h2>多角色与关系</h2>
+            <p>归因角色与时态关系区间</p>
+          </div>
+        </header>
+        <EmptyState
+          title="实体/关系查询待后端"
+          description="归因角色在 PG entity_attributions、关系在 PG entity_relations，E05 时态投影在 ES ueba-entities/relations-*——后端尚无实体查询 API，且 Q01 Catalog 未注册这些数据集（SPL 数据集白名单 fail-closed），浏览器无法可达。本区块待后端落地后接入真实数据，不以模拟数据填充。"
+        />
+      </section>
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">03</span>
+            <h2>特征与基线</h2>
+            <p>窗口特征值与基线模型状态（cold_start/ready、训练信息）</p>
+          </div>
+        </header>
+        <EmptyState
+          title="特征/基线查询待后端"
+          description="F03 窗口特征样本与 F04 基线模型状态存于控制面 PG（feature_samples / baseline_models），v2 状态投影在 ES ueba-analysis-feature/baseline-*——均无查询 API 且未注册进 Catalog。cold_start/ready 状态与训练版本信息待后端落地后呈现，不以模拟数据填充。"
+        />
+      </section>
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">04</span>
+            <h2>异常（Finding）列表</h2>
+            <p>该实体窗口内的检测 finding；进入详情查看五要素解释（规则版本、摘要、原因码、证据、分值）</p>
+          </div>
+          <Space>
+            <Select
+              value={hours}
+              onChange={(value: number) => {
+                setHours(value);
+                setWindow(anomalyWindow(value));
+              }}
+              options={entityWindowOptions}
+              style={{ width: 220 }}
+            />
+            {anomalies.isFetching && <span className="fetching"><RefreshCw size={13} /> 更新中</span>}
+          </Space>
+        </header>
+        {anomalies.isLoading ? (
+          <LoadingBlock rows={6} />
+        ) : anomalies.error ? (
+          <ErrorState message={errorMessage(anomalies.error)} retry={() => void anomalies.refetch()} />
+        ) : items.length === 0 ? (
+          <EmptyState
+            title="窗口内该实体没有异常"
+            description="扩大时间窗口重试；该实体可能尚未触发检测，或实体 ID 与异常引用中的标识不一致。"
+          />
+        ) : (
+          <>
+            <div className="data-summary">
+              <span>窗口内共 {total} 条 finding</span>
+            </div>
+            <Table
+              rowKey="id"
+              columns={findingColumns}
+              dataSource={items}
+              pagination={false}
+              scroll={{ x: 860 }}
+            />
+            {anomalies.hasNextPage && (
+              <div className="load-more">
+                <Button loading={anomalies.isFetchingNextPage} onClick={() => void anomalies.fetchNextPage()}>
+                  加载更多
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">05</span>
+            <h2>风险解释</h2>
+            <p>当前风险分、贡献构成与衰减参数</p>
+          </div>
+        </header>
+        <EmptyState
+          title="风险投影查询待后端"
+          description="R01/R02 的 entity_risk 投影（risk_score、rc: 不可变贡献引用、decay half_life=7d/zero_after=30d、compute_version 1.0.0、updated_at）经 v2 信封落在 ES ueba-analysis-entity_risk-<ns> 状态索引——后端无风险查询 API，且该数据集未注册进 Q01 Catalog（SPL 不可达）。当前风险分与贡献构成待后端落地后呈现，不以模拟数据填充。"
+        />
+      </section>
     </div>
   );
 }
