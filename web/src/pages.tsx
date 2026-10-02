@@ -335,7 +335,17 @@ export function FeedbackMetricsPanel() {
     queryFn: ({ signal }) => api("/analysis/feedback/metrics", token, undefined, feedbackMetricsSchema, signal),
   });
   if (!enabled) return null;
-  if (query.isLoading || query.error || !query.data || query.data.rules.length === 0) return null;
+  if (query.error) {
+    return (
+      <section className="panel">
+        <header className="panel-header">
+          <h3>规则反馈质量</h3>
+        </header>
+        <ErrorState message={errorMessage(query.error)} retry={() => void query.refetch()} />
+      </section>
+    );
+  }
+  if (query.isLoading || !query.data || query.data.rules.length === 0) return null;
   return (
     <section className="panel">
       <header className="panel-header">
@@ -2379,6 +2389,8 @@ export function Quality() {
   const quarantineRows = quarantineAgg.data ? statsBuckets(quarantineAgg.data) : [];
   const quarantineUnavailable =
     quarantineAgg.error instanceof APIError && quarantineAgg.error.status === 503;
+  const qualityError = qualityQueries.find((query) => query.error)?.error;
+  const reasonsError = reasonQueries.find((query) => query.error)?.error;
   const loadingQuality = catalog.isLoading || qualityQueries.some((query) => query.isLoading);
 
   return (
@@ -2411,6 +2423,11 @@ export function Quality() {
           <ErrorState message={errorMessage(catalog.error)} retry={() => void catalog.refetch()} />
         ) : loadingQuality ? (
           <LoadingBlock rows={6} />
+        ) : qualityError ? (
+          <ErrorState
+            message={errorMessage(qualityError)}
+            retry={() => void qualityQueries.forEach((query) => void query.refetch())}
+          />
         ) : (
           <Table
             rowKey="domain"
@@ -2465,6 +2482,11 @@ export function Quality() {
           </header>
           {reasonQueries.some((query) => query.isLoading) ? (
             <LoadingBlock rows={4} />
+          ) : reasonsError ? (
+            <ErrorState
+              message={errorMessage(reasonsError)}
+              retry={() => void reasonQueries.forEach((query) => void query.refetch())}
+            />
           ) : reasonRows.length ? (
             <Table
               rowKey="reason"

@@ -71,17 +71,20 @@ const verdictLabels = {
 } as const;
 
 export function SeverityTag({ value }: { value: string }) {
-  const meta = severityMeta[value as keyof typeof severityMeta] ?? severityMeta.medium;
+  const meta = severityMeta[value as keyof typeof severityMeta];
+  if (!meta) return <Tag className="signal-tag status-muted">{value || "未知"}</Tag>;
   return <Tag className={`signal-tag severity-${meta.className}`}>{meta.label}</Tag>;
 }
 
 export function AnomalyStatusTag({ value }: { value: string }) {
-  const meta = anomalyStatusMeta[value as keyof typeof anomalyStatusMeta] ?? anomalyStatusMeta.open;
+  const meta = anomalyStatusMeta[value as keyof typeof anomalyStatusMeta];
+  if (!meta) return <Tag className="signal-tag status-muted">{value || "未知"}</Tag>;
   return <Tag className={`signal-tag status-${meta.className}`}>{meta.label}</Tag>;
 }
 
 export function CaseStatusTag({ value }: { value: string }) {
-  const meta = caseStatusMeta[value as keyof typeof caseStatusMeta] ?? caseStatusMeta.open;
+  const meta = caseStatusMeta[value as keyof typeof caseStatusMeta];
+  if (!meta) return <Tag className="signal-tag status-muted">{value || "未知"}</Tag>;
   return <Tag className={`signal-tag status-${meta.className}`}>{meta.label}</Tag>;
 }
 
