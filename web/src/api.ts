@@ -279,6 +279,151 @@ export const collectorsSchema = z.object({
   items: z.array(collectorSummarySchema),
 });
 
+export const releaseAssetSchema = z.object({
+  kind: z.string(),
+  asset_id: z.string(),
+  version: z.string().optional().default(""),
+  path: z.string().optional().default(""),
+  sha256: z.string().optional().default(""),
+  dependencies: z.array(z.string()).optional().default([]),
+});
+
+export const releaseManifestSchema = z.object({
+  schema_version: z.string().optional().default(""),
+  release_id: z.string().optional().default(""),
+  version: z.string().optional().default(""),
+  assets: z.array(releaseAssetSchema).optional().default([]),
+  compatibility: z.record(z.string(), z.string()).optional().default({}),
+});
+
+export const releaseSchema = z.object({
+  id: z.string(),
+  version: z.string(),
+  manifest: releaseManifestSchema,
+  sha256: z.string(),
+  state: z.string(),
+  created_at: z.string(),
+  activated_at: z.string().nullable().optional(),
+});
+
+export const releasesSchema = z.object({
+  items: z.array(releaseSchema),
+});
+
+export const releaseAuditEntrySchema = z.object({
+  id: z.number(),
+  action: z.string(),
+  actor_subject: z.string().optional().default(""),
+  request_id: z.string().optional().default(""),
+  occurred_at: z.string(),
+  before_state: z.record(z.string(), z.unknown()).nullable().optional(),
+  after_state: z.record(z.string(), z.unknown()).nullable().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
+export const releaseAuditSchema = z.object({
+  items: z.array(releaseAuditEntrySchema),
+});
+
+export const catalogFieldSchema = z.object({
+  name: z.string(),
+  type: z.string(),
+  sensitivity: z.string(),
+  searchable: z.boolean(),
+  aggregable: z.boolean(),
+});
+
+export const catalogDatasetSchema = z.object({
+  name: z.string(),
+  kind: z.string(),
+  active_generation: z.string(),
+  index_pattern: z.string(),
+  quality_statuses: z.array(z.string()).optional().default([]),
+  fields: z.array(catalogFieldSchema).optional().default([]),
+});
+
+export const catalogSchema = z.object({
+  catalog_version: z.number().int().nonnegative(),
+  active_generation: z.string(),
+  max_time_range_day: z.number().int().positive(),
+  datasets: z.array(catalogDatasetSchema),
+});
+
+export const queryResultSchema = z.object({
+  mode: z.string(),
+  items: z.array(z.record(z.string(), z.unknown())).optional().default([]),
+  next_cursor: z.string().optional().default(""),
+  total: z.number().int().nonnegative().optional().default(0),
+  aggregations: z.record(z.string(), z.unknown()).optional(),
+});
+
+export type QueryResult = z.infer<typeof queryResultSchema>;
+
+export function runQuery(
+  token: string | undefined,
+  query: string,
+  from: string | undefined,
+  signal?: AbortSignal,
+): Promise<QueryResult> {
+  return api(
+    "/query",
+    token,
+    { method: "POST", body: JSON.stringify(from ? { query, from } : { query }) },
+    queryResultSchema,
+    signal,
+  );
+}
+
+export type StatsBucket = { key: Record<string, string>; count: number };
+
+export function statsBuckets(result: QueryResult): StatsBucket[] {
+  const agg = result.aggregations?.["buckets"] as
+    | { buckets?: Array<{ key?: Record<string, unknown>; doc_count?: number }> }
+    | undefined;
+  return (agg?.buckets ?? []).map((bucket) => {
+    const key: Record<string, string> = {};
+    for (const [field, value] of Object.entries(bucket.key ?? {})) {
+      key[field] = String(value);
+    }
+    return { key, count: bucket.doc_count ?? 0 };
+  });
+}
+
+export function statsTotal(result: QueryResult): number {
+  const agg = result.aggregations?.["count"] as { value?: number } | undefined;
+  return agg?.value ?? 0;
+}
+
+export const exportJobSchema = z.object({
+  id: z.string(),
+  job_id: z.string(),
+  dataset: z.string(),
+  format: z.string(),
+  query: z.string(),
+  from: z.string(),
+  to: z.string(),
+  row_limit: z.number().int().positive(),
+  byte_limit: z.number().int().positive(),
+  include_sensitive: z.boolean(),
+  include_raw: z.boolean(),
+  state: z.string(),
+  retention_from: z.string().nullable().optional(),
+  limit_reached: z.string().optional().default(""),
+  file_sha256: z.string().optional().default(""),
+  row_count: z.number().int().nonnegative().nullable().optional(),
+  byte_count: z.number().int().nonnegative().nullable().optional(),
+  expires_at: z.string().nullable().optional(),
+  downloaded_at: z.string().nullable().optional(),
+  completed_at: z.string().nullable().optional(),
+  error: z.string().optional().default(""),
+  created_at: z.string(),
+});
+
+export const exportsSchema = z.object({
+  items: z.array(exportJobSchema),
+  next_cursor: z.string().optional().default(""),
+});
+
 export const analysisFeedbackSchema = z.object({
   id: z.number(),
   feedback_type: z.enum(["true_positive", "false_positive", "false_negative", "inconclusive"]),
@@ -302,6 +447,10 @@ export type CollectorSummary = z.infer<typeof collectorSummarySchema>;
 export type Overview = z.infer<typeof overviewSchema>;
 export type OperationsStatus = z.infer<typeof operationsStatusSchema>;
 export type AnalysisFeedback = z.infer<typeof analysisFeedbackSchema>;
+export type Release = z.infer<typeof releaseSchema>;
+export type ReleaseAuditEntry = z.infer<typeof releaseAuditEntrySchema>;
+export type CatalogDataset = z.infer<typeof catalogDatasetSchema>;
+export type ExportJob = z.infer<typeof exportJobSchema>;
 
 export function queryString(values: Record<string, string | number | undefined>): string {
   const query = new URLSearchParams();

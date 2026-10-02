@@ -22,6 +22,9 @@ const Cases = load("Cases");
 const CaseDetail = load("CaseDetail");
 const Operations = load("Operations");
 const Sources = load("Sources");
+const Quality = load("Quality");
+const Releases = load("Releases");
+const Jobs = load("Jobs");
 const Access = load("Access");
 
 function wait(value: ReactNode) {
@@ -55,6 +58,9 @@ const router = createBrowserRouter(
         { path: "cases/:id", element: guard("case:read", <CaseDetail />) },
         { path: "operations", element: guard("operations:read", <Operations />) },
         { path: "sources", element: guard("source:manage", <Sources />) },
+        { path: "quality", element: guard("event:read", <Quality />) },
+        { path: "releases", element: guard("release:read", <Releases />) },
+        { path: "jobs", element: guard("event:read", <Jobs />) },
         { path: "access", element: guard("user:manage", <Access />) },
       ],
     },

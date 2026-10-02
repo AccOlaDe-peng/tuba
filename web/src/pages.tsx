@@ -19,6 +19,7 @@ import type { TableProps } from "antd";
 import {
   useInfiniteQuery,
   useMutation,
+  useQueries,
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
@@ -47,6 +48,7 @@ import {
 import { Link, useNavigate, useParams } from "react-router-dom";
 
 import {
+  APIError,
   api,
   analysisFeedbackSchema,
   anomalyDetailSchema,
@@ -54,18 +56,28 @@ import {
   caseActivityPageSchema,
   caseSchema,
   casesSchema,
+  catalogSchema,
   evidencePageSchema,
   collectorsSchema,
+  exportsSchema,
   formatDuration,
   membersSchema,
   operationsStatusSchema,
   overviewSchema,
   queryString,
+  releaseAuditSchema,
+  releaseSchema,
+  releasesSchema,
+  runQuery,
   sourcesSchema,
+  statsBuckets,
+  statsTotal,
   type AnomalySummary,
   type Case,
   type CollectorSummary,
+  type ExportJob,
   type Member,
+  type Release,
   type SourceInstance,
 } from "./api";
 import { useAuth } from "./auth";
@@ -1430,6 +1442,7 @@ function StateTag({ meta, value }: { meta: Record<string, { label: string; class
 
 export function Sources() {
   const { token } = useAuth();
+  const [selected, setSelected] = useState<string>();
   const sources = useQuery({
     queryKey: ["sources"],
     queryFn: ({ signal }) => api("/sources", token, undefined, sourcesSchema, signal),
@@ -1638,6 +1651,14 @@ export function Sources() {
       width: 112,
       render: (value: string) => <TimeValue value={value} />,
     },
+    {
+      title: "",
+      key: "action",
+      width: 80,
+      render: (_, value) => (
+        <Button type="link" onClick={() => setSelected(value.id)}>详情</Button>
+      ),
+    },
   ];
 
   return (
@@ -1696,6 +1717,773 @@ export function Sources() {
           />
         ) : (
           <EmptyState title="暂无来源" description="通过来源注册 API 建立来源后会出现在这里。" />
+        )}
+      </section>
+      <SourceDetailDrawer
+        source={sources.data?.items.find((item) => item.id === selected)}
+        signal={selected ? collectionBySource.get(selected) : undefined}
+        onClose={() => setSelected(undefined)}
+      />
+    </div>
+  );
+}
+
+function SourceDetailDrawer({
+  source,
+  signal,
+  onClose,
+}: {
+  source?: SourceInstance;
+  signal?: { collector: CollectorSummary; status: NonNullable<CollectorSummary["heartbeat"]>["sources"][number] };
+  onClose: () => void;
+}) {
+  const { token } = useAuth();
+  const from = useMemo(() => new Date(Date.now() - 24 * 3600_000).toISOString(), []);
+  const contextId = source?.source_context_id ?? "";
+  const dip = useQuery({
+    queryKey: ["source", "dip", contextId],
+    enabled: Boolean(source && contextId),
+    queryFn: ({ signal: abort }) =>
+      runQuery(
+        token,
+        `search raw WHERE ueba.provenance.source_context_id=${contextId} | stats count`,
+        from,
+        abort,
+      ),
+  });
+
+  return (
+    <Drawer
+      title={source ? `${source.vendor_product} / ${source.vendor_dataset}` : "来源详情"}
+      open={Boolean(source)}
+      onClose={onClose}
+      size={480}
+    >
+      {source && (
+        <div className="page-stack">
+          <Descriptions
+            column={1}
+            size="small"
+            items={[
+              { key: "id", label: "来源 ID", children: <code>{source.id}</code> },
+              { key: "vendor", label: "厂商", children: source.vendor_name },
+              { key: "epoch", label: "Source epoch", children: source.source_epoch },
+              { key: "state", label: "管理状态", children: <StateTag meta={sourceStateMeta} value={source.state} /> },
+              { key: "rate", label: "限速", children: `${source.rate_limit} 条/秒` },
+              { key: "release", label: "绑定 Release", children: source.release_id || "未绑定" },
+              { key: "ctx", label: "Source context", children: contextId ? <code>{contextId}</code> : "未登记" },
+              { key: "created", label: "创建时间", children: <TimeValue value={source.created_at} /> },
+              { key: "updated", label: "最近更新", children: <TimeValue value={source.updated_at} /> },
+            ]}
+          />
+          <article className="panel">
+            <header className="panel-head">
+              <div>
+                <span className="panel-index">DIP</span>
+                <h2>解析/规范化链路信号</h2>
+                <p>采集面上报与原始事件入库均为实时查询，不做推断</p>
+              </div>
+            </header>
+            <div className="dependency-list">
+              <div>
+                <span className={`health-indicator status-${signal ? (signal.collector.online && signal.status.state === "running" ? "ok" : "degraded") : "unknown"}`} />
+                <div>
+                  <strong>采集面</strong>
+                  <small>
+                    {signal
+                      ? `${signal.collector.hostname || signal.collector.id} · 读取 ${signal.status.events_read} / 发送 ${signal.status.events_sent} / 丢弃 ${signal.status.events_drop}`
+                      : "采集器未上报该来源"}
+                  </small>
+                </div>
+                <code>{signal?.status.last_error ? "有错误" : "—"}</code>
+              </div>
+              <div>
+                <span className={`health-indicator status-${dip.data && statsTotal(dip.data) > 0 ? "ok" : dip.data ? "degraded" : "unknown"}`} />
+                <div>
+                  <strong>原始事件入库（最近 24 小时）</strong>
+                  <small>
+                    {dip.isLoading
+                      ? "查询中"
+                      : dip.error
+                        ? errorMessage(dip.error)
+                        : contextId
+                          ? dip.data
+                            ? `原始数据域内 ${statsTotal(dip.data)} 条该上下文事件`
+                            : "尚无查询结果"
+                          : "无 source context，无法关联原始事件"}
+                  </small>
+                </div>
+                <code>{dip.data ? `${statsTotal(dip.data)} 条` : "—"}</code>
+              </div>
+            </div>
+          </article>
+        </div>
+      )}
+    </Drawer>
+  );
+}
+
+const qualityRanges = [
+  { value: "24h", label: "最近 24 小时", hours: 24 },
+  { value: "7d", label: "最近 7 天", hours: 24 * 7 },
+  { value: "30d", label: "最近 30 天", hours: 24 * 30 },
+];
+
+const releaseStateMeta: Record<string, { label: string; className: string }> = {
+  draft: { label: "草稿", className: "progress" },
+  validated: { label: "已验证", className: "progress" },
+  staged: { label: "已预置", className: "progress" },
+  active: { label: "已激活", className: "open" },
+};
+
+const jobStateMeta: Record<string, { label: string; className: string }> = {
+  queued: { label: "排队中", className: "progress" },
+  running: { label: "运行中", className: "progress" },
+  succeeded: { label: "已完成", className: "open" },
+  completed: { label: "已完成", className: "open" },
+  failed: { label: "失败", className: "danger" },
+  cancelled: { label: "已取消", className: "muted" },
+  expired: { label: "已过期", className: "muted" },
+};
+
+export function Quality() {
+  const { token, can } = useAuth();
+  const [range, setRange] = useState("24h");
+  const hours = qualityRanges.find((item) => item.value === range)?.hours ?? 24;
+  const from = useMemo(() => new Date(Date.now() - hours * 3600_000).toISOString(), [hours]);
+
+  const catalog = useQuery({
+    queryKey: ["catalog"],
+    queryFn: ({ signal }) => api("/catalog", token, undefined, catalogSchema, signal),
+  });
+  const domains = useMemo(
+    () => (catalog.data?.datasets ?? []).filter((dataset) => dataset.kind === "uim-domain"),
+    [catalog.data],
+  );
+  const sources = useQuery({
+    queryKey: ["sources"],
+    enabled: can("source:manage"),
+    queryFn: ({ signal }) => api("/sources", token, undefined, sourcesSchema, signal),
+  });
+  const sourceByContext = useMemo(() => {
+    const map = new Map<string, SourceInstance>();
+    for (const source of sources.data?.items ?? []) {
+      if (source.source_context_id) map.set(source.source_context_id, source);
+    }
+    return map;
+  }, [sources.data]);
+
+  const qualityQueries = useQueries({
+    queries: domains.map((domain) => ({
+      queryKey: ["quality", "status", domain.name, range],
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        runQuery(token, `search ${domain.name} | stats count BY ueba.quality.status`, from, signal),
+    })),
+  });
+  const reasonQueries = useQueries({
+    queries: domains.map((domain) => ({
+      queryKey: ["quality", "reasons", domain.name, range],
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        runQuery(
+          token,
+          `search ${domain.name} WHERE ueba.quality.status=partial | stats count BY ueba.quality.reasons`,
+          from,
+          signal,
+        ),
+    })),
+  });
+  const dip = useQuery({
+    queryKey: ["quality", "dip", range],
+    queryFn: ({ signal }) =>
+      runQuery(token, "search raw | stats count BY ueba.provenance.source_context_id", from, signal),
+  });
+  const quarantineAgg = useQuery({
+    queryKey: ["quarantine", "agg", range],
+    retry: false,
+    queryFn: ({ signal }) =>
+      runQuery(token, "search quarantine | stats count BY quarantine.stage,quarantine.reason", from, signal),
+  });
+  const quarantineEvents = useQuery({
+    queryKey: ["quarantine", "events", range],
+    retry: false,
+    queryFn: ({ signal }) => runQuery(token, "search quarantine | head 50", from, signal),
+  });
+
+  const qualityRows = domains.map((domain, index) => {
+    const result = qualityQueries[index]?.data;
+    const buckets = result ? statsBuckets(result) : [];
+    const qualified = buckets.find((bucket) => bucket.key["ueba.quality.status"] === "qualified")?.count ?? 0;
+    const partial = buckets.find((bucket) => bucket.key["ueba.quality.status"] === "partial")?.count ?? 0;
+    return { domain: domain.name, qualified, partial, total: qualified + partial };
+  });
+  const reasonRows = useMemo(() => {
+    const totals = new Map<string, number>();
+    for (const query of reasonQueries) {
+      if (!query.data) continue;
+      for (const bucket of statsBuckets(query.data)) {
+        const reason = bucket.key["ueba.quality.reasons"] ?? "unknown";
+        totals.set(reason, (totals.get(reason) ?? 0) + bucket.count);
+      }
+    }
+    return [...totals.entries()]
+      .map(([reason, count]) => ({ reason, count }))
+      .sort((a, b) => b.count - a.count);
+  }, [reasonQueries]);
+  const dipRows = dip.data ? statsBuckets(dip.data) : [];
+  const quarantineRows = quarantineAgg.data ? statsBuckets(quarantineAgg.data) : [];
+  const quarantineUnavailable =
+    quarantineAgg.error instanceof APIError && quarantineAgg.error.status === 503;
+  const loadingQuality = catalog.isLoading || qualityQueries.some((query) => query.isLoading);
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="数据治理"
+        title="数据质量与隔离"
+        description="UIM 质量分布、质量原因、DIP 摄入信号与隔离区内容，全部来自实时 SPL 查询。"
+        actions={
+          <Select
+            value={range}
+            onChange={setRange}
+            options={qualityRanges.map((item) => ({ value: item.value, label: item.label }))}
+          />
+        }
+      />
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">01</span>
+            <h2>UIM 质量分布</h2>
+            <p>各域 qualified/partial 事件计数（active generation g1，服务端强制）</p>
+          </div>
+          {(qualityQueries.some((query) => query.isFetching) || dip.isFetching) && (
+            <span className="fetching"><RefreshCw size={13} /> 更新中</span>
+          )}
+        </header>
+        {catalog.error ? (
+          <ErrorState message={errorMessage(catalog.error)} retry={() => void catalog.refetch()} />
+        ) : loadingQuality ? (
+          <LoadingBlock rows={6} />
+        ) : (
+          <Table
+            rowKey="domain"
+            pagination={false}
+            dataSource={qualityRows}
+            columns={[
+              { title: "UIM 域", dataIndex: "domain" },
+              {
+                title: "qualified",
+                dataIndex: "qualified",
+                width: 120,
+                render: (value: number) => value.toLocaleString("zh-CN"),
+              },
+              {
+                title: "partial",
+                dataIndex: "partial",
+                width: 120,
+                render: (value: number) => value.toLocaleString("zh-CN"),
+              },
+              {
+                title: "合计",
+                dataIndex: "total",
+                width: 120,
+                render: (value: number) => value.toLocaleString("zh-CN"),
+              },
+              {
+                title: "质量",
+                key: "tone",
+                width: 110,
+                render: (_, row) =>
+                  row.total === 0 ? (
+                    <Tag className="signal-tag status-muted">无数据</Tag>
+                  ) : row.partial > 0 ? (
+                    <Tag className="signal-tag status-progress">有 partial</Tag>
+                  ) : (
+                    <Tag className="signal-tag status-open">全部合格</Tag>
+                  ),
+              },
+            ]}
+          />
+        )}
+      </section>
+
+      <section className="dashboard-grid">
+        <article className="panel">
+          <header className="panel-head">
+            <div>
+              <span className="panel-index">02</span>
+              <h2>质量原因</h2>
+              <p>各域 partial 事件的 ueba.quality.reasons 聚合</p>
+            </div>
+          </header>
+          {reasonQueries.some((query) => query.isLoading) ? (
+            <LoadingBlock rows={4} />
+          ) : reasonRows.length ? (
+            <Table
+              rowKey="reason"
+              pagination={false}
+              dataSource={reasonRows}
+              columns={[
+                { title: "原因码", dataIndex: "reason", render: (value: string) => <code>{value}</code> },
+                {
+                  title: "事件数",
+                  dataIndex: "count",
+                  width: 110,
+                  render: (value: number) => value.toLocaleString("zh-CN"),
+                },
+              ]}
+            />
+          ) : (
+            <EmptyState title="无 partial 事件" description="当前时间范围内没有质量降级事件。" />
+          )}
+        </article>
+
+        <article className="panel">
+          <header className="panel-head">
+            <div>
+              <span className="panel-index">03</span>
+              <h2>DIP 摄入信号</h2>
+              <p>原始数据域按 source context 计数，反映解析/规范化链路是否有数据流入</p>
+            </div>
+          </header>
+          {dip.isLoading ? (
+            <LoadingBlock rows={4} />
+          ) : dip.error ? (
+            <ErrorState message={errorMessage(dip.error)} retry={() => void dip.refetch()} />
+          ) : dipRows.length ? (
+            <Table
+              rowKey={(row) => row.key["ueba.provenance.source_context_id"] ?? "unknown"}
+              pagination={false}
+              dataSource={dipRows}
+              columns={[
+                {
+                  title: "Source context",
+                  key: "ctx",
+                  render: (_, row) => {
+                    const contextId = row.key["ueba.provenance.source_context_id"] ?? "";
+                    const bound = sourceByContext.get(contextId);
+                    return (
+                      <div className="primary-cell">
+                        <code>{contextId}</code>
+                        {bound && <small>{bound.vendor_product} / {bound.vendor_dataset}</small>}
+                      </div>
+                    );
+                  },
+                },
+                {
+                  title: "原始事件数",
+                  dataIndex: "count",
+                  width: 120,
+                  render: (value: number) => value.toLocaleString("zh-CN"),
+                },
+                {
+                  title: "链路",
+                  key: "health",
+                  width: 100,
+                  render: (_, row) =>
+                    row.count > 0 ? (
+                      <Tag className="signal-tag status-open">有数据流入</Tag>
+                    ) : (
+                      <Tag className="signal-tag status-progress">无数据</Tag>
+                    ),
+                },
+              ]}
+            />
+          ) : (
+            <EmptyState
+              title="范围内无原始事件"
+              description="原始数据域在当前时间范围没有事件，或已过保留期被清理。"
+            />
+          )}
+        </article>
+      </section>
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">04</span>
+            <h2>隔离区（Quarantine）</h2>
+            <p>按阶段/原因聚合与最近隔离记录；原始载荷不在界面展示</p>
+          </div>
+          {(quarantineAgg.isFetching || quarantineEvents.isFetching) && (
+            <span className="fetching"><RefreshCw size={13} /> 更新中</span>
+          )}
+        </header>
+        {quarantineUnavailable ? (
+          <EmptyState
+            title="隔离索引暂不可用"
+            description="隔离数据域的索引尚未创建或事件存储不可用；出现隔离事件后会自动可查。"
+          />
+        ) : quarantineAgg.error ? (
+          <ErrorState message={errorMessage(quarantineAgg.error)} retry={() => void quarantineAgg.refetch()} />
+        ) : (
+          <>
+            {quarantineRows.length ? (
+              <Table
+                rowKey={(row) => `${row.key["quarantine.stage"]}-${row.key["quarantine.reason"]}`}
+                pagination={false}
+                dataSource={quarantineRows}
+                columns={[
+                  { title: "阶段", key: "stage", width: 110, render: (_, row) => <Tag className="signal-tag">{row.key["quarantine.stage"]}</Tag> },
+                  { title: "原因", key: "reason", render: (_, row) => <code>{row.key["quarantine.reason"]}</code> },
+                  { title: "事件数", dataIndex: "count", width: 110, render: (value: number) => value.toLocaleString("zh-CN") },
+                ]}
+              />
+            ) : (
+              <EmptyState title="范围内无隔离事件" description="当前时间范围内没有进入隔离区的事件。" />
+            )}
+            {quarantineEvents.data && quarantineEvents.data.items.length > 0 && (
+              <Table
+                className="compact-table"
+                rowKey={(_, index) => String(index)}
+                pagination={false}
+                dataSource={quarantineEvents.data.items}
+                columns={[
+                  {
+                    title: "时间",
+                    key: "ts",
+                    width: 150,
+                    render: (_, item) => {
+                      const value = item["@timestamp"];
+                      return typeof value === "string" ? <TimeValue value={value} /> : "—";
+                    },
+                  },
+                  {
+                    title: "阶段",
+                    key: "stage",
+                    width: 100,
+                    render: (_, item) => String((item["quarantine"] as Record<string, unknown> | undefined)?.["stage"] ?? "—"),
+                  },
+                  {
+                    title: "原因",
+                    key: "reason",
+                    render: (_, item) => (
+                      <code>{String((item["quarantine"] as Record<string, unknown> | undefined)?.["reason"] ?? "—")}</code>
+                    ),
+                  },
+                ]}
+              />
+            )}
+          </>
+        )}
+      </section>
+    </div>
+  );
+}
+
+export function Releases() {
+  const { token, can } = useAuth();
+  const { message } = AntApp.useApp();
+  const queryClient = useQueryClient();
+  const [selected, setSelected] = useState<string>();
+  const releases = useQuery({
+    queryKey: ["releases"],
+    queryFn: ({ signal }) => api("/releases", token, undefined, releasesSchema, signal),
+  });
+  const current = releases.data?.items.find((item) => item.id === selected);
+  const audit = useQuery({
+    queryKey: ["release", selected, "audit"],
+    enabled: Boolean(selected),
+    queryFn: ({ signal }) =>
+      api(`/releases/${encodeURIComponent(selected ?? "")}/audit`, token, undefined, releaseAuditSchema, signal),
+  });
+  const transition = useMutation({
+    mutationFn: ({ id, action }: { id: string; action: "validate" | "stage" | "activate" }) =>
+      api<Release>(`/releases/${encodeURIComponent(id)}/${action}`, token, { method: "POST" }, releaseSchema),
+    onSuccess: (value) => {
+      void message.success(`Release 已推进到 ${value.state}`);
+      void queryClient.invalidateQueries({ queryKey: ["releases"] });
+      void queryClient.invalidateQueries({ queryKey: ["release", value.id, "audit"] });
+    },
+    onError: (error) => void message.error(errorMessage(error)),
+  });
+  const manageable = can("release:manage");
+  const nextAction: Record<string, { action: "validate" | "stage" | "activate"; label: string }> = {
+    draft: { action: "validate", label: "校验" },
+    validated: { action: "stage", label: "预置" },
+    staged: { action: "activate", label: "激活" },
+  };
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="发布治理"
+        title="版本发布"
+        description="Release bundle 的登记状态与 draft→validated→staged→active 推进链，全部操作写审计。"
+      />
+      <section className="data-panel">
+        <div className="data-summary">
+          <span>{releases.data?.items.length ?? 0} 个 release</span>
+          {releases.isFetching && <span className="fetching"><RefreshCw size={13} /> 更新中</span>}
+        </div>
+        {releases.isLoading ? (
+          <LoadingBlock rows={5} />
+        ) : releases.error ? (
+          <ErrorState message={errorMessage(releases.error)} retry={() => void releases.refetch()} />
+        ) : releases.data?.items.length ? (
+          <Table
+            rowKey="id"
+            pagination={false}
+            dataSource={releases.data.items}
+            columns={[
+              {
+                title: "Release",
+                key: "release",
+                render: (_, value) => (
+                  <div className="primary-cell">
+                    <strong>{value.id}</strong>
+                    <small>版本 {value.version} · sha256 {value.sha256.slice(0, 16)}…</small>
+                  </div>
+                ),
+              },
+              {
+                title: "状态",
+                dataIndex: "state",
+                width: 110,
+                render: (value: string) => <StateTag meta={releaseStateMeta} value={value} />,
+              },
+              {
+                title: "资产",
+                key: "assets",
+                width: 90,
+                render: (_, value) => `${value.manifest.assets.length} 项`,
+              },
+              {
+                title: "创建时间",
+                dataIndex: "created_at",
+                width: 120,
+                render: (value: string) => <TimeValue value={value} />,
+              },
+              {
+                title: "激活时间",
+                dataIndex: "activated_at",
+                width: 120,
+                render: (value: string | null | undefined) =>
+                  value ? <TimeValue value={value} /> : <span className="muted">未激活</span>,
+              },
+              {
+                title: "",
+                key: "action",
+                width: 170,
+                render: (_, value) => {
+                  const next = nextAction[value.state];
+                  return (
+                    <Space size={4}>
+                      <Button type="link" onClick={() => setSelected(value.id)}>详情</Button>
+                      {manageable && next && (
+                        <Button
+                          type="link"
+                          loading={transition.isPending}
+                          onClick={() => transition.mutate({ id: value.id, action: next.action })}
+                        >
+                          {next.label}
+                        </Button>
+                      )}
+                    </Space>
+                  );
+                },
+              },
+            ]}
+          />
+        ) : (
+          <EmptyState title="暂无 release" description="Release 登记并推进后会出现在这里。" />
+        )}
+      </section>
+
+      <Drawer
+        title={current ? `Release ${current.id}` : "Release 详情"}
+        open={Boolean(current)}
+        onClose={() => setSelected(undefined)}
+        size={560}
+      >
+        {current && (
+          <div className="page-stack">
+            <Descriptions
+              column={1}
+              size="small"
+              items={[
+                { key: "id", label: "Release ID", children: <code>{current.id}</code> },
+                { key: "version", label: "版本", children: current.version },
+                { key: "state", label: "状态", children: <StateTag meta={releaseStateMeta} value={current.state} /> },
+                { key: "sha", label: "Canonical sha256", children: <code>{current.sha256}</code> },
+                { key: "created", label: "创建时间", children: <TimeValue value={current.created_at} /> },
+                {
+                  key: "activated",
+                  label: "激活时间",
+                  children: current.activated_at ? <TimeValue value={current.activated_at} /> : "未激活",
+                },
+              ]}
+            />
+            <article className="panel">
+              <header className="panel-head">
+                <div>
+                  <span className="panel-index">资产</span>
+                  <h2>Manifest 资产清单</h2>
+                </div>
+              </header>
+              <Table
+                rowKey="asset_id"
+                pagination={false}
+                dataSource={current.manifest.assets}
+                columns={[
+                  { title: "类型", dataIndex: "kind", width: 90, render: (value: string) => <Tag className="signal-tag">{value}</Tag> },
+                  {
+                    title: "资产",
+                    key: "asset",
+                    render: (_, asset) => (
+                      <div className="primary-cell">
+                        <strong>{asset.asset_id}</strong>
+                        <small>{asset.path} · v{asset.version}</small>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: "依赖",
+                    dataIndex: "dependencies",
+                    width: 90,
+                    render: (value: string[]) => (value.length ? `${value.length} 项` : "无"),
+                  },
+                ]}
+              />
+            </article>
+            <article className="panel">
+              <header className="panel-head">
+                <div>
+                  <span className="panel-index">审计</span>
+                  <h2>发布审计链</h2>
+                </div>
+              </header>
+              {audit.isLoading ? (
+                <LoadingBlock rows={3} />
+              ) : audit.error ? (
+                <ErrorState message={errorMessage(audit.error)} retry={() => void audit.refetch()} />
+              ) : audit.data?.items.length ? (
+                <Table
+                  rowKey="id"
+                  pagination={false}
+                  dataSource={audit.data.items}
+                  columns={[
+                    { title: "动作", dataIndex: "action", render: (value: string) => <code>{value}</code> },
+                    { title: "操作者", dataIndex: "actor_subject", width: 150, render: (value: string) => value || "—" },
+                    { title: "时间", dataIndex: "occurred_at", width: 120, render: (value: string) => <TimeValue value={value} /> },
+                  ]}
+                />
+              ) : (
+                <EmptyState title="暂无审计记录" description="状态推进与登记操作会写入审计。" />
+              )}
+            </article>
+          </div>
+        )}
+      </Drawer>
+    </div>
+  );
+}
+
+export function Jobs() {
+  const { token } = useAuth();
+  const exportsQuery = useQuery({
+    queryKey: ["exports"],
+    retry: false,
+    queryFn: ({ signal }) => api("/exports", token, undefined, exportsSchema, signal),
+  });
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="处理治理"
+        title="任务与回放"
+        description="处理作业、回放/回填与导出任务的状态视图；不展示任何模拟数据。"
+      />
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">01</span>
+            <h2>处理与回放任务</h2>
+            <p>回放、回填、基线训练等 processing job 的列表与控制</p>
+          </div>
+        </header>
+        <EmptyState
+          title="任务 API 待后端"
+          description="/api/v1/jobs 在 API 合同中仍为 planned 状态，后端尚未提供任务列表与回放创建端点；本区块待后端落地后接入真实数据。"
+        />
+      </section>
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">02</span>
+            <h2>导出任务</h2>
+            <p>Q03 异步导出的任务记录（创建入口在事件查询页，属 W02 范围）</p>
+          </div>
+          {exportsQuery.isFetching && <span className="fetching"><RefreshCw size={13} /> 更新中</span>}
+        </header>
+        {exportsQuery.isLoading ? (
+          <LoadingBlock rows={4} />
+        ) : exportsQuery.error ? (
+          exportsQuery.error instanceof APIError && exportsQuery.error.status === 503 ? (
+            <EmptyState
+              title="导出功能未启用"
+              description="后端按设计 fail-closed：未配置导出存储时返回 503，待 D4 部署启用后可查。"
+            />
+          ) : (
+            <ErrorState message={errorMessage(exportsQuery.error)} retry={() => void exportsQuery.refetch()} />
+          )
+        ) : exportsQuery.data?.items.length ? (
+          <Table
+            rowKey="id"
+            pagination={false}
+            dataSource={exportsQuery.data.items}
+            columns={[
+              {
+                title: "导出",
+                key: "export",
+                render: (_, value: ExportJob) => (
+                  <div className="primary-cell">
+                    <strong>{value.dataset} · {value.format.toUpperCase()}</strong>
+                    <small>{value.query}</small>
+                  </div>
+                ),
+              },
+              {
+                title: "状态",
+                dataIndex: "state",
+                width: 100,
+                render: (value: string) => <StateTag meta={jobStateMeta} value={value} />,
+              },
+              {
+                title: "行数",
+                dataIndex: "row_count",
+                width: 100,
+                render: (value: number | null | undefined) =>
+                  value === null || value === undefined ? "—" : value.toLocaleString("zh-CN"),
+              },
+              {
+                title: "创建时间",
+                dataIndex: "created_at",
+                width: 120,
+                render: (value: string) => <TimeValue value={value} />,
+              },
+              {
+                title: "完成时间",
+                dataIndex: "completed_at",
+                width: 120,
+                render: (value: string | null | undefined) =>
+                  value ? <TimeValue value={value} /> : <span className="muted">—</span>,
+              },
+              {
+                title: "错误",
+                dataIndex: "error",
+                render: (value: string) =>
+                  value ? (
+                    <Tooltip title={value}><Tag className="signal-tag status-danger">有错误</Tag></Tooltip>
+                  ) : (
+                    <span className="muted">无</span>
+                  ),
+              },
+            ]}
+          />
+        ) : (
+          <EmptyState title="暂无导出任务" description="创建导出后任务会出现在这里。" />
         )}
       </section>
     </div>

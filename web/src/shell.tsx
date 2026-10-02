@@ -6,10 +6,13 @@ import {
   ArrowRight,
   FolderKanban,
   LayoutDashboard,
+  ListTodo,
   LogOut,
+  Package,
   Radar,
   Radio,
   ShieldCheck,
+  Sparkles,
   Users,
 } from "lucide-react";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
@@ -22,6 +25,9 @@ const routeTitles: Record<string, string> = {
   cases: "案件中心",
   operations: "系统运行",
   sources: "来源与采集器",
+  quality: "数据质量",
+  releases: "版本发布",
+  jobs: "任务与回放",
   access: "用户与权限",
 };
 
@@ -142,14 +148,25 @@ export function AppShell() {
         ...(auth.can("source:manage")
           ? [{ key: "/sources", label: "来源与采集器", icon: <Radio size={17} /> }]
           : []),
+        ...(auth.can("event:read")
+          ? [
+              { key: "/quality", label: "数据质量", icon: <Sparkles size={17} /> },
+              { key: "/jobs", label: "任务与回放", icon: <ListTodo size={17} /> },
+            ]
+          : []),
       ],
     },
     {
       type: "group",
       label: "管理",
-      children: auth.can("user:manage")
-        ? [{ key: "/access", label: "用户与权限", icon: <Users size={17} /> }]
-        : [],
+      children: [
+        ...(auth.can("release:read")
+          ? [{ key: "/releases", label: "版本发布", icon: <Package size={17} /> }]
+          : []),
+        ...(auth.can("user:manage")
+          ? [{ key: "/access", label: "用户与权限", icon: <Users size={17} /> }]
+          : []),
+      ],
     },
   ];
 

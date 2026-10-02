@@ -1,6 +1,19 @@
 import { describe, expect, it } from "vitest";
 
-import { anomalySummarySchema, caseSchema, casesSchema, collectorsSchema, queryString, sourcesSchema } from "./api";
+import {
+  anomalySummarySchema,
+  caseSchema,
+  casesSchema,
+  catalogSchema,
+  collectorsSchema,
+  exportsSchema,
+  queryResultSchema,
+  queryString,
+  releasesSchema,
+  sourcesSchema,
+  statsBuckets,
+  statsTotal,
+} from "./api";
 
 describe("API contracts", () => {
   it("rejects an incomplete case", () => {
@@ -121,5 +134,107 @@ describe("API contracts", () => {
     });
     expect(value.items[0]!.heartbeat).toBeUndefined();
     expect(value.items[0]!.online).toBe(false);
+  });
+
+  it("parses release bundles with manifest assets", () => {
+    const value = releasesSchema.parse({
+      items: [
+        {
+          id: "windows-security-1.0.0",
+          version: "1.0.0",
+          manifest: {
+            schema_version: "1.0.0",
+            release_id: "windows-security-1.0.0",
+            version: "1.0.0",
+            assets: [
+              {
+                kind: "dip",
+                asset_id: "windows-security-dip",
+                version: "1.0.0",
+                path: "dip/windows-security.json",
+                sha256: "3aba6a23",
+                dependencies: ["windows-security-uim"],
+              },
+            ],
+            compatibility: { schema: "1" },
+          },
+          sha256: "0195fd13",
+          state: "active",
+          created_at: "2026-09-30T00:00:00Z",
+          activated_at: "2026-09-30T01:00:00Z",
+        },
+      ],
+    });
+    expect(value.items[0]!.manifest.assets[0]!.dependencies).toHaveLength(1);
+    expect(value.items[0]!.state).toBe("active");
+  });
+
+  it("parses the dataset catalog response", () => {
+    const value = catalogSchema.parse({
+      catalog_version: 1,
+      active_generation: "g1",
+      max_time_range_day: 31,
+      datasets: [
+        {
+          name: "authentication",
+          kind: "uim-domain",
+          active_generation: "g1",
+          index_pattern: "logs-ueba.authentication-<namespace>",
+          quality_statuses: ["qualified", "partial"],
+          fields: [
+            { name: "ueba.quality.status", type: "keyword", sensitivity: "public", searchable: true, aggregable: true },
+          ],
+        },
+        {
+          name: "quarantine",
+          kind: "quarantine",
+          active_generation: "g1",
+          index_pattern: "logs-ueba.quarantine-<namespace>",
+        },
+      ],
+    });
+    expect(value.datasets).toHaveLength(2);
+    expect(value.datasets[1]!.quality_statuses).toEqual([]);
+  });
+
+  it("extracts stats buckets and totals from SPL results", () => {
+    const stats = queryResultSchema.parse({
+      mode: "stats",
+      aggregations: {
+        buckets: {
+          after_key: { "ueba.quality.status": "qualified" },
+          buckets: [{ key: { "ueba.quality.status": "qualified" }, doc_count: 7666 }],
+        },
+      },
+    });
+    expect(statsBuckets(stats)).toEqual([{ key: { "ueba.quality.status": "qualified" }, count: 7666 }]);
+    const total = queryResultSchema.parse({ mode: "stats", aggregations: { count: { value: 42 } } });
+    expect(statsTotal(total)).toBe(42);
+    expect(statsTotal(queryResultSchema.parse({ mode: "stats" }))).toBe(0);
+  });
+
+  it("parses export job lists including in-flight jobs", () => {
+    const value = exportsSchema.parse({
+      items: [
+        {
+          id: "3f6b2c9e-0000-4000-8000-abcdefabcdef",
+          job_id: "3f6b2c9e-0000-4000-8000-abcdefabcde0",
+          dataset: "authentication",
+          format: "csv",
+          query: "search authentication | head 100",
+          from: "2026-10-01T00:00:00Z",
+          to: "2026-10-02T00:00:00Z",
+          row_limit: 100000,
+          byte_limit: 1073741824,
+          include_sensitive: false,
+          include_raw: false,
+          state: "queued",
+          created_at: "2026-10-02T00:00:00Z",
+        },
+      ],
+      next_cursor: "",
+    });
+    expect(value.items[0]!.state).toBe("queued");
+    expect(value.items[0]!.row_count).toBeUndefined();
   });
 });
