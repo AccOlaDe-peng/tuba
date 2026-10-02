@@ -6,7 +6,9 @@ entity-keyed attributed stream (``tuba.attributed.events.v1``, E04), drives
 the bounded event-time windows (F02 FeatureWindows), computes window features
 (F03 ``compute_window_features``), runs all three first-phase detection
 scenarios registered in the analysis registry (F05: failure-then-success,
-failure-burst, baseline-deviation), schedules the baseline training job (F04
+failure-burst, baseline-deviation), derives immutable risk contributions and
+republishes the entity risk projection with a pinned compute version and
+update time (R01/R02), schedules the baseline training job (F04
 ``run_training_job``) and emits every derived object as an analysis-result v2
 envelope (C04/F07) with FindingLedger revision/generation semantics (F06).
 
@@ -56,10 +58,17 @@ from .detection import (
 )
 from .features import FeatureWindows
 from .registry import AnalysisRegistry, ModelDefinition, RuleDefinition
-from .revisions import FindingLedger
+from .revisions import FindingLedger, Frame
+from .risk import RISK_COMPUTE_VERSION, RiskLedger
 
 ATTRIBUTED_SCHEMA_VERSION = "1.0.0"
 CONTRACT_VERSION_V2 = "2.0.0"
+
+# The entity_risk projection object (R02): its state owner is the RiskLedger,
+# so the envelope rule identity is the risk compute itself, and the rule
+# version is pinned to the risk compute version.
+RISK_RULE_ID = "risk.entity"
+OBJECT_TYPE_ENTITY_RISK = "entity_risk"
 
 ROLE_ACTOR = "actor"
 STATE_RESOLVED = "resolved"
@@ -176,7 +185,7 @@ class AttributedAnalysisProcessor:
     authoritative from the PG processor state.
     """
 
-    state_version = 2
+    state_version = 3
 
     def __init__(
         self,
@@ -207,6 +216,7 @@ class AttributedAnalysisProcessor:
             allowed_lateness=timedelta(seconds=lateness),
         )
         self.ledger = FindingLedger()
+        self.risk = RiskLedger()
         # Closed-window bookkeeping: (entity, window start) -> revision/hash of
         # the last emitted feature record. A late correction inside the
         # retention boundary recomputes the same window with revision+1.
@@ -310,27 +320,97 @@ class AttributedAnalysisProcessor:
             )
             if frame is None:
                 continue
-            input_refs = [
-                {"object_type": "event", "object_id": event_id}
-                for event_id in document["evidence"]["event_ids"]
-            ]
-            envelopes.append(
-                self._envelope(
-                    object_type="anomaly",
-                    object_id=frame.object_id,
-                    revision=frame.revision,
-                    operation=frame.operation,
-                    generation=frame.generation,
-                    rule_id=rule.id,
-                    rule_version=rule.version,
-                    run_id=run_id,
-                    window_start=window_start,
-                    input_refs=input_refs,
-                    document=document,
-                )
-            )
-            self.counters["findings_emitted"] += 1
+            envelopes.extend(self._frame_envelopes(frame, rule.id, rule.version, run_id))
         return envelopes
+
+    def _frame_envelopes(
+        self,
+        frame: Frame,
+        rule_id: str,
+        rule_version: str,
+        run_id: str,
+    ) -> list[dict[str, Any]]:
+        """One ledger frame -> anomaly envelope + entity_risk projection (R02).
+
+        Every frame the FindingLedger emits — upsert, correction or retracted
+        tombstone — is applied to the RiskLedger (immutable contribution /
+        compensation / reversal, R01) and the entity's current risk projection
+        is republished at the next deterministic projection revision. A
+        retracted finding therefore always lowers the projected risk (to zero
+        when it was the key's only live contribution); the sink's external
+        version semantics keep the newer projection from ever being
+        overwritten by a stale one.
+        """
+        document = frame.document or {}
+        window_start = parse_time(document["detection"]["window"]["start"])
+        entity_id = document["entity"]["id"]
+        input_refs = [
+            {"object_type": "event", "object_id": event_id}
+            for event_id in document["evidence"]["event_ids"]
+        ]
+        anomaly_envelope = self._envelope(
+            object_type="anomaly",
+            object_id=frame.object_id,
+            revision=frame.revision,
+            operation=frame.operation,
+            generation=frame.generation,
+            rule_id=rule_id,
+            rule_version=rule_version,
+            run_id=run_id,
+            window_start=window_start,
+            input_refs=input_refs,
+            document=document,
+        )
+        self.counters["findings_emitted"] += 1
+        self.risk.apply_frame(frame)
+        self.counters["risk_contributions_applied"] += 1
+        return [anomaly_envelope, self._entity_risk_envelope(frame, entity_id, run_id)]
+
+    def _entity_risk_envelope(self, frame: Frame, entity_id: str, run_id: str) -> dict[str, Any]:
+        """Current entity risk projection as an entity_risk v2 object (R02).
+
+        Revision = the length of the entity's immutable contribution chain
+        (state owner: RiskLedger). The projection is computed and pinned at
+        the triggering frame's time: ``updated_at`` and the decayed score are
+        deterministic for a given chain state, identical content replays
+        idempotently at the same revision, and decay parameters ride along so
+        readers can age the score without a rewrite.
+        """
+        frame_time = parse_time(frame.at)
+        projection = self.risk.entity_risk(entity_id, frame_time)
+        return self._envelope(
+            object_type=OBJECT_TYPE_ENTITY_RISK,
+            object_id=entity_id,
+            revision=self.risk.projection_revision(entity_id),
+            operation="upsert",
+            generation=frame.generation,
+            rule_id=RISK_RULE_ID,
+            rule_version=RISK_COMPUTE_VERSION,
+            run_id=run_id,
+            window_start=frame_time,
+            input_refs=[
+                {
+                    "object_type": "anomaly",
+                    "object_id": frame.object_id,
+                    "revision": frame.revision,
+                    "content_hash": frame.content_hash,
+                }
+            ],
+            document=projection,
+        )
+
+    def retract_finding(self, business_key: str, *, reason: str, run_id: str, at: datetime) -> list[dict[str, Any]]:
+        """Withdraw one published finding: retracted tombstone + risk rollback.
+
+        The FindingLedger appends the tombstone at the next revision; the
+        RiskLedger derives the reverse compensation and the entity risk
+        projection is republished with the lowered (possibly zero) score.
+        """
+        frame = self.ledger.retract(business_key, at=at, reason=reason)
+        document = frame.document or {}
+        rule_id = document.get("detection", {}).get("rule_id") or RISK_RULE_ID
+        rule_version = document.get("detection", {}).get("rule_version") or RISK_COMPUTE_VERSION
+        return self._frame_envelopes(frame, rule_id, rule_version, run_id)
 
     # ------------------------------------------------------------- processing
     def process(
@@ -478,6 +558,7 @@ class AttributedAnalysisProcessor:
             "state_version": self.state_version,
             "windows": self.windows.export(),
             "ledger": self.ledger.export(),
+            "risk": self.risk.export(),
             "window_frames": dict(self.window_frames),
             "counters": dict(self.counters),
         }
@@ -506,6 +587,7 @@ class AttributedAnalysisProcessor:
             raise ValueError("unsupported processor state version")
         processor.windows.load(state.get("windows") or {})
         processor.ledger = FindingLedger.load(str(state.get("ledger") or ""))
+        processor.risk = RiskLedger.load(state.get("risk"))
         frames = state.get("window_frames") or {}
         if not isinstance(frames, dict):
             raise ValueError("processor state window_frames must be an object")

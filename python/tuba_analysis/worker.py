@@ -180,9 +180,11 @@ def publish_results(
     results: list[dict[str, Any]],
 ) -> None:
     for result in results:
+        # v2 envelopes key on object_id; the v1 replay path keys on result_id.
+        key = result.get("object_id") or result["result_id"]
         producer.produce(
             result_topic,
-            key=result["result_id"].encode(),
+            key=key.encode(),
             value=json.dumps(result, separators=(",", ":")).encode(),
         )
     producer.flush(10)

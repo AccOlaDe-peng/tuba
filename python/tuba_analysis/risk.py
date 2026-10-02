@@ -52,6 +52,8 @@ RISK_COMPUTE_VERSION = "1.0.0"
 DEFAULT_HALF_LIFE_DAYS = 7.0
 DEFAULT_ZERO_AFTER_DAYS = 30.0
 
+_SNAPSHOT_VERSION = 1
+
 
 class RiskEngineError(ValueError):
     """Fail-closed risk engine error (bad frame, bad score, bad policy)."""
@@ -108,6 +110,35 @@ class RiskContribution:
             "amount": self.amount,
             "occurred_at": _format_time(self.occurred_at),
         }
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            **self.reference(),
+            "organization_id": self.organization_id,
+            "entity_id": self.entity_id,
+            "rule_id": self.rule_id,
+            "generation": self.generation,
+        }
+
+    @staticmethod
+    def from_dict(payload: dict[str, Any]) -> "RiskContribution":
+        try:
+            return RiskContribution(
+                contribution_id=str(payload["contribution_id"]),
+                organization_id=str(payload["organization_id"]),
+                entity_id=str(payload["entity_id"]),
+                business_key=str(payload["business_key"]),
+                rule_id=str(payload["rule_id"]),
+                generation=str(payload["generation"]),
+                finding_revision=int(payload["finding_revision"]),
+                operation=str(payload["operation"]),
+                amount=float(payload["amount"]),
+                occurred_at=_parse_frame_time(str(payload["occurred_at"])),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, RiskEngineError):
+                raise
+            raise RiskEngineError(f"invalid risk contribution snapshot record: {exc}") from exc
 
 
 def _format_time(value: datetime) -> str:
@@ -247,7 +278,11 @@ class RiskLedger:
                 continue
             total += contribution.amount * factor
             live.append(contribution)
-        return total, live
+        # Decay is applied per contribution age, so an older positive
+        # contribution decays slightly more than its newer reversal; the
+        # summed total can drift marginally below zero even though the key's
+        # effective amount is exactly zero. Risk is floored at zero.
+        return max(0.0, total), live
 
     def entity_risk(self, entity_id: str, at: datetime) -> dict[str, Any]:
         """Current risk projection for one entity at time ``at``."""
@@ -265,6 +300,96 @@ class RiskLedger:
             },
             "contributions": [c.reference() for c in live],
         }
+
+    def projection_revision(self, entity_id: str) -> int:
+        """Deterministic external revision of the entity risk projection (R02).
+
+        The projection is re-derived and republished only when the entity's
+        immutable contribution chain grows; every appended contribution moves
+        the projection exactly one revision forward. Same chain state -> same
+        revision and same content (idempotent replay); a strictly greater
+        revision always carries the newer chain, so the E05/F07 external
+        version semantics in the sink reject any stale projection write.
+        """
+        return len(self.contributions_for(entity_id))
+
+    # ------------------------------------------------------------- snapshot
+    def export(self) -> dict[str, Any]:
+        return {
+            "state_version": _SNAPSHOT_VERSION,
+            "decay": {
+                "half_life_days": self._decay.half_life_days,
+                "zero_after_days": self._decay.zero_after_days,
+            },
+            "contributions": [c.to_dict() for c in self._contributions],
+        }
+
+    @classmethod
+    def load(cls, payload: dict[str, Any] | None) -> "RiskLedger":
+        if not payload:
+            return cls()
+        if not isinstance(payload, dict):
+            raise RiskEngineError("risk ledger snapshot must be an object")
+        if payload.get("state_version") != _SNAPSHOT_VERSION:
+            raise RiskEngineError("unsupported risk ledger snapshot version")
+        decay_raw = payload.get("decay")
+        if not isinstance(decay_raw, dict):
+            raise RiskEngineError("risk ledger snapshot requires a decay object")
+        try:
+            decay = DecayPolicy(
+                half_life_days=float(decay_raw["half_life_days"]),
+                zero_after_days=float(decay_raw["zero_after_days"]),
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            if isinstance(exc, RiskEngineError):
+                raise
+            raise RiskEngineError(f"invalid risk ledger decay snapshot: {exc}") from exc
+        records = payload.get("contributions")
+        if not isinstance(records, list):
+            raise RiskEngineError("risk ledger snapshot requires a contributions list")
+        ledger = cls(decay)
+        for record in records:
+            if not isinstance(record, dict):
+                raise RiskEngineError("risk ledger snapshot contribution must be an object")
+            contribution = RiskContribution.from_dict(record)
+            ledger._append_loaded(contribution)
+        return ledger
+
+    def _append_loaded(self, contribution: RiskContribution) -> None:
+        """Rebuild internal state from one snapshotted contribution, checking
+        the chain invariants fail-closed (the snapshot is authoritative state;
+        corruption must never be silently accepted)."""
+        if contribution.operation not in {
+            CONTRIB_OPERATION_POSITIVE,
+            CONTRIB_OPERATION_COMPENSATION,
+            CONTRIB_OPERATION_REVERSAL,
+        }:
+            raise RiskEngineError(f"unknown contribution operation {contribution.operation!r}")
+        expected_id = contribution_id_for(
+            contribution.organization_id,
+            contribution.business_key,
+            contribution.finding_revision,
+            contribution.operation,
+        )
+        if contribution.contribution_id != expected_id:
+            raise RiskEngineError("risk ledger snapshot contribution id does not match its content")
+        key = contribution.business_key
+        last = self._applied_revision.get(key, 0)
+        if contribution.finding_revision <= last:
+            raise RiskEngineError(
+                f"risk ledger snapshot replays revision {contribution.finding_revision} of {key} (last {last})"
+            )
+        self._applied_revision[key] = contribution.finding_revision
+        existing_org = self._entity_org.setdefault(contribution.entity_id, contribution.organization_id)
+        if existing_org != contribution.organization_id:
+            raise RiskEngineError(
+                f"entity {contribution.entity_id} contributed under two organizations in snapshot"
+            )
+        self._contributions.append(contribution)
+        if contribution.operation == CONTRIB_OPERATION_REVERSAL:
+            self._live_amount[key] = 0.0
+        else:
+            self._live_amount[key] = self._live_amount.get(key, 0.0) + contribution.amount
 
     def current_view(self, at: datetime) -> dict[str, dict[str, Any]]:
         """Current risk projection for every entity with live contributions."""

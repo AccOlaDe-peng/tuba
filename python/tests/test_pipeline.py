@@ -362,7 +362,7 @@ class PipelineTests(unittest.TestCase):
     def test_state_round_trip_preserves_ledger_and_windows(self):
         processor = new_processor()
         first = feed(processor, five_failures_then_success())
-        self.assertEqual(len(first), 1)
+        self.assertEqual(len([e for e in first if e["object_type"] == "anomaly"]), 1)
         restored = AttributedAnalysisProcessor.from_state(
             ORG, NS, load_registry(), processor.export_state()
         )
