@@ -206,8 +206,22 @@ def publish_dead_letter(
     producer.flush(10)
 
 
+def kafka_security_config() -> dict[str, str]:
+    protocol = os.getenv("KAFKA_SECURITY_PROTOCOL", "").strip()
+    if not protocol:
+        return {}
+    config = {"security.protocol": protocol.lower()}
+    mechanism = os.getenv("KAFKA_SASL_MECHANISM", "").strip()
+    if mechanism:
+        config["sasl.mechanisms"] = mechanism
+        config["sasl.username"] = required("KAFKA_SASL_USERNAME")
+        config["sasl.password"] = required("KAFKA_SASL_PASSWORD")
+    return config
+
+
 def main() -> None:
     brokers = required("KAFKA_BROKERS")
+    security = kafka_security_config()
     source_topic = os.getenv("KAFKA_ATTRIBUTED_TOPIC", "tuba.attributed.events.v1")
     result_topic = os.getenv("KAFKA_ANALYSIS_RESULTS_V2_TOPIC", "tuba.analysis.results.v2")
     dead_letter_topic = os.getenv("KAFKA_DLQ_TOPIC", "tuba.indexing.dlq.v1")
@@ -232,6 +246,7 @@ def main() -> None:
             "enable.auto.commit": False,
             "auto.offset.reset": "earliest",
             "enable.partition.eof": False,
+            **security,
         },
     )
     producer = Producer(
@@ -239,6 +254,7 @@ def main() -> None:
             "bootstrap.servers": brokers,
             "enable.idempotence": True,
             "acks": "all",
+            **security,
         },
     )
     consumer.subscribe([source_topic])

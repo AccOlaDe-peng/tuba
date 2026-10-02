@@ -3,7 +3,8 @@
 # registered with systemd; this script is invoked from the root crontab
 # @reboot entry and is safe to run manually at any time: each manifest is a
 # no-op when its Launcher supervisor is already running.
-#   tuba-services.json    - data plane (11 services)
+#   tuba-services.json    - data plane (17 services since 2026-10-02: original 11
+#                           plus entity/analysis/control-worker per namespace)
 #   tuba-monitoring.json  - monitoring stack (prometheus/grafana/exporters/guard)
 #
 # 248 部署位置：/opt/tuba/bin/tuba-boot（0700 root）。仓库副本与线上保持一致。
