@@ -62,7 +62,12 @@ class AuthenticationProcessor:
         if not event_id:
             raise ValueError("event id is required")
 
-        is_late, retained = self.windows.observe(event, user_id, event_time)
+        is_late, retained = self.windows.observe(
+            event,
+            user_id,
+            event_time,
+            received_at=datetime.now(timezone.utc),
+        )
 
         anomalies = detect_failure_then_success(
             retained,
@@ -230,6 +235,11 @@ def main() -> None:
             if message is None:
                 producer.poll(0)
                 now = time.monotonic()
+                # Idle partitions still advance their watermark so windows
+                # close without waiting for new input.
+                wall_now = datetime.now(timezone.utc)
+                for processor in processors.values():
+                    processor.windows.advance(wall_now)
                 if now - last_heartbeat >= 5:
                     store.heartbeat(run_id, processed, emitted)
                     last_heartbeat = now

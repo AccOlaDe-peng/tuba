@@ -19,12 +19,15 @@ var (
 )
 
 // Contribution is one entity's attributed stake in a single event, keyed by
-// entity.id as produced on the attributed-events stream.
+// entity.id as produced on the attributed-events stream. AttributionID is the
+// stable attribution id from E02/E04; the F02 window engine deduplicates
+// repeat deliveries by it.
 type Contribution struct {
-	EntityID string    `json:"entity_id"`
-	Role     string    `json:"role"`
-	EventID  string    `json:"event_id"`
-	At       time.Time `json:"at"`
+	EntityID      string    `json:"entity_id"`
+	Role          string    `json:"role"`
+	EventID       string    `json:"event_id"`
+	AttributionID string    `json:"attribution_id,omitempty"`
+	At            time.Time `json:"at"`
 }
 
 // Validate rejects malformed contributions fail-closed.
