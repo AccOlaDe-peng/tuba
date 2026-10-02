@@ -359,16 +359,34 @@ export const queryResultSchema = z.object({
 
 export type QueryResult = z.infer<typeof queryResultSchema>;
 
+export type QueryOptions = { to?: string; limit?: number; cursor?: string };
+
+// The request schema is a closed set server-side (DisallowUnknownFields):
+// only query/from/to/limit/cursor may be sent.
+export function buildQueryBody(
+  query: string,
+  from: string | undefined,
+  options?: QueryOptions,
+): Record<string, string | number> {
+  const body: Record<string, string | number> = { query };
+  if (from) body.from = from;
+  if (options?.to) body.to = options.to;
+  if (options?.limit) body.limit = options.limit;
+  if (options?.cursor) body.cursor = options.cursor;
+  return body;
+}
+
 export function runQuery(
   token: string | undefined,
   query: string,
   from: string | undefined,
   signal?: AbortSignal,
+  options?: QueryOptions,
 ): Promise<QueryResult> {
   return api(
     "/query",
     token,
-    { method: "POST", body: JSON.stringify(from ? { query, from } : { query }) },
+    { method: "POST", body: JSON.stringify(buildQueryBody(query, from, options)) },
     queryResultSchema,
     signal,
   );
@@ -392,6 +410,58 @@ export function statsBuckets(result: QueryResult): StatsBucket[] {
 export function statsTotal(result: QueryResult): number {
   const agg = result.aggregations?.["count"] as { value?: number } | undefined;
   return agg?.value ?? 0;
+}
+
+// A single-value metric aggregation (count/sum/min/max/avg [as alias]).
+// Date metrics carry value_as_string alongside the epoch-millis value.
+export type StatsMetric = { value: number | null; valueAsString?: string };
+
+export function statsMetric(result: QueryResult, name: string): StatsMetric | undefined {
+  const agg = result.aggregations?.[name] as
+    | { value?: number | null; value_as_string?: string }
+    | undefined;
+  if (!agg || typeof agg !== "object") return undefined;
+  return { value: agg.value ?? null, valueAsString: agg.value_as_string };
+}
+
+// Provenance references carried on UIM events (catalog-declared fields). Raw
+// dataset rows carry ueba.provenance.source_context_id instead.
+export type EventProvenance = {
+  eventId: string;
+  rawEventId: string;
+  releaseId: string;
+  domain: string;
+  generation: string;
+  sourceContextId: string;
+  schemaVersion: string;
+  qualityStatus: string;
+};
+
+function nestedRecord(item: Record<string, unknown>, key: string): Record<string, unknown> {
+  const value = item[key];
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+}
+
+export function eventProvenance(item: Record<string, unknown>): EventProvenance {
+  const event = nestedRecord(item, "event");
+  const ueba = nestedRecord(item, "ueba");
+  const route = nestedRecord(ueba, "route");
+  const provenance = nestedRecord(ueba, "provenance");
+  const quality = nestedRecord(ueba, "quality");
+  const schema = nestedRecord(ueba, "schema");
+  const text = (value: unknown) => (typeof value === "string" ? value : "");
+  return {
+    eventId: text(event["id"] ?? item["id"]),
+    rawEventId: text(provenance["raw_event_id"]),
+    releaseId: text(provenance["release_id"]),
+    domain: text(route["domain"] ?? event["dataset"]),
+    generation: text(route["generation"]),
+    sourceContextId: text(provenance["source_context_id"]),
+    schemaVersion: text(schema["version"]),
+    qualityStatus: text(quality["status"]),
+  };
 }
 
 export const exportJobSchema = z.object({

@@ -4,6 +4,7 @@ import { useState, type FormEvent } from "react";
 import {
   Activity,
   ArrowRight,
+  FileSearch,
   FolderKanban,
   LayoutDashboard,
   ListTodo,
@@ -21,6 +22,7 @@ import { useAuth } from "./auth";
 
 const routeTitles: Record<string, string> = {
   overview: "安全总览",
+  events: "事件查询",
   anomalies: "异常调查",
   cases: "案件中心",
   operations: "系统运行",
@@ -130,6 +132,9 @@ export function AppShell() {
       label: "调查",
       children: [
         { key: "/overview", label: "安全总览", icon: <LayoutDashboard size={17} /> },
+        ...(auth.can("event:read")
+          ? [{ key: "/events", label: "事件查询", icon: <FileSearch size={17} /> }]
+          : []),
         ...(auth.can("anomaly:read")
           ? [{ key: "/anomalies", label: "异常调查", icon: <Radar size={17} /> }]
           : []),

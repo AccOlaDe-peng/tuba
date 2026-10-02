@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import {
+  Alert,
   App as AntApp,
   Button,
   Descriptions,
@@ -28,15 +29,19 @@ import {
   AlertTriangle,
   ArrowLeft,
   ArrowRight,
+  ArrowUpRight,
   Check,
   ChevronRight,
   CircleAlert,
+  CircleDot,
   Database,
   FileSearch,
   Filter,
   FolderKanban,
   Gauge,
+  GitBranch,
   KeyRound,
+  Lock,
   Plus,
   RefreshCw,
   Search,
@@ -71,12 +76,16 @@ import {
   runQuery,
   sourcesSchema,
   statsBuckets,
+  statsMetric,
   statsTotal,
+  eventProvenance,
   type AnomalySummary,
   type Case,
+  type CatalogDataset,
   type CollectorSummary,
   type ExportJob,
   type Member,
+  type QueryResult,
   type Release,
   type SourceInstance,
 } from "./api";
@@ -2486,6 +2495,710 @@ export function Jobs() {
           <EmptyState title="暂无导出任务" description="创建导出后任务会出现在这里。" />
         )}
       </section>
+    </div>
+  );
+}
+
+type EventRow = Record<string, unknown>;
+
+function eventField(item: EventRow, ...path: string[]): string {
+  let value: unknown = item;
+  for (const key of path) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return "";
+    value = (value as Record<string, unknown>)[key];
+  }
+  return typeof value === "string" || typeof value === "number" ? String(value) : "";
+}
+
+const splPresets: Record<string, { label: string; query: string }[]> = {
+  authentication: [
+    { label: "失败登录", query: "search authentication WHERE event.outcome=failure | head 100" },
+    { label: "按结果统计", query: "search authentication | stats count BY event.outcome" },
+    { label: "失败最多账号", query: "search authentication WHERE event.outcome=failure | top 10 user.name" },
+    { label: "每小时认证量", query: "search authentication | timechart span=1h count" },
+  ],
+  network: [
+    { label: "按协议统计", query: "search network | stats count BY network.transport" },
+    { label: "流量最大目的", query: "search network | top 10 destination.ip" },
+  ],
+  dns: [
+    { label: "热点域名", query: "search dns | top 10 dns.question.name" },
+  ],
+  raw: [
+    { label: "按来源统计", query: "search raw | stats count BY ueba.provenance.source_context_id" },
+    { label: "最近原始事件", query: "search raw | head 50" },
+  ],
+  quarantine: [
+    { label: "按原因统计", query: "search quarantine | stats count BY quarantine.reason" },
+    { label: "最近隔离记录", query: "search quarantine | head 50" },
+  ],
+};
+
+function defaultQuery(dataset: string): string {
+  return `search ${dataset} | head 100`;
+}
+
+function presetsFor(dataset: string, kind: string): { label: string; query: string }[] {
+  if (splPresets[dataset]) return splPresets[dataset];
+  if (kind === "uim-domain") {
+    return [
+      { label: "按动作统计", query: `search ${dataset} | stats count BY event.action` },
+      { label: "质量分布", query: `search ${dataset} | stats count BY ueba.quality.status` },
+      { label: "每小时事件量", query: `search ${dataset} | timechart span=1h count` },
+    ];
+  }
+  return [];
+}
+
+function TimechartTable({ result }: { result: QueryResult }) {
+  const agg = result.aggregations?.["timechart"] as
+    | { buckets?: Array<Record<string, unknown>> }
+    | undefined;
+  const buckets = agg?.buckets ?? [];
+  if (!buckets.length) {
+    return <EmptyState title="时间桶为空" description="当前时间范围内没有可聚合的事件。" />;
+  }
+  const rows = buckets.map((bucket, index) => ({
+    key: index,
+    time: String(bucket["key_as_string"] ?? bucket["key"] ?? ""),
+    count: (bucket["count"] as { value?: number } | undefined)?.value ?? null,
+  }));
+  return (
+    <Table
+      rowKey="key"
+      pagination={false}
+      dataSource={rows}
+      columns={[
+        { title: "时间桶", dataIndex: "time", render: (value: string) => <TimeValue value={value} /> },
+        {
+          title: "事件数",
+          dataIndex: "count",
+          width: 120,
+          render: (value: number | null) => (value === null ? "—" : value.toLocaleString("zh-CN")),
+        },
+      ]}
+    />
+  );
+}
+
+function AggregationResult({ result }: { result: QueryResult }) {
+  if (result.mode === "timechart") return <TimechartTable result={result} />;
+  const buckets = statsBuckets(result);
+  if (buckets.length) {
+    const byFields = Object.keys(buckets[0]!.key);
+    return (
+      <Table
+        rowKey={(row) => byFields.map((field) => row.key[field]).join("|")}
+        pagination={false}
+        dataSource={buckets}
+        columns={[
+          ...byFields.map((field) => ({
+            title: field,
+            key: field,
+            render: (_: unknown, row: { key: Record<string, string> }) => <code>{row.key[field]}</code>,
+          })),
+          {
+            title: "事件数",
+            dataIndex: "count",
+            width: 110,
+            render: (value: number) => value.toLocaleString("zh-CN"),
+          },
+        ]}
+      />
+    );
+  }
+  // top/rare modes: terms aggregation under the mode name.
+  const terms = result.aggregations?.[result.mode] as
+    | { buckets?: Array<{ key?: unknown; doc_count?: number }> }
+    | undefined;
+  if (terms?.buckets?.length) {
+    return (
+      <Table
+        rowKey={(row) => String(row.key)}
+        pagination={false}
+        dataSource={terms.buckets}
+        columns={[
+          { title: "值", dataIndex: "key", render: (value: unknown) => <code>{String(value)}</code> },
+          {
+            title: "事件数",
+            dataIndex: "doc_count",
+            width: 110,
+            render: (value: number | undefined) => (value ?? 0).toLocaleString("zh-CN"),
+          },
+        ]}
+      />
+    );
+  }
+  const metrics = Object.entries(result.aggregations ?? {}).filter(
+    (entry): entry is [string, { value?: number | null; value_as_string?: string }] =>
+      Boolean(entry[1]) && typeof entry[1] === "object" && "value" in (entry[1] as object),
+  );
+  if (!metrics.length) {
+    return <EmptyState title="聚合为空" description="当前时间范围内没有事件命中。" />;
+  }
+  return (
+    <div className="metric-grid-compact">
+      {metrics.map(([name, agg]) => (
+        <article className="metric-panel tone-neutral" key={name}>
+          <span>{name}</span>
+          <strong>
+            {agg.value === null || agg.value === undefined
+              ? "—"
+              : (agg.value_as_string ?? agg.value.toLocaleString("zh-CN"))}
+          </strong>
+        </article>
+      ))}
+    </div>
+  );
+}
+
+function RawReference({ rawEventId }: { rawEventId: string }) {
+  const { token, can } = useAuth();
+  const [requested, setRequested] = useState(false);
+  const rawLookup = useQuery({
+    queryKey: ["events", "raw-ref", rawEventId],
+    enabled: requested,
+    retry: false,
+    queryFn: ({ signal }) =>
+      runQuery(
+        token,
+        `search raw WHERE event.id=${rawEventId} | head 5`,
+        new Date(Date.now() - 30 * 24 * 3600_000).toISOString(),
+        signal,
+      ),
+  });
+
+  return (
+    <div className="page-stack">
+      <Descriptions size="small" column={1} items={[{ key: "raw", label: "raw_event_id", children: <code>{rawEventId}</code> }]} />
+      {!can("raw:read") && (
+        <Alert
+          type="info"
+          showIcon
+          icon={<Lock size={15} />}
+          title="原文内容受 raw:read 权限控制"
+          description="当前角色不持有 raw:read，原始报文不可查看。"
+        />
+      )}
+      <Alert
+        type="warning"
+        showIcon
+        title="原文在线查看属后端缺口"
+        description="查询 API 对任何角色都不返回 event.original（服务端统一剥离）；目前唯一携带原文的通道是 Q03 异步导出（需 raw:read 且后端已配置导出存储，248 尚未启用）。此处仅呈现引用与元数据。"
+      />
+      {!requested ? (
+        <Button size="small" onClick={() => setRequested(true)} icon={<Search size={14} />}>
+          查询 raw 域引用记录（元数据）
+        </Button>
+      ) : rawLookup.isLoading ? (
+        <LoadingBlock rows={2} />
+      ) : rawLookup.error ? (
+        <ErrorState message={errorMessage(rawLookup.error)} retry={() => void rawLookup.refetch()} />
+      ) : rawLookup.data && rawLookup.data.items.length > 0 ? (
+        <Table
+          className="compact-table"
+          rowKey={(_, index) => String(index)}
+          pagination={false}
+          dataSource={rawLookup.data.items}
+          columns={[
+            {
+              title: "时间",
+              key: "ts",
+              width: 140,
+              render: (_, item) => <TimeValue value={eventField(item, "@timestamp")} />,
+            },
+            {
+              title: "event.id",
+              key: "id",
+              render: (_, item) => <code>{eventField(item, "event", "id")}</code>,
+            },
+            {
+              title: "source context",
+              key: "ctx",
+              render: (_, item) => (
+                <code>{eventField(item, "ueba", "provenance", "source_context_id") || "—"}</code>
+              ),
+            },
+          ]}
+        />
+      ) : (
+        <EmptyState
+          title="raw 域未查到该引用"
+          description="原始事件可能已过保留期被清理，或从未写入 raw 域。"
+        />
+      )}
+    </div>
+  );
+}
+
+function EventDetailDrawer({ item, onClose }: { item: EventRow; onClose: () => void }) {
+  const provenance = eventProvenance(item);
+  const chain = [
+    { label: "原始事件", value: provenance.rawEventId, hint: "raw 域 event.id" },
+    { label: "DIP 解析", value: provenance.releaseId, hint: "解析规则 release" },
+    { label: "UIM 事件", value: provenance.eventId, hint: `${provenance.domain || "uim"} · ${provenance.generation || "—"}` },
+  ];
+  return (
+    <Drawer title="事件详情与血缘" width={520} open onClose={onClose}>
+      <div className="page-stack">
+        <Descriptions
+          size="small"
+          column={1}
+          bordered
+          items={[
+            { key: "ts", label: "时间", children: <TimeValue value={eventField(item, "@timestamp")} /> },
+            { key: "id", label: "event.id", children: <code>{provenance.eventId}</code> },
+            { key: "action", label: "动作", children: eventField(item, "event", "action") || "—" },
+            { key: "outcome", label: "结果", children: eventField(item, "event", "outcome") || "—" },
+            { key: "user", label: "用户", children: eventField(item, "user", "name") || eventField(item, "user", "id") || "—" },
+            { key: "src", label: "来源地址", children: eventField(item, "source", "ip") || "—" },
+            { key: "quality", label: "质量", children: provenance.qualityStatus || "—" },
+            { key: "schema", label: "UIM schema", children: provenance.schemaVersion || "—" },
+          ]}
+        />
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <span className="panel-index"><GitBranch size={14} /></span>
+              <h2>血缘（provenance）</h2>
+              <p>由事件自带引用字段构成，不做推断</p>
+            </div>
+          </header>
+          <div className="activity-timeline">
+            {chain.map((node) => (
+              <article key={node.label}>
+                <div className="activity-dot"><CircleDot size={14} /></div>
+                <div>
+                  <strong>{node.label}</strong>
+                  <p>{node.hint}</p>
+                  {node.value ? <code>{node.value}</code> : <span className="muted">无引用字段</span>}
+                </div>
+              </article>
+            ))}
+          </div>
+        </section>
+        <section className="panel">
+          <header className="panel-head">
+            <div>
+              <span className="panel-index"><Lock size={14} /></span>
+              <h2>原始引用</h2>
+              <p>raw_event_id 引用与 raw 域元数据；原文内容按权限与后端能力呈现</p>
+            </div>
+          </header>
+          {provenance.rawEventId ? (
+            <RawReference rawEventId={provenance.rawEventId} />
+          ) : (
+            <EmptyState
+              title="无 raw 引用"
+              description="该事件没有 ueba.provenance.raw_event_id 字段，无法回链原始事件。"
+            />
+          )}
+        </section>
+      </div>
+    </Drawer>
+  );
+}
+
+function DatasetStatus({ datasets }: { datasets: CatalogDataset[] }) {
+  const { token } = useAuth();
+  const from = useMemo(() => new Date(Date.now() - 30 * 24 * 3600_000).toISOString(), []);
+  const freshness = useQueries({
+    queries: datasets.map((dataset) => ({
+      queryKey: ["events", "freshness", dataset.name],
+      retry: false,
+      queryFn: ({ signal }: { signal: AbortSignal }) =>
+        runQuery(token, `search ${dataset.name} | stats count,max(@timestamp) as latest`, from, signal),
+    })),
+  });
+
+  const rows = datasets.map((dataset, index) => {
+    const query = freshness[index];
+    if (query?.error) {
+      const unavailable = query.error instanceof APIError && query.error.status === 503;
+      return {
+        dataset,
+        state: unavailable ? ("unavailable" as const) : ("error" as const),
+        count: null as number | null,
+        latest: null as string | null,
+        message: unavailable ? "索引暂不可用（尚未创建或事件存储不可用）" : errorMessage(query.error),
+      };
+    }
+    if (!query?.data) {
+      return { dataset, state: "loading" as const, count: null, latest: null, message: "" };
+    }
+    const count = statsMetric(query.data, "count")?.value ?? 0;
+    const latestMetric = statsMetric(query.data, "latest");
+    const latest =
+      latestMetric?.valueAsString ??
+      (latestMetric?.value != null ? new Date(latestMetric.value).toISOString() : null);
+    if (count === 0 || !latest) {
+      return { dataset, state: "empty" as const, count, latest, message: "30 天窗口内无事件——可能从未写入，或已过保留期；后端尚无权威归档/过期信号" };
+    }
+    const lagSeconds = Math.max(0, (Date.now() - new Date(latest).getTime()) / 1000);
+    return {
+      dataset,
+      state: lagSeconds > 24 * 3600 ? ("lagging" as const) : ("fresh" as const),
+      count,
+      latest,
+      message: "",
+    };
+  });
+
+  const stateMeta: Record<string, { label: string; className: string }> = {
+    fresh: { label: "新鲜", className: "open" },
+    lagging: { label: "索引滞后", className: "progress" },
+    empty: { label: "窗口内无数据", className: "muted" },
+    unavailable: { label: "索引不可用", className: "muted" },
+    error: { label: "查询失败", className: "danger" },
+  };
+
+  return (
+    <Table
+      rowKey={(row) => row.dataset.name}
+      pagination={false}
+      loading={freshness.some((query) => query.isLoading)}
+      dataSource={rows}
+      columns={[
+        {
+          title: "数据集",
+          key: "name",
+          render: (_, row) => (
+            <div className="primary-cell">
+              <strong>{row.dataset.name}</strong>
+              <small>{row.dataset.kind} · 代次 {row.dataset.active_generation}</small>
+            </div>
+          ),
+        },
+        {
+          title: "30 天事件数",
+          key: "count",
+          width: 130,
+          render: (_, row) => (row.count === null ? "—" : row.count.toLocaleString("zh-CN")),
+        },
+        {
+          title: "最新事件",
+          key: "latest",
+          width: 130,
+          render: (_, row) => (row.latest ? <TimeValue value={row.latest} /> : <span className="muted">—</span>),
+        },
+        {
+          title: "状态",
+          key: "state",
+          width: 130,
+          render: (_, row) =>
+            row.state === "loading" ? (
+              <span className="muted">查询中</span>
+            ) : (
+              <StateTag meta={stateMeta} value={row.state} />
+            ),
+        },
+        {
+          title: "说明",
+          key: "message",
+          render: (_, row) => (row.message ? <span className="muted">{row.message}</span> : <span className="muted">—</span>),
+        },
+      ]}
+    />
+  );
+}
+
+export function Events() {
+  const { token } = useAuth();
+  const { message } = AntApp.useApp();
+  const queryClient = useQueryClient();
+  const [dataset, setDataset] = useState("authentication");
+  const [spl, setSpl] = useState(defaultQuery("authentication"));
+  const [range, setRange] = useState("24h");
+  const [result, setResult] = useState<QueryResult | null>(null);
+  const [items, setItems] = useState<EventRow[]>([]);
+  const [cursor, setCursor] = useState("");
+  const [running, setRunning] = useState(false);
+  const [error, setError] = useState<string>();
+  const [selected, setSelected] = useState<EventRow>();
+  const [exportFormat, setExportFormat] = useState<"ndjson" | "csv">("ndjson");
+  const [exportOpen, setExportOpen] = useState(false);
+  const exportMutation = useMutation({
+    mutationFn: (values: { query: string; format: string; from: string }) =>
+      api("/exports", token, { method: "POST", body: JSON.stringify(values) }),
+    onSuccess: () => {
+      void message.success("导出任务已创建，可在“任务与回放”页查看进度");
+      void queryClient.invalidateQueries({ queryKey: ["exports"] });
+      setExportOpen(false);
+    },
+    onError: (reason) => void message.error(errorMessage(reason)),
+  });
+
+  const catalog = useQuery({
+    queryKey: ["catalog"],
+    queryFn: ({ signal }) => api("/catalog", token, undefined, catalogSchema, signal),
+  });
+  const datasets = useMemo(() => catalog.data?.datasets ?? [], [catalog.data]);
+  const datasetDecl = datasets.find((item) => item.name === dataset);
+  const presets = presetsFor(dataset, datasetDecl?.kind ?? "");
+
+  async function execute(nextCursor?: string) {
+    setRunning(true);
+    setError(undefined);
+    const hours = qualityRanges.find((item) => item.value === range)?.hours ?? 24;
+    const from = new Date(Date.now() - hours * 3600_000).toISOString();
+    try {
+      const value = await runQuery(token, spl, from, undefined, { limit: 100, cursor: nextCursor });
+      setResult(value);
+      setCursor(value.next_cursor);
+      setItems((previous) => (nextCursor ? [...previous, ...value.items] : value.items));
+    } catch (reason) {
+      if (!nextCursor) {
+        setResult(null);
+        setItems([]);
+        setCursor("");
+      }
+      setError(errorMessage(reason));
+    } finally {
+      setRunning(false);
+    }
+  }
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="调查"
+        title="事件查询"
+        description="SPL 子集查询：数据集、字段与时间范围由服务端按 Catalog 白名单与租户/代次强制约束。"
+        actions={
+          <Select
+            value={range}
+            onChange={setRange}
+            options={qualityRanges.map((item) => ({ value: item.value, label: item.label }))}
+          />
+        }
+      />
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">01</span>
+            <h2>SPL 查询</h2>
+            <p>默认 24 小时、单页 100 条；31 日为 API 请求上限而非数据保留承诺</p>
+          </div>
+          {running && <span className="fetching"><RefreshCw size={13} /> 查询中</span>}
+        </header>
+        <Space direction="vertical" size="middle" style={{ width: "100%" }}>
+          <Space wrap size="small">
+            <Select
+              value={dataset}
+              style={{ minWidth: 220 }}
+              loading={catalog.isLoading}
+              onChange={(value) => {
+                setDataset(value);
+                setSpl(defaultQuery(value));
+                setResult(null);
+                setItems([]);
+                setCursor("");
+                setError(undefined);
+              }}
+              options={datasets.map((item) => ({
+                value: item.name,
+                label: `${item.name}（${item.kind}）`,
+              }))}
+            />
+            {presets.map((preset) => (
+              <Button key={preset.label} size="small" onClick={() => setSpl(preset.query)}>
+                {preset.label}
+              </Button>
+            ))}
+          </Space>
+          <Input.TextArea
+            value={spl}
+            rows={3}
+            spellCheck={false}
+            onChange={(event) => setSpl(event.target.value)}
+            placeholder="search <dataset> WHERE … | stats count BY …"
+          />
+          <Space size="small">
+            <Button
+              type="primary"
+              icon={<Search size={16} />}
+              loading={running}
+              disabled={!spl.trim()}
+              onClick={() => void execute()}
+            >
+              运行查询
+            </Button>
+            <Button
+              icon={<ArrowUpRight size={15} />}
+              disabled={!spl.trim()}
+              onClick={() => setExportOpen(true)}
+            >
+              导出当前查询
+            </Button>
+            <span className="muted">
+              禁止子查询、join、eval、正则、通配符与任意 ES DSL；字段必须在 Catalog 白名单内
+            </span>
+          </Space>
+        </Space>
+      </section>
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">02</span>
+            <h2>查询结果</h2>
+            <p>
+              {result
+                ? result.mode === "events"
+                  ? `共 ${result.total.toLocaleString("zh-CN")} 条命中，已加载 ${items.length} 条`
+                  : `聚合模式：${result.mode}`
+                : "运行查询后在此呈现真实结果"}
+            </p>
+          </div>
+        </header>
+        {error ? (
+          <ErrorState message={error} retry={() => void execute()} />
+        ) : !result ? (
+          <EmptyState title="尚未执行查询" description="选择数据集与常用示例，或直接编写 SPL 后运行。" />
+        ) : result.mode === "events" ? (
+          <>
+            {items.length ? (
+              <Table
+                rowKey={(_, index) => String(index)}
+                pagination={false}
+                dataSource={items}
+                columns={[
+                  {
+                    title: "时间",
+                    key: "ts",
+                    width: 130,
+                    render: (_, item) => <TimeValue value={eventField(item, "@timestamp")} />,
+                  },
+                  {
+                    title: "事件",
+                    key: "event",
+                    render: (_, item) => (
+                      <div className="primary-cell">
+                        <strong>{eventField(item, "event", "action") || eventField(item, "event", "kind") || "—"}</strong>
+                        <small><code>{eventField(item, "event", "id") || eventField(item, "id")}</code></small>
+                      </div>
+                    ),
+                  },
+                  {
+                    title: "结果",
+                    key: "outcome",
+                    width: 90,
+                    render: (_, item) => eventField(item, "event", "outcome") || "—",
+                  },
+                  {
+                    title: "用户",
+                    key: "user",
+                    width: 140,
+                    render: (_, item) => eventField(item, "user", "name") || eventField(item, "user", "id") || "—",
+                  },
+                  {
+                    title: "来源地址",
+                    key: "src",
+                    width: 120,
+                    render: (_, item) => eventField(item, "source", "ip") || "—",
+                  },
+                  {
+                    title: "质量",
+                    key: "quality",
+                    width: 90,
+                    render: (_, item) => {
+                      const status = eventField(item, "ueba", "quality", "status");
+                      return status ? (
+                        <Tag className={`signal-tag ${status === "partial" ? "status-progress" : "status-open"}`}>{status}</Tag>
+                      ) : (
+                        "—"
+                      );
+                    },
+                  },
+                  {
+                    title: "操作",
+                    key: "ops",
+                    width: 90,
+                    render: (_, item) => (
+                      <Button size="small" type="link" icon={<FileSearch size={14} />} onClick={() => setSelected(item)}>
+                        详情
+                      </Button>
+                    ),
+                  },
+                ]}
+              />
+            ) : (
+              <EmptyState title="范围内无事件" description="当前时间范围没有命中事件；不要把空结果解释为无事件——超出保留期的范围不会静默截短。" />
+            )}
+            {cursor && (
+              <div style={{ marginTop: 12 }}>
+                <Button size="small" loading={running} onClick={() => void execute(cursor)}>
+                  加载更多（游标分页）
+                </Button>
+              </div>
+            )}
+          </>
+        ) : (
+          <AggregationResult result={result} />
+        )}
+      </section>
+
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">03</span>
+            <h2>数据集状态（索引新鲜度 / 可查询边界）</h2>
+            <p>
+              按 30 天窗口的最新事件时间评估索引滞后；Catalog 尚未返回每数据集的实际可查询起点与
+              retention（IMPLEMENTATION-TODO 前置门禁 #2），“归档中/已过期”后端无权威信号，此处仅呈现可得信号并如实标注
+            </p>
+          </div>
+        </header>
+        {catalog.error ? (
+          <ErrorState message={errorMessage(catalog.error)} retry={() => void catalog.refetch()} />
+        ) : catalog.isLoading ? (
+          <LoadingBlock rows={6} />
+        ) : (
+          <DatasetStatus datasets={datasets} />
+        )}
+      </section>
+
+      {selected && <EventDetailDrawer item={selected} onClose={() => setSelected(undefined)} />}
+      <Modal
+        title="创建异步导出"
+        open={exportOpen}
+        onCancel={() => setExportOpen(false)}
+        okText="创建导出"
+        confirmLoading={exportMutation.isPending}
+        onOk={() => {
+          const hours = qualityRanges.find((item) => item.value === range)?.hours ?? 24;
+          exportMutation.mutate({
+            query: spl,
+            format: exportFormat,
+            from: new Date(Date.now() - hours * 3600_000).toISOString(),
+          });
+        }}
+      >
+        <div className="page-stack">
+          <Alert
+            type="info"
+            showIcon
+            title="导出为异步任务，下载时重新授权"
+            description="敏感字段按创建时权限快照脱敏；原文需 raw:read。未配置导出存储时后端 fail-closed 拒绝（503），不会生成任何任务。"
+          />
+          <Form layout="vertical">
+            <Form.Item label="格式">
+              <Select
+                value={exportFormat}
+                onChange={setExportFormat}
+                options={[
+                  { value: "ndjson", label: "NDJSON（事件或聚合）" },
+                  { value: "csv", label: "CSV（仅事件模式）" },
+                ]}
+              />
+            </Form.Item>
+            <Form.Item label="查询快照（创建后冻结）">
+              <Input.TextArea value={spl} rows={3} readOnly />
+            </Form.Item>
+          </Form>
+        </div>
+      </Modal>
     </div>
   );
 }

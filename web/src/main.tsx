@@ -16,6 +16,7 @@ const load = <K extends keyof typeof import("./pages")>(name: K) =>
   });
 
 const Overview = load("Overview");
+const Events = load("Events");
 const Anomalies = load("Anomalies");
 const AnomalyDetail = load("AnomalyDetail");
 const Cases = load("Cases");
@@ -52,6 +53,7 @@ const router = createBrowserRouter(
       element: <AppShell />,
       children: [
         { path: "overview", element: wait(<Overview />) },
+        { path: "events", element: guard("event:read", <Events />) },
         { path: "anomalies", element: guard("anomaly:read", <Anomalies />) },
         { path: "anomalies/:id", element: guard("anomaly:read", <AnomalyDetail />) },
         { path: "cases", element: guard("case:read", <Cases />) },

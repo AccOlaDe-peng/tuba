@@ -2,16 +2,19 @@ import { describe, expect, it } from "vitest";
 
 import {
   anomalySummarySchema,
+  buildQueryBody,
   caseSchema,
   casesSchema,
   catalogSchema,
   collectorsSchema,
+  eventProvenance,
   exportsSchema,
   queryResultSchema,
   queryString,
   releasesSchema,
   sourcesSchema,
   statsBuckets,
+  statsMetric,
   statsTotal,
 } from "./api";
 
@@ -213,8 +216,69 @@ describe("API contracts", () => {
     expect(statsTotal(queryResultSchema.parse({ mode: "stats" }))).toBe(0);
   });
 
-  it("parses export job lists including in-flight jobs", () => {
-    const value = exportsSchema.parse({
+  it("builds closed-set query request bodies", () => {
+    expect(buildQueryBody("search authentication | head 5", undefined)).toEqual({
+      query: "search authentication | head 5",
+    });
+    expect(
+      buildQueryBody("search raw | head 5", "2026-10-01T00:00:00Z", {
+        to: "2026-10-02T00:00:00Z",
+        limit: 100,
+        cursor: "abc",
+      }),
+    ).toEqual({
+      query: "search raw | head 5",
+      from: "2026-10-01T00:00:00Z",
+      to: "2026-10-02T00:00:00Z",
+      limit: 100,
+      cursor: "abc",
+    });
+  });
+
+  it("extracts single-value stats metrics including date values", () => {
+    const result = queryResultSchema.parse({
+      mode: "stats",
+      aggregations: {
+        count: { value: 126 },
+        latest: { value: 1796000000000, value_as_string: "2026-10-12T10:00:00.000Z" },
+      },
+    });
+    expect(statsMetric(result, "count")).toEqual({ value: 126, valueAsString: undefined });
+    expect(statsMetric(result, "latest")).toEqual({
+      value: 1796000000000,
+      valueAsString: "2026-10-12T10:00:00.000Z",
+    });
+    expect(statsMetric(result, "missing")).toBeUndefined();
+    const empty = queryResultSchema.parse({ mode: "stats", aggregations: { latest: { value: null } } });
+    expect(statsMetric(empty, "latest")).toEqual({ value: null, valueAsString: undefined });
+  });
+
+  it("extracts provenance references from UIM events", () => {
+    const value = eventProvenance({
+      id: "evt-1",
+      "@timestamp": "2026-10-12T10:00:00Z",
+      event: { id: "evt-1", dataset: "authentication", outcome: "failure" },
+      ueba: {
+        route: { domain: "authentication", generation: "g1" },
+        provenance: { raw_event_id: "raw-9f", release_id: "windows-security-1.0.0" },
+        schema: { version: "1.0.0" },
+        quality: { status: "qualified" },
+      },
+    });
+    expect(value).toEqual({
+      eventId: "evt-1",
+      rawEventId: "raw-9f",
+      releaseId: "windows-security-1.0.0",
+      domain: "authentication",
+      generation: "g1",
+      sourceContextId: "",
+      schemaVersion: "1.0.0",
+      qualityStatus: "qualified",
+    });
+    expect(eventProvenance({}).rawEventId).toBe("");
+  });
+
+  it("parses export job lists including in-flight jobs", () => {    const value = exportsSchema.parse({
       items: [
         {
           id: "3f6b2c9e-0000-4000-8000-abcdefabcdef",
