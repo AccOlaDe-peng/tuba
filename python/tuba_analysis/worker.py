@@ -7,7 +7,6 @@ import os
 import socket
 import time
 import uuid
-from collections import defaultdict, deque
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -15,6 +14,7 @@ from typing import Any
 from confluent_kafka import Consumer, KafkaError, Producer
 
 from .detection import detect_failure_then_success, parse_time
+from .features import FeatureWindows
 from .metrics import Metrics, start_http_server
 from .registry import AnalysisRegistry, RuleDefinition, load_registry
 from .runtime import Checkpoint, PostgresRuntimeStore, RuntimeStore
@@ -35,9 +35,14 @@ class AuthenticationProcessor:
         self.organization = organization
         self.namespace = namespace
         self.rule = rule
-        self.history: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
-        self.watermark: datetime | None = None
-        self.max_event_time: datetime | None = None
+        self.windows = FeatureWindows(
+            lookback=timedelta(seconds=rule.lookback_seconds),
+            allowed_lateness=timedelta(seconds=rule.allowed_lateness_seconds),
+        )
+
+    @property
+    def watermark(self) -> datetime | None:
+        return self.windows.watermark
 
     def process(
         self,
@@ -57,23 +62,10 @@ class AuthenticationProcessor:
         if not event_id:
             raise ValueError("event id is required")
 
-        previous_watermark = self.watermark
-        is_late = previous_watermark is not None and event_time < previous_watermark
-        self.max_event_time = max(self.max_event_time or event_time, event_time)
-        self.watermark = self.max_event_time - timedelta(seconds=self.rule.allowed_lateness_seconds)
-
-        events = self.history[user_id]
-        if not any(item.get("event", {}).get("id") == event_id for item in events):
-            events.append(deepcopy(event))
-        ordered = sorted(events, key=lambda item: (parse_time(item["@timestamp"]), item["event"]["id"]))
-        retention_start = self.max_event_time - timedelta(
-            seconds=self.rule.lookback_seconds + self.rule.allowed_lateness_seconds,
-        )
-        retained = deque(item for item in ordered if parse_time(item["@timestamp"]) >= retention_start)
-        self.history[user_id] = retained
+        is_late, retained = self.windows.observe(event, user_id, event_time)
 
         anomalies = detect_failure_then_success(
-            list(retained),
+            retained,
             self.organization,
             rule_id=self.rule.id,
             rule_version=self.rule.version,
@@ -113,16 +105,7 @@ class AuthenticationProcessor:
         return output
 
     def export_state(self) -> dict[str, Any]:
-        return {
-            "state_version": self.state_version,
-            "watermark": _format_time(self.watermark),
-            "max_event_time": _format_time(self.max_event_time),
-            "history": {
-                user_id: list(events)
-                for user_id, events in self.history.items()
-                if events
-            },
-        }
+        return {"state_version": self.state_version, **self.windows.export()}
 
     @classmethod
     def from_state(
@@ -137,12 +120,7 @@ class AuthenticationProcessor:
             return processor
         if state.get("state_version") != cls.state_version:
             raise ValueError("unsupported processor state version")
-        watermark = state.get("watermark")
-        max_event_time = state.get("max_event_time")
-        processor.watermark = parse_time(watermark) if watermark else None
-        processor.max_event_time = parse_time(max_event_time) if max_event_time else None
-        for user_id, events in state.get("history", {}).items():
-            processor.history[user_id] = deque(events)
+        processor.windows.load(state)
         return processor
 
 

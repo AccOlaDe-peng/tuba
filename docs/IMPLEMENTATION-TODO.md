@@ -10,6 +10,16 @@
 
 ## 当前代码切片（未等同于阶段验收）
 
+### 2026-10-02 后续实现设计复核与前置门禁
+
+以下是本轮设计修订，**不代表任务完成**；落地时须更新机器可读合同、迁移、配置和测试。
+
+1. **F02–F05 / B01–B02 / V05：训练数据可用性。** 14 个完整日、100 个样本的基线门槛不能靠当前 7 日事件 ES 或 12 小时 Kafka 保留满足。F03 先持久化按窗口特征样本和修订历史；F04 只读已关闭、同版本/代次、截止水位之前的窗口。上线前测量样本日量和 PG/ES 分区预算，批准覆盖训练期、迟到修订和回滚的保留期；达不到则保持 `cold_start`，不发布统计基线。B01 超出源数据保留范围时返回缺口并要求受控归档输入，不能假设任意时间都可回填。
+2. **Q01–Q03 / W02 / V06：查询保留边界。** 31 日是请求上限，不是所有 dataset 的可查询承诺。Catalog 需返回每个 dataset 的实际可查询起点、retention、active generation 和新鲜度；超出保留边界返回 `retention_exceeded`，不得静默截短或把空结果解释为无事件。导出任务必须在执行前固定这些边界，完成与下载时重新授权。
+3. **I01 / COL-01、COL-03 / B02 / V02：来源状态拆分。** context 发布状态与接入许可状态分别建模；切换时固定旧 context 尾水位，并对 draining 消息执行边界判断。PG 状态/审计与 outbox 原子提交；ACL 实际状态、adapter checkpoint、receipt 对账完成前不得宣布切换成功。`paused` 保留水位重试，`revoked` 先持久 DLQ 再推进 offset。
+4. **A03 / O05 / F03–F07 / R01–R02 / V07：新增分析对象容量门禁。** 现有 50 GiB 预算只覆盖当时的来源和索引组合，不能继承目标架构中旧的 30/90/180/365 日假设。每开放一种特征、异常、风险或新来源，先记录增量 EPS、日写入量、PG 状态、ES 分片数、磁盘趋势和故障恢复余量，再批准保留/清理配置；超预算时阻断发布或扩容，不靠删除未确认输入腾空间。
+
+
 - Raw：`internal/rawevent`、`internal/ingest`、`internal/rawindexer` 和 `internal/sink/raw.go` 已有可信单事件 envelope、PostgreSQL receipt、Kafka 确认后 202、按 UTC 接收日写 Raw ES。
 - DIP/UIM：`internal/uim` 与 `internal/normalizer` 已有 Microsoft Windows Security 的一组认证/IAM/目录事件和 Zeek conn/dns/http/ssl 首批映射；合同草案位于 `contracts/uim/domain-contract.v1.yaml`。
 - 索引：标准八领域和隔离索引 worker 已创建，ES 写入采用固定 UTC 日物理索引及逻辑 alias。
@@ -372,7 +382,13 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
 
 ## 阶段 7：特征、基线与检测（P1；依赖阶段 6、T02–T04、C04）
 
-- [ ] F01（P）拆分 analysis-worker 内的 feature/baseline/detection 模块；统一 registry、质量门槛及依赖版本。
+- [x] F01（P）拆分 analysis-worker 内的 feature/baseline/detection 模块；统一 registry、质量门槛及依赖版本。
+  - **2026-10-12 完成并勾选（Go 框架包 + Python 侧模块拆分；纯结构重构与框架搭建，无具体特征/检测逻辑，全量测试零回归）**。**无新迁移**（248 台账仍为 00017，未变动）。现状盘点：Go 侧此前只有 `internal/analysis`（Python 分析结果信封解析边界）+ `internal/analysisworker`（结果消费 worker）+ `internal/detection`（`cmd/tuba-detect-auth` 诊断 CLI 专用的 failure-then-success 特设实现，按 F08 定位保留为诊断用途）；Python 侧 `tuba_analysis` 是正式分析 worker，但特征窗口簿记（watermark/去重/保留）揉在 `worker.py` 的 `AuthenticationProcessor` 里，baseline 模块完全不存在。本轮拆分：
+  - **Go 三模块（import DAG 由测试强制）**：`internal/analysis/feature`（`Contribution`/`Window`/`Values`/`Computer`——实体键归因贡献的有界事件时间窗口输入契约，fail-closed 校验，不依赖任何上层）；`internal/analysis/baseline`（`Model`/`Status`（cold_start/training/ready/retired 生命周期，ready 必须有样本数与训练时间戳）/`Trainer`/`Scorer`——训练与评估逻辑归 F04）；`internal/analysis/detection`（`Finding`/`Detector`——nil 基线即纯规则检测，冷启动语义显式传递绝不静默，具体检测器归 F05）。依赖方向 feature ← baseline ← detection。
+  - **统一 registry**：`internal/analysis/registry` 是唯一注册中心。注册描述符 `Descriptor{Kind, ID, Version, Dependencies, Input, Quality}`；**质量门槛 fail-closed**——semver 版本、小写点分 id、输入合同（schema id + semver）、声明的测试覆盖率下限（1–100）与非空测试证据缺一不可；**依赖显式版本化**——依赖以精确 `x.y.z` 或 `>=x.y.z` 约束声明，注册时被依赖模块必须已注册且其最新已注册版本满足约束，否则拒绝（未知依赖 `ErrUnknownDependency`、不满足 `ErrUnsatisfiedVersion`、自依赖拒绝）。查重语义与 E03 对齐：同 (kind,id,version) 同内容幂等，同版本不同内容 `ErrDescriptorConflict` 且已存描述符不被改写，升级必须新版本号；`Resolve` 确定性解析到最高已注册版本。
+  - **复用 E03 rule_snapshots（不另建持久设施）**：`registry.RuleKindFor` 把三模块映射到 `analysis_feature`/`analysis_baseline`/`analysis_detection` 三个 rule snapshot kind，`SnapshotContent` 产出与注册查重相同的规范 JSON（依赖排序无关），`RegisterSnapshot` 直接委托 `entity.RuleSnapshots.Register`——不可变版本、内容哈希冲突拒绝、历史规则永远可读回，全部由 E03 设施承担。
+  - **Python 侧拆分（行为逐字节不变）**：新增 `tuba_analysis/features.py`（`FeatureWindows`——从 worker 抽出的 watermark/事件去重/有界保留簿记，`worker.py` 的 `AuthenticationProcessor` 改为委托，export_state/from_state 线格式不变）与 `tuba_analysis/baseline.py`（`BaselineModel`/`BaselineStatus` 生命周期合同，ready 无样本/时间戳即 fail-closed，训练归 F04）；`parse_time` 唯一实现移入 features 并由 detection 再导出，消除 feature→detection 反向依赖。Python 既有 `registry.py`（semver、查重、算法白名单）保持不变。
+  - **测试**：Go——`registry/registry_test.go` 5 例（feature→baseline→detection 链式注册、幂等重放/同版本异内容拒绝且原值不变/新版本升级、质量门槛 10 类不合规全部拒绝、依赖版本约束（未知/精确不满足/下限不满足/新版本满足/自依赖）、快照内容规范性与 kind 映射）；`internal/analysis/boundary_test.go` 用 `go list` 断言模块边界——feature 不 import baseline/detection/registry、baseline 不 import detection/registry、detection 不 import registry 且必须声明显式依赖。Python——新增 `tests/test_features.py` 7 例（watermark/迟到判定、去重与保留裁剪、export/load round-trip、非法边界拒绝、baseline 生命周期 fail-closed）。验证：`go build ./...`、`go vet ./...` 干净，全量 `go test ./...` 34 包 0 FAIL；Python `unittest discover` 16 例全过（既有 9 例零回归 + 新增 7 例）。**范围说明**：三模块仅有框架契约，无任何具体特征/基线/检测实现（归 F03/F04/F05）；worker 接线与 registry 的运行时加载归 F02/F08；248 未部署任何新二进制。
 - [ ] F02（P/D）实现有界窗口状态、实体/角色输入去重、watermark、idle 分区及未来时间保护。
 - [ ] F03（P）实现至少认证计数/失败率/失败后成功等特征；覆盖迟到修正、窗口关闭、超界回填。
 - [ ] F04（P/G）实现基线训练任务、截止时间、最小样本、cold_start、评估和不可变版本发布。

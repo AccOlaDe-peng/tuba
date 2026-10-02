@@ -8,10 +8,11 @@ from datetime import datetime, timedelta, timezone
 
 
 def parse_time(value: str) -> datetime:
-    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
-    if parsed.tzinfo is None:
-        raise ValueError("event timestamp requires timezone")
-    return parsed.astimezone(timezone.utc)
+    # Canonical implementation lives in the feature module; re-exported here
+    # so existing detection callers keep working.
+    from .features import parse_time as _parse_time
+
+    return _parse_time(value)
 
 
 def detect_failure_then_success(
