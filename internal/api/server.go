@@ -17,6 +17,7 @@ import (
 
 	"tuba/product/internal/auth"
 	"tuba/product/internal/control"
+	"tuba/product/internal/entity"
 	"tuba/product/internal/es"
 	"tuba/product/internal/telemetry"
 )
@@ -41,6 +42,9 @@ type Server struct {
 	// ExportDir is the controlled local directory holding completed export
 	// files (TUBA_EXPORT_DIR). When empty the export endpoints fail closed.
 	ExportDir string
+	// Entities serves the entity profile read endpoints (W03); nil fails
+	// every entity endpoint closed with 503.
+	Entities *entity.Queries
 }
 
 func (s Server) Handler() http.Handler {
@@ -80,6 +84,13 @@ func (s Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/anomalies", s.protected("anomaly:read", s.list("anomalies")))
 	mux.HandleFunc("GET /api/v1/anomalies/{id}", s.protected("anomaly:read", s.anomalyDetail))
 	mux.HandleFunc("GET /api/v1/anomalies/{id}/evidence", s.protected("anomaly:read", s.anomalyEvidence))
+	mux.HandleFunc("GET /api/v1/entities", s.protected("anomaly:read", s.listEntities))
+	mux.HandleFunc("GET /api/v1/entities/{id}", s.protected("anomaly:read", s.entityDetail))
+	mux.HandleFunc("GET /api/v1/entities/{id}/attributions", s.protected("anomaly:read", s.entityAttributions))
+	mux.HandleFunc("GET /api/v1/entities/{id}/relations", s.protected("anomaly:read", s.entityRelations))
+	mux.HandleFunc("GET /api/v1/entities/{id}/features", s.protected("anomaly:read", s.entityFeatures))
+	mux.HandleFunc("GET /api/v1/entities/{id}/baseline", s.protected("anomaly:read", s.entityBaseline))
+	mux.HandleFunc("GET /api/v1/entities/{id}/risk", s.protected("anomaly:read", s.entityRisk))
 	mux.HandleFunc("GET /api/v1/cases", s.protected("case:read", s.listCases))
 	mux.HandleFunc("POST /api/v1/cases", s.protected("case:write", s.createCase))
 	mux.HandleFunc("GET /api/v1/cases/{id}", s.protected("case:read", s.caseDetail))

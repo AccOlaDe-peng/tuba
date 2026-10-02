@@ -949,28 +949,128 @@ paths:
   /entities:
     get:
       operationId: searchEntities
-      summary: Search entities within the authenticated tenant and active generation
-      x-required-permission: entity:read
-      x-implementation-status: planned
+      summary: List registered entities of the authenticated tenant (PostgreSQL entity registry), with substring search on the canonical key
+      x-required-permission: anomaly:read
       parameters:
         - {$ref: "#/components/parameters/Cursor"}
         - {$ref: "#/components/parameters/Limit"}
-        - {name: entity_type, in: query, schema: {type: string, enum: [account, device]}}
+        - {name: query, in: query, schema: {type: string, maxLength: 200}, description: Substring match on the normalized canonical key}
+        - {name: type, in: query, schema: {type: string, enum: [account, device]}}
       responses:
-        "200": {description: Paginated entity projection, content: {application/json: {schema: {$ref: "#/components/schemas/EntityList"}}}}
+        "200": {description: Paginated entity directory, content: {application/json: {schema: {$ref: "#/components/schemas/EntityList"}}}}
+        "400": {description: Invalid limit, type, or cursor}
         "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Entity store unavailable (fail-closed)}
   /entities/{id}:
     get:
       operationId: getEntity
-      summary: Read an entity with attribution and relationship references
-      x-required-permission: entity:read
-      x-implementation-status: planned
+      summary: Entity master record with the most recent resolved attributions
+      x-required-permission: anomaly:read
       parameters:
         - {name: id, in: path, required: true, schema: {type: string, pattern: "^ent:[a-f0-9]{64}$"}}
       responses:
-        "200": {description: Tenant-scoped entity projection, content: {application/json: {schema: {$ref: "#/components/schemas/Entity"}}}}
+        "200": {description: Tenant-scoped entity detail, content: {application/json: {schema: {$ref: "#/components/schemas/EntityDetail"}}}}
+        "400": {description: Invalid entity ID}
         "403": {$ref: "#/components/responses/Forbidden"}
         "404": {description: Entity not found}
+        "503": {description: Entity store unavailable (fail-closed)}
+  /entities/{id}/attributions:
+    get:
+      operationId: listEntityAttributions
+      summary: Attribution history of the entity (role, three-state outcome, rule version, evidence reason), newest first
+      x-required-permission: anomaly:read
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^ent:[a-f0-9]{64}$"}}
+        - {$ref: "#/components/parameters/Cursor"}
+        - {$ref: "#/components/parameters/Limit"}
+      responses:
+        "200":
+          description: Attribution history page
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/EntityAttribution"}}
+                  next_cursor: {type: [string, "null"]}
+        "400": {description: Invalid entity ID, limit, or cursor}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Entity store unavailable (fail-closed)}
+  /entities/{id}/relations:
+    get:
+      operationId: listEntityRelations
+      summary: Temporal relations of the entity in both directions; active intervals first, history optionally included
+      x-required-permission: anomaly:read
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^ent:[a-f0-9]{64}$"}}
+        - {name: history, in: query, schema: {type: string, enum: ["true", "false"], default: "true"}}
+      responses:
+        "200":
+          description: Temporal relation edges (at most 200)
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/EntityRelation"}}
+        "400": {description: Invalid entity ID or history flag}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Entity store unavailable (fail-closed)}
+  /entities/{id}/features:
+    get:
+      operationId: listEntityFeatures
+      summary: Most recent closed feature windows of the entity (feature_samples), newest first
+      x-required-permission: anomaly:read
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^ent:[a-f0-9]{64}$"}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 50, default: 20}}
+      responses:
+        "200":
+          description: Feature window samples
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/EntityFeatureSample"}}
+        "400": {description: Invalid entity ID or limit}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Entity store unavailable (fail-closed)}
+  /entities/{id}/baseline:
+    get:
+      operationId: listEntityBaseline
+      summary: Baseline model lifecycle states of the tenant (cold_start/training/ready/retired); covers_entity flags whether the model's published training sample range included the entity
+      x-required-permission: anomaly:read
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^ent:[a-f0-9]{64}$"}}
+      responses:
+        "200":
+          description: Baseline model lifecycle states
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items]
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/EntityBaselineModel"}}
+        "400": {description: Invalid entity ID}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Entity store unavailable (fail-closed)}
+  /entities/{id}/risk:
+    get:
+      operationId: getEntityRisk
+      summary: Current entity risk projection read back from the ueba-analysis-entity_risk state index; projection is null when the entity has no finding contributions
+      x-required-permission: anomaly:read
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, pattern: "^ent:[a-f0-9]{64}$"}}
+      responses:
+        "200": {description: Entity risk projection (or null), content: {application/json: {schema: {$ref: "#/components/schemas/EntityRisk"}}}}
+        "400": {description: Invalid entity ID}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Data store unavailable (fail-closed)}
   /risks:
     get:
       operationId: listRisks
@@ -1209,15 +1309,93 @@ components:
         occurred_at: {type: string, format: date-time}
     Entity:
       type: object
-      required: [entity_id, entity_type, revision, identity_strength, valid_from]
+      required: [entity_id, entity_type, authority, canonical_key, revision, identity_strength, valid_from]
       properties:
         entity_id: {type: string, pattern: '^ent:[a-f0-9]{64}$'}
         entity_type: {type: string, enum: [account, device]}
+        authority: {type: string, description: Identity space the entity is registered in}
+        canonical_key: {type: string, description: "Normalized canonical identifier (weak identity occurrences carry a #N suffix)"}
         revision: {type: integer, minimum: 1}
         identity_strength: {type: string, enum: [strong, weak]}
         valid_from: {type: string, format: date-time}
         valid_to: {type: [string, "null"], format: date-time}
         document: {type: object}
+    EntityAttribution:
+      type: object
+      required: [attribution_id, event_id, role, state, rule_version, event_time]
+      properties:
+        attribution_id: {type: string, pattern: '^att:[a-f0-9]{64}$'}
+        event_id: {type: string}
+        role: {type: string}
+        state: {type: string, enum: [resolved, unresolved, ambiguous]}
+        rule_version: {type: string}
+        reason: {type: string, description: Evidence reason code for non-resolved states}
+        event_time: {type: string, format: date-time}
+        evidence: {type: object}
+    EntityDetail:
+      allOf:
+        - {$ref: '#/components/schemas/Entity'}
+        - type: object
+          required: [recent_attributions]
+          properties:
+            recent_attributions:
+              type: array
+              items: {$ref: '#/components/schemas/EntityAttribution'}
+              description: Most recent resolved attributions (newest first, at most five)
+    EntityRelation:
+      type: object
+      required: [relation_id, from_entity_id, relation_type, to_entity_id, event_id, rule_version, valid_from, confidence]
+      properties:
+        relation_id: {type: string, pattern: '^rel:[a-f0-9]{64}$'}
+        from_entity_id: {type: string, pattern: '^ent:[a-f0-9]{64}$'}
+        relation_type: {type: string, enum: [member_of, belongs_to, assigned_to, managed_by]}
+        to_entity_id: {type: string, pattern: '^ent:[a-f0-9]{64}$'}
+        event_id: {type: string}
+        rule_version: {type: string}
+        valid_from: {type: string, format: date-time}
+        valid_to: {type: [string, "null"], format: date-time}
+        confidence: {type: number, minimum: 0, maximum: 1}
+        evidence: {type: object}
+    EntityFeatureSample:
+      type: object
+      required: [feature_id, feature_version, generation, window_start, window_end, revision, quality, values]
+      properties:
+        feature_id: {type: string}
+        feature_version: {type: string}
+        generation: {type: string}
+        window_start: {type: string, format: date-time}
+        window_end: {type: string, format: date-time}
+        revision: {type: integer, minimum: 1}
+        quality: {type: string, enum: [qualified, partial]}
+        values: {type: object}
+    EntityBaselineModel:
+      type: object
+      required: [model_id, model_version, feature_id, feature_version, generation, status, sample_count, complete_days, sample_range, metrics, created_at, covers_entity]
+      properties:
+        model_id: {type: string}
+        model_version: {type: string}
+        feature_id: {type: string}
+        feature_version: {type: string}
+        generation: {type: string}
+        status: {type: string, enum: [cold_start, training, ready, retired]}
+        sample_count: {type: integer, minimum: 0}
+        complete_days: {type: integer, minimum: 0}
+        trained_at: {type: [string, "null"], format: date-time}
+        training_cutoff: {type: [string, "null"], format: date-time}
+        sample_range: {type: object}
+        metrics: {type: object}
+        created_at: {type: string, format: date-time}
+        covers_entity: {type: boolean, description: Whether the model's immutable published sample range included the requested entity}
+    EntityRisk:
+      type: object
+      required: [entity_id, projection]
+      properties:
+        entity_id: {type: string, pattern: '^ent:[a-f0-9]{64}$'}
+        projection:
+          type: [object, "null"]
+          description: R02 risk projection document (risk_score, contributions, decay, compute_version, updated_at); null when the entity has no finding contributions
+        revision: {type: integer, minimum: 1}
+        operation: {type: string, enum: [upsert, retracted]}
     EntityList:
       type: object
       required: [items, next_cursor]

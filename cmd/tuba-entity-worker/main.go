@@ -31,6 +31,23 @@ func main() {
 	if accountSpace == "" || deviceSpace == "" {
 		log.Fatal("ENTITY_ACCOUNT_SPACE and ENTITY_DEVICE_SPACE are required")
 	}
+	// Boot-time space registration is opt-in: when the kind env var is set
+	// the worker ensures the space exists (idempotent, kind conflict is
+	// fatal). When unset, spaces are assumed pre-registered by the operator.
+	spaceKind := func(env string) (entity.SpaceKind, bool) {
+		kind := entity.SpaceKind(os.Getenv(env))
+		if kind == "" {
+			return "", false
+		}
+		switch kind {
+		case entity.SpaceActiveDirectory, entity.SpaceLocalAccounts, entity.SpaceCloudDirectory, entity.SpaceCustom:
+			return kind, true
+		}
+		log.Fatalf("%s=%q is not a valid identity space kind", env, kind)
+		return "", false
+	}
+	accountSpaceKind, accountKindSet := spaceKind("ENTITY_ACCOUNT_SPACE_KIND")
+	deviceSpaceKind, deviceKindSet := spaceKind("ENTITY_DEVICE_SPACE_KIND")
 	kc := kafkautil.Config{Protocol: c.KafkaProtocol, Mechanism: c.KafkaSASLMechanism, Username: c.KafkaUsername, Password: c.KafkaPassword, CAFile: c.KafkaCAFile, CertFile: c.KafkaCertFile, KeyFile: c.KafkaKeyFile, ServerName: c.KafkaServerName}
 	dialer, err := kc.Dialer()
 	if err != nil {
@@ -68,7 +85,26 @@ func main() {
 			log.Fatalf("metrics server: %v", err)
 		}
 	}()
-	processor := entityworker.AttributionProcessor{Attributor: entity.NewAttributor(pool), AccountSpace: accountSpace, DeviceSpace: deviceSpace}
+	var processor entityworker.Processor = entityworker.AttributionProcessor{Attributor: entity.NewAttributor(pool), AccountSpace: accountSpace, DeviceSpace: deviceSpace}
+	if os.Getenv("ENTITY_REGISTER_ON_SIGHT") != "false" {
+		registry := entity.NewRegistry(pool)
+		bootCtx, bootCancel := context.WithTimeout(context.Background(), 15*time.Second)
+		if accountKindSet {
+			if _, err := registry.RegisterSpace(bootCtx, c.Organization, accountSpace, accountSpaceKind); err != nil {
+				bootCancel()
+				log.Fatalf("register account identity space: %v", err)
+			}
+		}
+		if deviceKindSet {
+			if _, err := registry.RegisterSpace(bootCtx, c.Organization, deviceSpace, deviceSpaceKind); err != nil {
+				bootCancel()
+				log.Fatalf("register device identity space: %v", err)
+			}
+		}
+		bootCancel()
+		processor = entityworker.NewRegisteringProcessor(registry, entity.NewAttributor(pool), accountSpace, deviceSpace, metrics)
+		log.Printf("register-on-sight enabled (account space %s, device space %s)", accountSpace, deviceSpace)
+	}
 	log.Printf("entity worker consuming %s.<domain>.v1, publishing %s (account space %s, device space %s)", c.EventsTopicPrefix, c.AttributedTopic, accountSpace, deviceSpace)
 	failures := make(chan error, len(domains))
 	var wg sync.WaitGroup

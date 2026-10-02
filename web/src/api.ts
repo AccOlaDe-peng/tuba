@@ -143,6 +143,182 @@ export const caseSnapshotsSchema = z.object({
   items: z.array(caseSnapshotSchema).optional().default([]),
 });
 
+// Entity profile endpoints (W03 backend): PG entity registry reads plus the
+// ES entity_risk state projection read-back.
+export const entitySummarySchema = z.object({
+  entity_id: z.string(),
+  entity_type: z.enum(["account", "device"]),
+  authority: z.string(),
+  canonical_key: z.string(),
+  identity_strength: z.enum(["strong", "weak"]),
+  revision: z.number().int().positive(),
+  valid_from: z.string(),
+  valid_to: z.string().nullable().optional(),
+});
+
+export const entityPageSchema = z.object({
+  items: z.array(entitySummarySchema).optional().default([]),
+  next_cursor: z.string().nullable().optional().default(""),
+});
+
+export const entityAttributionSchema = z.object({
+  attribution_id: z.string(),
+  event_id: z.string(),
+  role: z.string(),
+  state: z.enum(["resolved", "unresolved", "ambiguous"]),
+  rule_version: z.string().optional().default(""),
+  reason: z.string().optional().default(""),
+  event_time: z.string(),
+  evidence: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const entityAttributionPageSchema = z.object({
+  items: z.array(entityAttributionSchema).optional().default([]),
+  next_cursor: z.string().nullable().optional().default(""),
+});
+
+export const entityDetailSchema = entitySummarySchema.extend({
+  document: z.record(z.string(), z.unknown()).optional().default({}),
+  recent_attributions: z.array(entityAttributionSchema).optional().default([]),
+});
+
+export const entityRelationSchema = z.object({
+  relation_id: z.string(),
+  from_entity_id: z.string(),
+  relation_type: z.string(),
+  to_entity_id: z.string(),
+  event_id: z.string(),
+  rule_version: z.string().optional().default(""),
+  valid_from: z.string(),
+  valid_to: z.string().nullable().optional(),
+  confidence: z.number().min(0).max(1),
+  evidence: z.record(z.string(), z.unknown()).optional(),
+});
+
+export const entityRelationsSchema = z.object({
+  items: z.array(entityRelationSchema).optional().default([]),
+});
+
+export const entityFeatureSampleSchema = z.object({
+  feature_id: z.string(),
+  feature_version: z.string(),
+  generation: z.string(),
+  window_start: z.string(),
+  window_end: z.string(),
+  revision: z.number().int().positive(),
+  quality: z.enum(["qualified", "partial"]),
+  values: z.record(z.string(), z.unknown()).optional().default({}),
+});
+
+export const entityFeaturesSchema = z.object({
+  items: z.array(entityFeatureSampleSchema).optional().default([]),
+});
+
+export const entityBaselineModelSchema = z.object({
+  model_id: z.string(),
+  model_version: z.string(),
+  feature_id: z.string(),
+  feature_version: z.string(),
+  generation: z.string(),
+  status: z.enum(["cold_start", "training", "ready", "retired"]),
+  sample_count: z.number().int().nonnegative(),
+  complete_days: z.number().int().nonnegative(),
+  trained_at: z.string().nullable().optional(),
+  training_cutoff: z.string().nullable().optional(),
+  sample_range: z.record(z.string(), z.unknown()).optional().default({}),
+  metrics: z.record(z.string(), z.unknown()).optional().default({}),
+  created_at: z.string(),
+  covers_entity: z.boolean().optional().default(false),
+});
+
+export const entityBaselineSchema = z.object({
+  items: z.array(entityBaselineModelSchema).optional().default([]),
+});
+
+// The risk projection document is the R02 pipeline output (risk_score,
+// contributions, decay, compute_version, updated_at); projection is null when
+// the entity has no finding contributions yet.
+export const entityRiskSchema = z.object({
+  entity_id: z.string(),
+  projection: z.record(z.string(), z.unknown()).nullable(),
+  revision: z.number().int().positive().optional(),
+  operation: z.enum(["upsert", "retracted"]).optional(),
+});
+
+export type EntitySummary = z.infer<typeof entitySummarySchema>;
+export type EntityDetail = z.infer<typeof entityDetailSchema>;
+export type EntityAttribution = z.infer<typeof entityAttributionSchema>;
+export type EntityRelation = z.infer<typeof entityRelationSchema>;
+export type EntityFeatureSample = z.infer<typeof entityFeatureSampleSchema>;
+export type EntityBaselineModel = z.infer<typeof entityBaselineModelSchema>;
+export type EntityRisk = z.infer<typeof entityRiskSchema>;
+
+export function listEntities(
+  token: string | undefined,
+  params: { query?: string; type?: string; cursor?: string; limit?: number },
+  signal?: AbortSignal,
+) {
+  return api(
+    `/entities${queryString({
+      query: params.query,
+      type: params.type,
+      cursor: params.cursor,
+      limit: params.limit,
+    })}`,
+    token,
+    undefined,
+    entityPageSchema,
+    signal,
+  );
+}
+
+export function getEntity(token: string | undefined, id: string, signal?: AbortSignal) {
+  return api(`/entities/${encodeURIComponent(id)}`, token, undefined, entityDetailSchema, signal);
+}
+
+export function listEntityAttributions(
+  token: string | undefined,
+  id: string,
+  params: { cursor?: string; limit?: number },
+  signal?: AbortSignal,
+) {
+  return api(
+    `/entities/${encodeURIComponent(id)}/attributions${queryString({ cursor: params.cursor, limit: params.limit })}`,
+    token,
+    undefined,
+    entityAttributionPageSchema,
+    signal,
+  );
+}
+
+export function listEntityRelations(token: string | undefined, id: string, history: boolean, signal?: AbortSignal) {
+  return api(
+    `/entities/${encodeURIComponent(id)}/relations${queryString({ history: history ? "true" : "false" })}`,
+    token,
+    undefined,
+    entityRelationsSchema,
+    signal,
+  );
+}
+
+export function listEntityFeatures(token: string | undefined, id: string, limit?: number, signal?: AbortSignal) {
+  return api(
+    `/entities/${encodeURIComponent(id)}/features${queryString({ limit })}`,
+    token,
+    undefined,
+    entityFeaturesSchema,
+    signal,
+  );
+}
+
+export function getEntityBaseline(token: string | undefined, id: string, signal?: AbortSignal) {
+  return api(`/entities/${encodeURIComponent(id)}/baseline`, token, undefined, entityBaselineSchema, signal);
+}
+
+export function getEntityRisk(token: string | undefined, id: string, signal?: AbortSignal) {
+  return api(`/entities/${encodeURIComponent(id)}/risk`, token, undefined, entityRiskSchema, signal);
+}
+
 export const auditEventSchema = z.object({
   id: z.number(),
   action: z.string(),
