@@ -347,14 +347,52 @@ paths:
               schema: {$ref: "#/components/schemas/Overview"}
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
+  /catalog:
+    get:
+      operationId: getCatalog
+      x-required-permission: event:read
+      summary: Data Model / Dataset / Query Catalog (Q01)
+      description: Machine-readable declaration of every queryable dataset — fields, types, sensitivity, search/aggregate capabilities, quality dimensions and the active storage generation. Queries are pinned to tenant, namespace, dataset, this generation and a time range.
+      responses:
+        "200":
+          description: Full dataset catalog
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [catalog_version, active_generation, datasets]
+                properties:
+                  catalog_version: {type: integer}
+                  active_generation: {type: string}
+                  max_time_range_day: {type: integer}
+                  datasets: {type: array, items: {$ref: "#/components/schemas/DatasetDecl"}}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /catalog/{name}:
+    get:
+      operationId: getCatalogDataset
+      x-required-permission: event:read
+      summary: One dataset declaration from the catalog
+      parameters:
+        - {name: name, in: path, required: true, schema: {type: string}}
+      responses:
+        "200":
+          description: Dataset declaration
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/DatasetDecl"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Unknown dataset}
   /events:
     get:
       operationId: listEvents
       x-required-permission: event:read
       summary: Search tenant-scoped normalized events in one supported domain
-      description: Returns approved UIM fields only; original source payload is available through separately authorized evidence access.
+      description: Returns approved UIM fields only; original source payload is available through separately authorized evidence access. The query is pinned to the catalog's active generation server-side (ueba.route.generation) in addition to tenant, namespace, dataset and time range.
       parameters:
         - {name: domain, in: query, required: true, schema: {type: string, enum: [authentication, session, iam, directory, network, dns, web, tls]}}
+        - {name: quality, in: query, schema: {type: string, enum: [qualified, partial], description: Optional UIM quality filter; must be one of the dataset's catalog-declared quality statuses}}
         - {name: from, in: query, schema: {type: string, format: date-time}}
         - {name: to, in: query, schema: {type: string, format: date-time}}
         - $ref: "#/components/parameters/Cursor"
@@ -901,6 +939,26 @@ components:
       description: Effective permissions do not allow the operation
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
   schemas:
+    DatasetDecl:
+      type: object
+      required: [name, kind, active_generation, index_pattern]
+      properties:
+        name: {type: string}
+        kind: {type: string, enum: [uim-domain, raw, quarantine]}
+        active_generation: {type: string}
+        index_pattern: {type: string, description: Index/alias pattern with <namespace> placeholder}
+        quality_statuses: {type: array, items: {type: string}}
+        fields:
+          type: array
+          items:
+            type: object
+            required: [name, type, sensitivity, searchable, aggregable]
+            properties:
+              name: {type: string}
+              type: {type: string}
+              sensitivity: {type: string, enum: [public, internal, sensitive]}
+              searchable: {type: boolean}
+              aggregable: {type: boolean}
     BeatIngressEvent:
       $ref: ../events/beat-ingress/1/schema.json
     Release:

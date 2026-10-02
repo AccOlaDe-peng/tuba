@@ -479,7 +479,8 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
 
 ## 阶段 9：查询、API 与控制台（P1；依赖 C08，分模块依赖阶段 4–8）
 
-- [ ] Q01（G）实现 Data Model/Dataset/Query Catalog，强制 tenant/namespace/active generation 和质量条件。受限 `GET /api/v1/events` 已实现领域、租户、时间范围和分页查询，Data Model/Dataset Catalog 与质量筛选仍待实现。
+- [x] Q01（G）实现 Data Model/Dataset/Query Catalog，强制 tenant/namespace/active generation 和质量条件。受限 `GET /api/v1/events` 已实现领域、租户、时间范围和分页查询，Data Model/Dataset Catalog 与质量筛选仍待实现。
+  - **2026-10-12 完成并已部署 248 验证**：新增 `internal/api/catalog.go`——Catalog 注册表为权威机器可读声明（10 个数据集：8 个 UIM 域 + raw + quarantine），每集声明 kind/index_pattern（`<namespace>` 占位）/active_generation(g1)/quality_statuses/字段清单（类型/敏感级别 public-internal-sensitive/可搜索/可聚合）。新端点 `GET /api/v1/catalog` 与 `GET /api/v1/catalog/{name}`（`event:read`）。**强制四要素+时间范围**：tenant/namespace 来自 principal、dataset 经 `findDataset` 校验、`ueba.route.generation=g1` 由服务端强制加入查询 filter（旧代次数据不进入查询视图，用户不可覆盖）；**质量条件**：`quality` 参数必须在 catalog 声明集合内（fail-closed 400），命中时加 `ueba.quality.status` term。一致性由 `catalog_test.go` 锁定：catalog 与 `contracts/uim/domain-catalog.v1.yaml` 交叉校验（每个 common_required 字段与每个 Go 字段双向不得漂移）、`eventDomains` 快表与 catalog 一致、generation/quality 在 ES 查询体中的强制断言、非法 quality 400。OpenAPI 同步（52 paths，`DatasetDecl` schema）。**248 实测**（api 单服务部署 sha256 `fe0b7d41…`，旧件归档 21）：`/catalog` 返回 10 数据集；`authentication` 域默认 24h total=7,655（generation 过滤生效且与直查 ES 的 g1 计数一致、非 g1 文档实测为零）；`quality=qualified` 结果一致；`quality=banana`→400。范围说明：Catalog 目前是代码内注册表（v1），迁 PG/配置化随 Q02/Q03 或后续需要；line :18 提到的"每 dataset 实际可查询起点/新鲜度/`retention_exceeded`"是 Catalog 的下一增量（Q 系列后续处理）。
 - [ ] Q02（G）实现文档列明的 SPL 子集与逻辑计划，字段白名单、分页/聚合限制、超时和拒绝任意 DSL。
 - [ ] Q03（G）实现异步导出、下载重新授权、敏感字段/原文权限、过期链接及审计。
 - [ ] W01（W/G）来源/DIP、UIM 质量、隔离详情、版本发布、任务及回放管理页面。

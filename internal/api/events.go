@@ -12,6 +12,8 @@ import (
 	"tuba/product/internal/es"
 )
 
+// eventDomains 保留供其他调用方做快速域判定；查询路径的权威判定是
+// catalog 注册表（findDataset），二者由 catalog_test.go 保持一致。
 var eventDomains = map[string]bool{
 	"authentication": true, "session": true, "iam": true, "directory": true,
 	"network": true, "dns": true, "web": true, "tls": true,
@@ -19,8 +21,15 @@ var eventDomains = map[string]bool{
 
 func (s Server) events(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	domain := r.URL.Query().Get("domain")
-	if !eventDomains[domain] {
+	dataset, ok := findDataset(domain)
+	if !ok || dataset.Kind != "uim-domain" {
 		http.Error(w, "domain must be one of the supported event domains", http.StatusBadRequest)
+		return
+	}
+	// Q01 质量条件：可声明 quality 过滤，取值必须在 catalog 声明的集合内。
+	quality := r.URL.Query().Get("quality")
+	if quality != "" && !qualityStatusAllowed(dataset, quality) {
+		http.Error(w, "quality must be one of the dataset's declared quality statuses", http.StatusBadRequest)
 		return
 	}
 	limit := 50
@@ -64,8 +73,16 @@ func (s Server) events(w http.ResponseWriter, r *http.Request, principal auth.Pr
 		"query": map[string]any{"bool": map[string]any{"filter": []any{
 			map[string]any{"term": map[string]any{"organization.id": principal.Organization}},
 			map[string]any{"term": map[string]any{"ueba.route.domain": domain}},
+			// Q01 强制 active generation：只查目录声明的当前代次，旧代次数据
+			// 不进入查询视图。
+			map[string]any{"term": map[string]any{"ueba.route.generation": dataset.ActiveGeneration}},
 			map[string]any{"range": map[string]any{"@timestamp": map[string]any{"gte": from.Format(time.RFC3339Nano), "lte": to.Format(time.RFC3339Nano)}}},
 		}}},
+	}
+	if quality != "" {
+		filters := query["query"].(map[string]any)["bool"].(map[string]any)["filter"].([]any)
+		query["query"].(map[string]any)["bool"].(map[string]any)["filter"] = append(filters,
+			map[string]any{"term": map[string]any{"ueba.quality.status": quality}})
 	}
 	if cursor := r.URL.Query().Get("cursor"); cursor != "" {
 		if len(cursor) > 2048 {

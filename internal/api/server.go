@@ -66,6 +66,8 @@ func (s Server) Handler() http.Handler {
 	}
 	mux.HandleFunc("GET /api/v1/me", s.protected("", s.me))
 	mux.HandleFunc("GET /api/v1/events", s.protected("event:read", s.events))
+	mux.HandleFunc("GET /api/v1/catalog", s.protected("event:read", s.catalog))
+	mux.HandleFunc("GET /api/v1/catalog/{name}", s.protected("event:read", s.catalogDataset))
 	mux.HandleFunc("GET /api/v1/overview", s.protected("anomaly:read", s.overview))
 	mux.HandleFunc("GET /api/v1/anomalies", s.protected("anomaly:read", s.list("anomalies")))
 	mux.HandleFunc("GET /api/v1/anomalies/{id}", s.protected("anomaly:read", s.anomalyDetail))
