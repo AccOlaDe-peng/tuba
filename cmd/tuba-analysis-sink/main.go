@@ -20,8 +20,15 @@ func main() {
 	if c.ESURL == "" || c.ESAPIKey == "" {
 		log.Fatal("ES_URL and ES_API_KEY are required")
 	}
-	reader := kafka.NewReader(kafka.ReaderConfig{Brokers: c.Brokers, Topic: c.AnalysisTopic, GroupID: "tuba-analysis-sink-" + c.Namespace, CommitInterval: 0, MinBytes: 1, MaxBytes: 10e6})
-	defer reader.Close()
+	// During the v1→v2 migration window the sink consumes both result topics
+	// with the same consumer group: v1 messages keep their legacy anomaly
+	// write and are mirrored through the v2 object machinery; v2 messages are
+	// multi-object writes with external revision semantics (F07).
+	topics := []string{c.AnalysisTopic}
+	if c.AnalysisV2Topic != "" && c.AnalysisV2Topic != c.AnalysisTopic {
+		topics = append(topics, c.AnalysisV2Topic)
+	}
+	group := "tuba-analysis-sink-" + c.Namespace
 	dlq := &kafka.Writer{Addr: kafka.TCP(c.Brokers...), Topic: c.DeadLetterTopic, RequiredAcks: kafka.RequireAll, Async: false}
 	defer dlq.Close()
 	ctx, stop := lifecycle.NotifyContext(context.Background())
@@ -36,11 +43,18 @@ func main() {
 			log.Fatalf("metrics server: %v", err)
 		}
 	}()
-	log.Printf("analysis sink consuming %s", c.AnalysisTopic)
-	worker := analysisworker.Worker{Organization: c.Organization, Namespace: c.Namespace, Consumer: reader, DeadLetter: dlq, Sink: sink.New(c.ESURL, c.ESAPIKey, c.Namespace), Metrics: metrics}
+	es := sink.New(c.ESURL, c.ESAPIKey, c.Namespace)
+	errs := make(chan error, len(topics))
+	for _, topic := range topics {
+		reader := kafka.NewReader(kafka.ReaderConfig{Brokers: c.Brokers, Topic: topic, GroupID: group, CommitInterval: 0, MinBytes: 1, MaxBytes: 10e6})
+		defer reader.Close()
+		worker := analysisworker.Worker{Organization: c.Organization, Namespace: c.Namespace, Consumer: reader, DeadLetter: dlq, Sink: es, Metrics: metrics}
+		log.Printf("analysis sink consuming %s (group %s)", topic, group)
+		go func() { errs <- worker.Run(ctx) }()
+	}
 	metrics.SetReady(true)
 	defer metrics.SetReady(false)
-	if err := worker.Run(ctx); err != nil {
+	if err := <-errs; err != nil {
 		log.Fatal(err)
 	}
 }

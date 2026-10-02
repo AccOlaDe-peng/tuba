@@ -21,6 +21,7 @@ type Config struct {
 	EventsTopicPrefix                                                          string
 	DeadLetterTopic                                                            string
 	AnalysisTopic                                                              string
+	AnalysisV2Topic                                                            string
 	AttributedTopic                                                            string
 	Organization                                                               string
 	Namespace                                                                  string
@@ -91,6 +92,7 @@ func Load() (Config, error) {
 		EventsTopicPrefix: value("KAFKA_EVENTS_TOPIC_PREFIX", "tuba.events"),
 		DeadLetterTopic:   value("KAFKA_DLQ_TOPIC", "tuba.indexing.dlq.v1"),
 		AnalysisTopic:     value("KAFKA_ANALYSIS_RESULTS_TOPIC", "tuba.analysis.results.v1"),
+		AnalysisV2Topic:   value("KAFKA_ANALYSIS_RESULTS_V2_TOPIC", "tuba.analysis.results.v2"),
 		AttributedTopic:   value("KAFKA_ATTRIBUTED_TOPIC", "tuba.attributed.events.v1"),
 		Organization:      os.Getenv("TUBA_ORGANIZATION_ID"),
 		Namespace:         os.Getenv("TUBA_NAMESPACE"),
