@@ -61,6 +61,7 @@ func joinParts(parts []string) string {
 type FailureThenSuccessDetector struct {
 	MinFailures int
 	Severity    string
+	Generation  string
 }
 
 // Detect implements Detector; the model is ignored (pure rule).
@@ -74,10 +75,11 @@ func (d FailureThenSuccessDetector) Detect(record feature.Record, _ *baseline.Mo
 		return nil, nil
 	}
 	finding := Finding{
-		ID:          findingID(record.EntityID, record.Window.Start.UTC().Format("2006-01-02T15:04:05Z07:00"), RuleFailureThenSuccess+"@"+RuleVersionV1),
+		ID:          findingID(record.EntityID, record.Window.Start.UTC().Format("2006-01-02T15:04:05Z07:00"), RuleFailureThenSuccess+"@"+RuleVersionV1, generationOr(d.Generation)),
 		EntityID:    record.EntityID,
 		RuleID:      RuleFailureThenSuccess,
 		RuleVersion: RuleVersionV1,
+		Generation:  generationOr(d.Generation),
 		Severity:    severityOr(d.Severity, "high"),
 		Score:       1.0,
 		Explanation: fmt.Sprintf("%.0f failed logins followed by a successful login in the window", failures),
@@ -99,6 +101,8 @@ func (d FailureThenSuccessDetector) Detect(record feature.Record, _ *baseline.Mo
 type FailureBurstDetector struct {
 	Threshold int
 	Severity  string
+	// Generation is the finding business-key generation (F06); empty defaults to DefaultGeneration.
+	Generation string
 }
 
 // Detect implements Detector; the model is ignored (pure rule).
@@ -111,10 +115,11 @@ func (d FailureBurstDetector) Detect(record feature.Record, _ *baseline.Model) (
 		return nil, nil
 	}
 	finding := Finding{
-		ID:          findingID(record.EntityID, record.Window.Start.UTC().Format("2006-01-02T15:04:05Z07:00"), RuleFailureBurst+"@"+RuleVersionV1),
+		ID:          findingID(record.EntityID, record.Window.Start.UTC().Format("2006-01-02T15:04:05Z07:00"), RuleFailureBurst+"@"+RuleVersionV1, generationOr(d.Generation)),
 		EntityID:    record.EntityID,
 		RuleID:      RuleFailureBurst,
 		RuleVersion: RuleVersionV1,
+		Generation:  generationOr(d.Generation),
 		Severity:    severityOr(d.Severity, "medium"),
 		Score:       1.0,
 		Explanation: fmt.Sprintf("%.0f failed logins within %s (threshold %d)", failures, record.Window.End.Sub(record.Window.Start), d.Threshold),
@@ -139,6 +144,8 @@ type BaselineDeviationDetector struct {
 	Stats      baseline.Statistics
 	ZThreshold float64
 	Severity   string
+	// Generation is the finding business-key generation (F06); empty defaults to DefaultGeneration.
+	Generation string
 }
 
 // Detect implements Detector. The model must be non-nil and ready.
@@ -196,11 +203,13 @@ func (d BaselineDeviationDetector) Detect(record feature.Record, model *baseline
 			record.EntityID,
 			record.Window.Start.UTC().Format("2006-01-02T15:04:05Z07:00"),
 			RuleBaselineDeviation+"@"+RuleVersionV1,
+			generationOr(d.Generation),
 			model.ID+"@"+model.Version,
 		),
 		EntityID:     record.EntityID,
 		RuleID:       RuleBaselineDeviation,
 		RuleVersion:  RuleVersionV1,
+		Generation:   generationOr(d.Generation),
 		Severity:     severityOr(d.Severity, "medium"),
 		Score:        score,
 		Explanation:  deviationExplanation(breaches, d.Stats, model),
@@ -232,6 +241,13 @@ func deviationExplanation(breaches map[string]float64, stats baseline.Statistics
 		out += fmt.Sprintf(" %s (|z|=%s, mean=%g, std=%g);", name, zText, stats.FeatureStats[name].Mean, stats.FeatureStats[name].Std)
 	}
 	return out
+}
+
+func generationOr(value string) string {
+	if value == "" {
+		return DefaultGeneration
+	}
+	return value
 }
 
 func severityOr(value, fallback string) string {

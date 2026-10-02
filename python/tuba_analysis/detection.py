@@ -18,6 +18,12 @@ applied threshold, the contributing features, the rule/model version, and
 input references (evidence event ids plus the bounded window). The output
 shape is the existing anomaly document envelope (``_id``/``_source``) so the
 analysis results topic / analysis-sink path consumes it unchanged.
+
+F06: every finding carries a mandatory ``generation`` (default ``g1``); it is
+part of the finding business key / anomaly-id derivation (contracts/ids.md),
+so a rule upgrade on a new generation never overwrites the old generation's
+findings. Revision/retracted lifecycle over those business keys lives in
+``tuba_analysis/revisions.py``.
 """
 
 from __future__ import annotations
@@ -30,6 +36,7 @@ from typing import Any
 
 from .baseline import BaselineModel, BaselineStatus
 from .features import compute_window_features, parse_time as _parse_time
+from .revisions import DEFAULT_GENERATION
 
 RULE_FAILURE_THEN_SUCCESS = "auth.failure-then-success"
 RULE_FAILURE_BURST = "auth.failure-burst"
@@ -80,6 +87,7 @@ def _anomaly_document(
     entity_id: str,
     rule_id: str,
     rule_version: str,
+    generation: str,
     severity: str,
     score: float,
     reason_codes: list[str],
@@ -92,6 +100,8 @@ def _anomaly_document(
     window_end: datetime,
     model: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    if not generation:
+        raise ValueError("finding requires a generation (business-key part)")
     detection: dict[str, Any] = {
         "rule_id": rule_id,
         "rule_version": rule_version,
@@ -110,6 +120,7 @@ def _anomaly_document(
             "severity": severity,
             "status": "open",
             "score": score,
+            "generation": generation,
         },
         "evidence": {"event_ids": sorted(evidence_ids), "count": len(evidence_ids)},
         "detection": detection,
@@ -143,6 +154,7 @@ def detect_failure_then_success(
     *,
     rule_id: str = RULE_FAILURE_THEN_SUCCESS,
     rule_version: str = RULE_VERSION_V1,
+    generation: str = DEFAULT_GENERATION,
     severity: str = "high",
     threshold: int = 5,
     lookback: timedelta = timedelta(minutes=30),
@@ -179,7 +191,7 @@ def detect_failure_then_success(
             tz=timezone.utc,
         )
         window_end = window_start + timedelta(seconds=window_seconds)
-        key = f"{organization_id}|{user_id}|{window_start.isoformat()}|{rule_id}@{rule_version}"
+        key = f"{organization_id}|{user_id}|{window_start.isoformat()}|{rule_id}@{rule_version}|{generation}"
         anomaly_id = "anom:" + hashlib.sha256(key.encode()).hexdigest()
         if anomaly_id in output:
             continue
@@ -193,6 +205,7 @@ def detect_failure_then_success(
             entity_id=user_id,
             rule_id=rule_id,
             rule_version=rule_version,
+            generation=generation,
             severity=severity,
             score=1.0,
             reason_codes=["AUTH_FAILURE_BURST_THEN_SUCCESS"],
@@ -217,6 +230,7 @@ def detect_failure_burst(
     *,
     rule_id: str = RULE_FAILURE_BURST,
     rule_version: str = RULE_VERSION_V1,
+    generation: str = DEFAULT_GENERATION,
     severity: str = "medium",
     threshold: int = 10,
     window_seconds: int = 300,
@@ -249,7 +263,7 @@ def detect_failure_burst(
         if len(bucket) < threshold:
             continue
         window_end = window_start + timedelta(seconds=window_seconds)
-        key = f"{organization_id}|{user_id}|{window_start.isoformat()}|{rule_id}@{rule_version}"
+        key = f"{organization_id}|{user_id}|{window_start.isoformat()}|{rule_id}@{rule_version}|{generation}"
         anomaly_id = "anom:" + hashlib.sha256(key.encode()).hexdigest()
         features = compute_window_features(bucket)
         evidence = sorted(item["event"]["id"] for item in bucket)
@@ -260,6 +274,7 @@ def detect_failure_burst(
             entity_id=user_id,
             rule_id=rule_id,
             rule_version=rule_version,
+            generation=generation,
             severity=severity,
             score=1.0,
             reason_codes=["AUTH_FAILURE_BURST"],
@@ -285,6 +300,7 @@ def detect_baseline_deviation(
     *,
     rule_id: str = RULE_BASELINE_DEVIATION,
     rule_version: str = RULE_VERSION_V1,
+    generation: str = DEFAULT_GENERATION,
     severity: str = "medium",
     z_threshold: float = DEFAULT_Z_THRESHOLD,
 ) -> dict[str, Any]:
@@ -346,7 +362,7 @@ def detect_baseline_deviation(
 
     key = (
         f"{organization_id}|{entity_id}|{window_start.isoformat()}|{rule_id}@{rule_version}"
-        f"|{model.model_id}@{model.version}"
+        f"|{generation}|{model.model_id}@{model.version}"
     )
     anomaly_id = "anom:" + hashlib.sha256(key.encode()).hexdigest()
     worst = max(breaches.values(), key=lambda entry: entry["abs_z"])
@@ -363,6 +379,7 @@ def detect_baseline_deviation(
         entity_id=entity_id,
         rule_id=rule_id,
         rule_version=rule_version,
+        generation=generation,
         severity=severity,
         score=score,
         reason_codes=["AUTH_BASELINE_DEVIATION"],

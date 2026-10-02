@@ -28,6 +28,7 @@ class RuleDefinition:
     lookback_seconds: int
     window_seconds: int
     allowed_lateness_seconds: int
+    generation: str = "g1"
 
 
 @dataclass(frozen=True)
@@ -89,6 +90,9 @@ def load_registry(path: str | Path | None = None) -> AnalysisRegistry:
             raise RegistryError(f"unknown feature for {rule_id}: {feature_id}")
         if severity not in {"low", "medium", "high", "critical"}:
             raise RegistryError(f"invalid severity for {rule_id}")
+        generation = str(rule.get("generation", "g1"))
+        if not generation or "|" in generation:
+            raise RegistryError(f"invalid generation for {rule_id}")
         rules[rule_id] = RuleDefinition(
             id=rule_id,
             version=rule_version,
@@ -102,6 +106,7 @@ def load_registry(path: str | Path | None = None) -> AnalysisRegistry:
                 parameters.get("allowed_lateness_seconds"),
                 f"{rule_id}.allowed_lateness_seconds",
             ),
+            generation=generation,
         )
 
     models: dict[str, dict[str, Any]] = {}

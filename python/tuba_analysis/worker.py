@@ -74,6 +74,7 @@ class AuthenticationProcessor:
             self.organization,
             rule_id=self.rule.id,
             rule_version=self.rule.version,
+            generation=self.rule.generation,
             severity=self.rule.severity,
             threshold=self.rule.threshold,
             lookback=timedelta(seconds=self.rule.lookback_seconds),

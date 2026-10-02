@@ -273,3 +273,43 @@ class BaselineDeviationTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class GenerationBusinessKeyTests(unittest.TestCase):
+    """F06: generation is a mandatory business-key part of every finding."""
+
+    def burst_events(self, count=10):
+        return [event(f"f{i}", i % 5, "failure", second=i) for i in range(count)]
+
+    def test_finding_carries_generation_default_g1(self):
+        for source in (
+            detect_failure_burst(self.burst_events(), "tenant_a", threshold=10)[0]["_source"],
+            detect_failure_then_success(
+                [event(f"f{i}", i, "failure") for i in range(5)] + [event("s1", 5, "success")],
+                "tenant_a",
+            )[0]["_source"],
+        ):
+            self.assertEqual(source["anomaly"]["generation"], "g1")
+
+    def test_generation_changes_business_key_same_window(self):
+        g1 = detect_failure_burst(self.burst_events(), "tenant_a", threshold=10, generation="g1")
+        g2 = detect_failure_burst(self.burst_events(), "tenant_a", threshold=10, generation="g2")
+        self.assertNotEqual(g1[0]["_id"], g2[0]["_id"])  # new generation never overwrites old
+        self.assertEqual(g1[0]["_source"]["anomaly"]["generation"], "g1")
+        self.assertEqual(g2[0]["_source"]["anomaly"]["generation"], "g2")
+        # Deterministic per generation.
+        self.assertEqual(g1, detect_failure_burst(self.burst_events(), "tenant_a", threshold=10, generation="g1"))
+
+    def test_statistical_finding_carries_generation(self):
+        model = ready_model(
+            {"algorithm": "moments.v1", "feature_stats": {"auth.failure.count": {"mean": 4.0, "std": 2.0, "count": 10, "min": 0.0, "max": 8.0}}}
+        )
+        record = feature_record({"auth.failure.count": 10.0})
+        g1 = detect_baseline_deviation(record, "tenant_a", model, generation="g1")
+        g2 = detect_baseline_deviation(record, "tenant_a", model, generation="g2")
+        self.assertNotEqual(g1["findings"][0]["_id"], g2["findings"][0]["_id"])
+        self.assertEqual(g2["findings"][0]["_source"]["anomaly"]["generation"], "g2")
+
+    def test_empty_generation_fail_closed(self):
+        with self.assertRaises(ValueError):
+            detect_failure_burst(self.burst_events(), "tenant_a", threshold=10, generation="")

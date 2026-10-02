@@ -19,6 +19,8 @@ import (
 
 var (
 	ErrEmptyFindingRef    = errors.New("finding id, entity id, rule id, and rule version are required")
+	ErrMissingGeneration  = errors.New("finding requires a generation (business-key part)")
+	ErrInvalidRevision    = errors.New("invalid finding revision lifecycle operation")
 	ErrInvalidScore       = errors.New("finding score must be within [0, 1]")
 	ErrMissingExplanation = errors.New("finding requires a human-readable explanation")
 	ErrMissingThreshold   = errors.New("finding requires the applied threshold")
@@ -31,12 +33,15 @@ var (
 // human-readable explanation, the applied threshold, the contributing
 // features, the rule/model version, and input references (evidence event ids
 // plus the bounded window). ModelID/ModelVersion are set by the statistical
-// baseline detector and empty for pure rules.
+// baseline detector and empty for pure rules. Generation (F06) is a
+// mandatory part of the finding business key: a rule upgrade on a new
+// generation never overwrites the old generation's findings.
 type Finding struct {
 	ID           string             `json:"id"`
 	EntityID     string             `json:"entity_id"`
 	RuleID       string             `json:"rule_id"`
 	RuleVersion  string             `json:"rule_version"`
+	Generation   string             `json:"generation"`
 	Severity     string             `json:"severity"`
 	Score        float64            `json:"score"`
 	Explanation  string             `json:"explanation"`
@@ -55,6 +60,9 @@ type Finding struct {
 func (f Finding) Validate() error {
 	if f.ID == "" || f.EntityID == "" || f.RuleID == "" || f.RuleVersion == "" {
 		return ErrEmptyFindingRef
+	}
+	if f.Generation == "" {
+		return ErrMissingGeneration
 	}
 	if f.Score < 0 || f.Score > 1 {
 		return ErrInvalidScore
