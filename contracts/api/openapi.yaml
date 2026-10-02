@@ -413,6 +413,50 @@ paths:
         "401": {$ref: "#/components/responses/Unauthorized"}
         "403": {$ref: "#/components/responses/Forbidden"}
         "503": {description: Event store unavailable}
+  /query:
+    post:
+      operationId: runQuery
+      x-required-permission: event:read
+      summary: Run an SPL-subset query (Q02)
+      description: >-
+        SPL subset per design baseline §7: `search <dataset> [WHERE <bool-expr>]` with
+        equality/comparison/AND/OR/NOT conditions, then optional pipelines
+        `| fields f1, f2`, `| stats count|sum(f)|min(f)|max(f)|avg(f) [as alias] [BY f1, f2]`,
+        `| timechart span=<duration> <agg> [BY f]`, `| sort [-]f`, `| head <n>` (1..1000),
+        `| top [n] f | rare [n] f` (n 1..100). SPL text is parsed into a logical plan and
+        compiled server-side; every referenced field must be declared in the dataset's catalog
+        (search conditions require searchable fields, stats/top/rare/sort require aggregable
+        fields). Tenant, namespace, dataset, the catalog's active generation and the time range
+        are always enforced server-side. Raw Elasticsearch DSL, query_string, scripts,
+        subqueries, joins, eval, regex and wildcards are rejected fail-closed (400).
+        Limits: default range 24h, max 31 days; default 100 results, single page max 1000;
+        aggregations max 10,000 buckets (overflow returns budget_exceeded); synchronous
+        queries time out after 30s (504).
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query]
+              properties:
+                query: {type: string, minLength: 1, maxLength: 2048, description: SPL text in the documented subset}
+                from: {type: string, format: date-time}
+                to: {type: string, format: date-time}
+                limit: {type: integer, minimum: 1, maximum: 1000}
+                cursor: {type: string, maxLength: 2048}
+      responses:
+        "200":
+          description: Query result; event queries return items/total/next_cursor, aggregations return mode/aggregations
+          content:
+            application/json:
+              schema: {type: object}
+        "400": {description: SPL parse error (spl_parse), field whitelist violation (spl_field), budget overflow (budget_exceeded), invalid limits or raw DSL attempt}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Event store unavailable}
+        "504": {description: Synchronous query timeout (30s)}
   /anomalies:
     get:
       operationId: listAnomalies
