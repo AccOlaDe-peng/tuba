@@ -218,7 +218,8 @@
     {
       "name": "tuba.attributed.events.v1",
       "physical_name": "tuba.collector.{namespace}.attributed.events.v1",
-      "key": "organization.id + entity.id",
+      "key": "resolved: organization.id + entity.id; unresolved/ambiguous: organization.id + 'unresolved' + state + reason (never dropped, never shares an entity key)",
+      "contract": "events/attributed-event/1/schema.json",
       "producers": [
         "tuba-entity-worker"
       ],
