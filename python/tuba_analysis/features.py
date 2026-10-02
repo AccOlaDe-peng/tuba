@@ -29,7 +29,19 @@ bounded per-entity event history those windows are computed from):
   and ``max_events_per_entity`` (oldest evicted first, counted), entity count
   by ``max_entities`` (idle shells evicted first, active state never dropped;
   if nothing is evictable the input is rejected fail-closed). Nothing is
-  dropped silently — every rejection/eviction lands in ``counters``.
+  dropped silently — every rejection/eviction lands in ``counters``, and
+  retention-pruned (out-of-bounds) events are handed to the optional
+  ``backfill_sink`` for the controlled backfill path (design baseline §6:
+  out-of-bounds data may only enter a new generation through controlled
+  backfill; scheduling the backfill job is F08/replay scope).
+
+F03 concrete features: ``compute_window_features`` is the authoritative
+production implementation of the first-phase authentication feature set
+(design baseline §6). The Go side (internal/analysis/feature/compute.go) is
+the diagnostic/reference implementation of the identical definitions until
+F08 unifies scheduling; both are pinned to the same golden test vector, so
+the same window and the same logical input yield the same values. The Go
+side has no worker wiring, so there is no double-emission risk.
 """
 
 from __future__ import annotations
@@ -37,7 +49,82 @@ from __future__ import annotations
 from collections import defaultdict, deque
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Callable
+
+# Immutable feature version stamp of the first-phase authentication set.
+# Any change to the definitions in compute_window_features requires a new
+# version.
+FEATURE_VERSION_AUTH_V1 = "1.0.0"
+
+FEATURE_AUTH_ATTEMPT_COUNT = "auth.attempt.count"
+FEATURE_AUTH_FAILURE_COUNT = "auth.failure.count"
+FEATURE_AUTH_FAILURE_RATE = "auth.failure.rate"
+FEATURE_AUTH_SOURCE_DEVICE_COUNT = "auth.source_device.count"
+FEATURE_AUTH_SOURCE_IP_COUNT = "auth.source_ip.count"
+FEATURE_AUTH_FAILURE_THEN_SUCCESS_COUNT = "auth.failure_then_success.count"
+
+
+def compute_window_features(
+    events: list[dict[str, Any]],
+    *,
+    feature_version: str = FEATURE_VERSION_AUTH_V1,
+) -> dict[str, Any]:
+    """Compute the first-phase authentication features of one bounded window.
+
+    Deterministic and order-independent: events are re-sorted by
+    (event time, event id) before the failure-then-success sequence feature
+    is evaluated. Returns the computed values plus the feature version stamp
+    and the sorted contributing event ids as input references (for F04
+    baseline sampling and F05 detection input).
+
+    Definitions (identical to the Go reference implementation):
+    ``auth.attempt.count`` counts all events; ``auth.failure.count`` counts
+    outcome "failure"; ``auth.failure.rate`` is failures / attempts (0.0 when
+    empty); the distinct-count features count non-empty host.id / source.ip
+    values; ``auth.failure_then_success.count`` counts successes that follow
+    at least one failure since the previous success.
+    """
+    ordered = sorted(events, key=lambda item: (parse_time(item["@timestamp"]), item["event"]["id"]))
+    failures = 0
+    failure_then_success = 0
+    failures_since_success = 0
+    devices: set[str] = set()
+    ips: set[str] = set()
+    for item in ordered:
+        outcome = item.get("event", {}).get("outcome")
+        if outcome == "failure":
+            failures += 1
+            failures_since_success += 1
+        elif outcome == "success":
+            if failures_since_success >= 1:
+                failure_then_success += 1
+            failures_since_success = 0
+        device = item.get("host", {}).get("id")
+        ip = item.get("source", {}).get("ip")
+        if device:
+            devices.add(device)
+        if ip:
+            ips.add(ip)
+    attempts = len(ordered)
+    return {
+        "feature_version": feature_version,
+        "values": {
+            FEATURE_AUTH_ATTEMPT_COUNT: attempts,
+            FEATURE_AUTH_FAILURE_COUNT: failures,
+            FEATURE_AUTH_FAILURE_RATE: failures / attempts if attempts else 0.0,
+            FEATURE_AUTH_SOURCE_DEVICE_COUNT: len(devices),
+            FEATURE_AUTH_SOURCE_IP_COUNT: len(ips),
+            FEATURE_AUTH_FAILURE_THEN_SUCCESS_COUNT: failure_then_success,
+        },
+        "inputs": sorted(item["event"]["id"] for item in ordered),
+    }
+
+
+def _window_start(event_time: datetime, window_seconds: int) -> datetime:
+    return datetime.fromtimestamp(
+        int(event_time.timestamp()) // window_seconds * window_seconds,
+        tz=timezone.utc,
+    )
 
 
 def parse_time(value: str) -> datetime:
@@ -71,6 +158,7 @@ class FeatureWindows:
         future_time_limit: timedelta = timedelta(minutes=5),
         max_events_per_entity: int = 10000,
         max_entities: int = 100000,
+        backfill_sink: Callable[[dict[str, Any]], None] | None = None,
     ):
         for name, value in (
             ("lookback", lookback),
@@ -88,6 +176,10 @@ class FeatureWindows:
         self.future_time_limit = future_time_limit
         self.max_events_per_entity = max_events_per_entity
         self.max_entities = max_entities
+        # Controlled backfill path for out-of-bounds (retention-pruned)
+        # events; None keeps count-only behavior. A raising sink propagates
+        # fail-closed (the caller's DLQ path handles the input).
+        self.backfill_sink = backfill_sink
         self.history: dict[str, deque[dict[str, Any]]] = defaultdict(deque)
         self.entity_max: dict[str, datetime] = {}
         self.last_receive: dict[str, datetime] = {}
@@ -151,6 +243,60 @@ class FeatureWindows:
         for entity_id in list(self.entity_max):
             self._refresh_idle(entity_id, now)
 
+    def window_events(
+        self,
+        entity_id: str,
+        window_start: datetime,
+        window_seconds: int,
+    ) -> list[dict[str, Any]]:
+        """Retained events of one entity inside [window_start, +window_seconds).
+
+        F03 late correction uses this: after a late (still retained) event is
+        observed, the caller recomputes the same window from the full event
+        set and emits the same business key with a higher revision.
+        """
+        if window_seconds < 1:
+            raise ValueError("window_seconds must be positive")
+        end = window_start + timedelta(seconds=window_seconds)
+        return [
+            item
+            for item in self.history.get(entity_id, ())
+            if window_start <= parse_time(item["@timestamp"]) < end
+        ]
+
+    def closed_windows(
+        self,
+        entity_id: str,
+        window_seconds: int,
+        *,
+        feature_version: str = FEATURE_VERSION_AUTH_V1,
+    ) -> list[dict[str, Any]]:
+        """Feature records of the entity's windows the watermark has closed.
+
+        A window closes once the entity watermark reaches its end (the same
+        rule as the Go engine's ClosedWindow drainage). Returned records are
+        sorted by window start and each carries the feature version stamp and
+        input references.
+        """
+        if window_seconds < 1:
+            raise ValueError("window_seconds must be positive")
+        if entity_id not in self.entity_max:
+            return []
+        watermark = self._entity_watermark(entity_id)
+        grouped: dict[datetime, list[dict[str, Any]]] = defaultdict(list)
+        for item in self.history.get(entity_id, ()):
+            grouped[_window_start(parse_time(item["@timestamp"]), window_seconds)].append(item)
+        closed = []
+        for start in sorted(grouped):
+            end = start + timedelta(seconds=window_seconds)
+            if watermark < end:
+                continue
+            record = compute_window_features(grouped[start], feature_version=feature_version)
+            record["entity_id"] = entity_id
+            record["window"] = {"start": _format_time(start), "end": _format_time(end)}
+            closed.append(record)
+        return closed
+
     def observe(
         self,
         event: dict[str, Any],
@@ -207,6 +353,17 @@ class FeatureWindows:
                 retained.append(item)
             else:
                 self.counters["retention_pruned"] += 1
+                # Out-of-bounds data is not dropped: it is recorded for the
+                # controlled backfill path (F08/replay schedules the job).
+                if self.backfill_sink is not None:
+                    self.backfill_sink(
+                        {
+                            "entity_id": entity_id,
+                            "event": item,
+                            "reason": "beyond_retention",
+                            "retention_start": _format_time(retention_start),
+                        }
+                    )
         while len(retained) > self.max_events_per_entity:
             retained.popleft()
             self.counters["evicted"] += 1

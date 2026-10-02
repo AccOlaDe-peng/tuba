@@ -201,6 +201,42 @@ type ClosedWindow struct {
 	Contributions []Contribution
 }
 
+// BackfillReason identifies why a contribution (or a whole window) left the
+// live path and must enter through controlled backfill instead.
+type BackfillReason string
+
+const (
+	// BackfillWindowClosed — the contribution's event time falls into a
+	// window the watermark already closed (LateRejected).
+	BackfillWindowClosed BackfillReason = "window_closed"
+	// BackfillBeyondRetention — the contribution is older than every
+	// retained window while the entity's window budget is full
+	// (LateRejected).
+	BackfillBeyondRetention BackfillReason = "beyond_retention"
+	// BackfillWindowEvicted — an open window was evicted to make room for a
+	// newer one; its contributions never produced a closed feature record.
+	BackfillWindowEvicted BackfillReason = "window_evicted"
+)
+
+// BackfillItem records one unit of out-of-bounds data for the controlled
+// backfill path (design baseline §6: out-of-bounds data may only enter a new
+// generation through controlled backfill). The sink records items durably;
+// scheduling the actual backfill job is F08/replay scope.
+type BackfillItem struct {
+	EntityID     string
+	Contribution Contribution
+	WindowStart  time.Time
+	Reason       BackfillReason
+	RejectedAt   time.Time
+}
+
+// BackfillSink receives out-of-bounds data. A nil sink keeps the F02
+// behavior (counted only). A sink error is fail-closed: Add returns the
+// error and the contribution is not treated as handled.
+type BackfillSink interface {
+	RecordBackfill(BackfillItem) error
+}
+
 // Engine is the bounded per-entity window state machine. It is deterministic
 // and order-independent: the same contributions in any arrival order produce
 // the same windows. Persistence is snapshot-based (Export/Import); the
@@ -211,6 +247,7 @@ type Engine struct {
 	cfg      EngineConfig
 	entities map[string]*entityState
 	counters Counters
+	backfill BackfillSink
 }
 
 // NewEngine validates the config fail-closed and returns an empty engine.
@@ -224,6 +261,25 @@ func NewEngine(cfg EngineConfig) (*Engine, error) {
 
 // Counters returns a copy of the engine's audit counters.
 func (e *Engine) Counters() Counters { return e.counters }
+
+// SetBackfillSink installs the controlled-backfill recording path for
+// out-of-bounds data (LateRejected contributions and evicted windows).
+func (e *Engine) SetBackfillSink(sink BackfillSink) { e.backfill = sink }
+
+// recordBackfill hands one out-of-bounds contribution to the sink; a sink
+// failure is fail-closed.
+func (e *Engine) recordBackfill(entityID string, c Contribution, windowStart time.Time, reason BackfillReason, at time.Time) error {
+	if e.backfill == nil {
+		return nil
+	}
+	return e.backfill.RecordBackfill(BackfillItem{
+		EntityID:     entityID,
+		Contribution: c,
+		WindowStart:  windowStart,
+		Reason:       reason,
+		RejectedAt:   at,
+	})
+}
 
 // windowStart aligns an event time to its tumbling window start.
 func (e *Engine) windowStart(t time.Time) time.Time {
@@ -298,18 +354,33 @@ func (e *Engine) Add(c Contribution, receivedAt time.Time) (Disposition, error) 
 	if !ok {
 		if !wm.Before(start.Add(e.cfg.WindowSize)) {
 			// The window is already closed (or was evicted) — same
-			// fail-closed outcome as a late contribution.
+			// fail-closed outcome as a late contribution. Not dropped:
+			// recorded for controlled backfill.
 			e.counters.LateRejected++
+			if err := e.recordBackfill(c.EntityID, c, start, BackfillWindowClosed, receivedAt); err != nil {
+				return Added, fmt.Errorf("backfill recording failed: %w", err)
+			}
 			return LateRejected, nil
 		}
 		if len(s.Windows) >= e.cfg.MaxWindowsPerEntity {
 			oldest := oldestWindowKey(s)
 			if !start.After(time.Unix(oldest, 0)) {
 				// Beyond the retention boundary while the budget is
-				// full: reject (counted) rather than silently evicting
-				// newer state; controlled backfill is the only way in.
+				// full: reject (counted, backfill-recorded) rather than
+				// silently evicting newer state; controlled backfill is
+				// the only way in.
 				e.counters.LateRejected++
+				if err := e.recordBackfill(c.EntityID, c, start, BackfillBeyondRetention, receivedAt); err != nil {
+					return Added, fmt.Errorf("backfill recording failed: %w", err)
+				}
 				return LateRejected, nil
+			}
+			// The evicted open window never produced a closed feature
+			// record; record every contribution of it for backfill.
+			for _, evicted := range s.Windows[oldest].Contributions {
+				if err := e.recordBackfill(c.EntityID, evicted, time.Unix(oldest, 0).UTC(), BackfillWindowEvicted, receivedAt); err != nil {
+					return Added, fmt.Errorf("backfill recording failed: %w", err)
+				}
 			}
 			delete(s.Windows, oldest)
 			e.counters.WindowsEvicted++
@@ -426,6 +497,24 @@ func (e *Engine) OpenWindows(entityID string) int {
 
 // Entities reports how many entities the engine currently tracks.
 func (e *Engine) Entities() int { return len(e.entities) }
+
+// WindowContributions returns the current contents of one open window. F03
+// late correction uses it: after a LateAccepted contribution enters a still
+// open window, the caller recomputes the same window from the full
+// contribution set and emits the same business key with a higher revision.
+func (e *Engine) WindowContributions(entityID string, start time.Time) (Window, []Contribution, bool) {
+	s, ok := e.entities[entityID]
+	if !ok {
+		return Window{}, nil, false
+	}
+	w, ok := s.Windows[start.UTC().Unix()]
+	if !ok {
+		return Window{}, nil, false
+	}
+	cp := make([]Contribution, len(w.Contributions))
+	copy(cp, w.Contributions)
+	return Window{Start: w.Start, End: w.End, AllowedLateness: e.cfg.AllowedLateness}, cp, true
+}
 
 const snapshotVersion = 1
 

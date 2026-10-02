@@ -28,6 +28,13 @@ type Contribution struct {
 	EventID       string    `json:"event_id"`
 	AttributionID string    `json:"attribution_id,omitempty"`
 	At            time.Time `json:"at"`
+	// Outcome is the UIM event.outcome (for example "success" / "failure");
+	// empty means the event carries no outcome. F03 auth features consume it.
+	Outcome string `json:"outcome,omitempty"`
+	// SourceDevice / SourceIP are the observed source endpoint attributes
+	// (host.id / source.ip), consumed by the distinct-count auth features.
+	SourceDevice string `json:"source_device,omitempty"`
+	SourceIP     string `json:"source_ip,omitempty"`
 }
 
 // Validate rejects malformed contributions fail-closed.

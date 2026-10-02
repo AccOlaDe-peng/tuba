@@ -219,3 +219,156 @@ class FeatureWindowsF02Tests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 FeatureWindows(**kwargs)
+
+
+class WindowFeatureGoldenTests(unittest.TestCase):
+    """F03 golden vector, mirrored contribution-for-contribution by
+    internal/analysis/feature/compute_test.go (TestAuthComputerGoldenVector).
+    Both sides must produce identical values for the identical logical
+    input: window [2026-10-12T00:00:00Z, 00:10:00Z), attempts 7, failures 4,
+    failure rate 4/7, 2 distinct devices, 2 distinct IPs, 2
+    failure-then-success sequences (e3 after e1/e2; e7 after e4/e6)."""
+
+    def golden_events(self):
+        def mk(event_id, minute, outcome, device, ip):
+            return {
+                "@timestamp": f"2026-10-12T00:{minute:02d}:00Z",
+                "organization": {"id": "tenant_a"},
+                "user": {"id": "u1"},
+                "event": {"id": event_id, "outcome": outcome},
+                "host": {"id": device},
+                "source": {"ip": ip},
+            }
+
+        return [
+            mk("e1", 1, "failure", "d1", "10.0.0.1"),
+            mk("e2", 2, "failure", "d1", "10.0.0.1"),
+            mk("e3", 3, "success", "d2", "10.0.0.2"),
+            mk("e4", 5, "failure", "d1", "10.0.0.1"),
+            mk("e5", 6, None, "d2", "10.0.0.2"),
+            mk("e6", 7, "failure", "d1", "10.0.0.2"),
+            mk("e7", 8, "success", "d2", "10.0.0.2"),
+        ]
+
+    def test_golden_vector(self):
+        from tuba_analysis.features import (
+            FEATURE_VERSION_AUTH_V1,
+            compute_window_features,
+        )
+
+        record = compute_window_features(self.golden_events())
+        self.assertEqual(record["feature_version"], FEATURE_VERSION_AUTH_V1)
+        self.assertEqual(
+            record["values"],
+            {
+                "auth.attempt.count": 7,
+                "auth.failure.count": 4,
+                "auth.failure.rate": 4 / 7,
+                "auth.source_device.count": 2,
+                "auth.source_ip.count": 2,
+                "auth.failure_then_success.count": 2,
+            },
+        )
+        self.assertEqual(record["inputs"], ["e1", "e2", "e3", "e4", "e5", "e6", "e7"])
+
+    def test_order_independent(self):
+        from tuba_analysis.features import compute_window_features
+
+        events = self.golden_events()
+        self.assertEqual(
+            compute_window_features(events)["values"],
+            compute_window_features(list(reversed(events)))["values"],
+        )
+
+
+class WindowFeatureLifecycleTests(unittest.TestCase):
+    """F03 lifecycle: late correction recomputes an open window, closed
+    windows emit versioned records, out-of-bounds data reaches backfill."""
+
+    def setUp(self):
+        self.windows = FeatureWindows(lookback=timedelta(minutes=30), allowed_lateness=timedelta(minutes=10))
+
+    def observe(self, event_id, timestamp, outcome="failure", entity="u1"):
+        item = event_at(event_id, timestamp, user=entity)
+        item["event"]["outcome"] = outcome
+        return self.windows.observe(item, entity, parse_time(timestamp), received_at=parse_time(timestamp))
+
+    def test_late_accepted_recomputes_window(self):
+        from tuba_analysis.features import compute_window_features
+
+        self.observe("e1", "2026-10-12T00:01:00Z")
+        self.observe("e2", "2026-10-12T00:02:00Z")
+        self.observe("e3", "2026-10-12T00:03:00Z", outcome="success")
+        self.observe("e9", "2026-10-12T00:15:00Z", outcome="success")
+        start = parse_time("2026-10-12T00:00:00Z")
+        before = compute_window_features(self.windows.window_events("u1", start, 600))
+        self.assertEqual(before["values"]["auth.failure.count"], 2)
+
+        # Watermark is 00:05; the 00:04 event is late but still retained.
+        late, _ = self.observe("eL", "2026-10-12T00:04:00Z")
+        self.assertTrue(late)
+        self.assertEqual(self.windows.counters["late_accepted"], 1)
+        after = compute_window_features(self.windows.window_events("u1", start, 600))
+        self.assertEqual(after["values"]["auth.failure.count"], 3)
+        self.assertEqual(after["values"]["auth.attempt.count"], 4)
+        self.assertEqual(after["values"]["auth.failure_then_success.count"], 1)
+
+    def test_closed_window_emits_versioned_record(self):
+        for event_id, minute, outcome in (
+            ("e1", 1, "failure"),
+            ("e2", 2, "failure"),
+            ("e3", 3, "success"),
+            ("e4", 5, "failure"),
+            ("e5", 6, "failure"),
+            ("e6", 7, "failure"),
+            ("e7", 8, "success"),
+        ):
+            self.observe(event_id, f"2026-10-12T00:{minute:02d}:00Z", outcome=outcome)
+        # Watermark 23:58: window [00:00, 00:10) not closed yet.
+        self.assertEqual(self.windows.closed_windows("u1", 600), [])
+        # Max event 00:20 pushes the watermark to 00:10 = window end.
+        self.observe("e9", "2026-10-12T00:20:00Z", outcome="success")
+        closed = self.windows.closed_windows("u1", 600)
+        self.assertEqual(len(closed), 1)
+        record = closed[0]
+        self.assertEqual(record["feature_version"], "1.0.0")
+        self.assertEqual(
+            record["window"],
+            {"start": "2026-10-12T00:00:00Z", "end": "2026-10-12T00:10:00Z"},
+        )
+        self.assertEqual(record["values"]["auth.failure.count"], 5)
+        self.assertEqual(record["values"]["auth.failure_then_success.count"], 2)
+        self.assertEqual(len(record["inputs"]), 7)
+
+    def test_retention_pruned_recorded_for_backfill(self):
+        items = []
+        windows = FeatureWindows(
+            lookback=timedelta(minutes=30),
+            allowed_lateness=timedelta(minutes=5),
+            backfill_sink=items.append,
+        )
+        old = event_at("e0", "2026-10-12T00:05:00Z")
+        windows.observe(old, "u1", parse_time("2026-10-12T00:05:00Z"))
+        new = event_at("e1", "2026-10-12T00:50:00Z")
+        _, retained = windows.observe(new, "u1", parse_time("2026-10-12T00:50:00Z"))
+        self.assertEqual([item["event"]["id"] for item in retained], ["e1"])
+        self.assertEqual(windows.counters["retention_pruned"], 1)
+        self.assertEqual(len(items), 1)
+        self.assertEqual(items[0]["entity_id"], "u1")
+        self.assertEqual(items[0]["event"]["event"]["id"], "e0")
+        self.assertEqual(items[0]["reason"], "beyond_retention")
+
+    def test_backfill_sink_failure_fails_closed(self):
+        def boom(_item):
+            raise RuntimeError("store unavailable")
+
+        windows = FeatureWindows(
+            lookback=timedelta(minutes=30),
+            allowed_lateness=timedelta(minutes=5),
+            backfill_sink=boom,
+        )
+        old = event_at("e0", "2026-10-12T00:05:00Z")
+        windows.observe(old, "u1", parse_time("2026-10-12T00:05:00Z"))
+        new = event_at("e1", "2026-10-12T00:50:00Z")
+        with self.assertRaises(RuntimeError):
+            windows.observe(new, "u1", parse_time("2026-10-12T00:50:00Z"))
