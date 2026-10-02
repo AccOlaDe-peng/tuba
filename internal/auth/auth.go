@@ -10,10 +10,16 @@ import (
 	"strings"
 )
 
+// Permission naming follows <resource>:<verb>. Q03 export redaction adds two
+// data-access scopes (design baseline §7): sensitive:read unlocks catalog
+// fields declared sensitivity=sensitive (e.g. user.id/user.name), raw:read
+// unlocks original payloads (event.original / the raw dataset). Neither is
+// granted to viewer; raw:read is tenant_admin only because original payloads
+// are the least-derived, most sensitive tier.
 var permissions = map[string]map[string]bool{
 	"viewer":             {"event:read": true, "anomaly:read": true, "case:read": true},
-	"analyst":            {"event:read": true, "anomaly:read": true, "case:read": true, "case:write": true, "analysis:feedback": true},
-	"tenant_admin":       {"event:read": true, "anomaly:read": true, "case:read": true, "case:write": true, "analysis:feedback": true, "user:manage": true, "operations:read": true, "source:manage": true},
+	"analyst":            {"event:read": true, "anomaly:read": true, "case:read": true, "case:write": true, "analysis:feedback": true, "sensitive:read": true},
+	"tenant_admin":       {"event:read": true, "anomaly:read": true, "case:read": true, "case:write": true, "analysis:feedback": true, "sensitive:read": true, "raw:read": true, "user:manage": true, "operations:read": true, "source:manage": true},
 	"platform_admin":     {"tenant:manage": true, "user:manage": true, "operations:read": true},
 	"platform_publisher": {"release:read": true, "release:manage": true},
 }

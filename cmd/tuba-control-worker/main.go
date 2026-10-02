@@ -9,6 +9,8 @@ import (
 
 	"github.com/segmentio/kafka-go"
 	"tuba/product/internal/config"
+	"tuba/product/internal/control"
+	"tuba/product/internal/es"
 	"tuba/product/internal/controlworker"
 	"tuba/product/internal/kafkautil"
 	"tuba/product/internal/lifecycle"
@@ -66,32 +68,62 @@ func main() {
 		}
 	}()
 	log.Printf("control worker running job lease maintenance, PostgreSQL outbox publisher, and retention cleaner")
-	errCh := make(chan error, 3)
-	go func() {
-		errCh <- (controlworker.OutboxPublisher{Config: controlworker.OutboxConfig{
-			Pool: pool, Writer: writer, WorkerID: workerID, Metrics: metrics, BatchSize: 10,
-			PollInterval: 500 * time.Millisecond, LeaseDuration: 2 * time.Minute,
-			PublishTimeout: 10 * time.Second, MaxAttempts: 8, MaxConcurrentKeys: 4,
-			StuckThreshold: 5 * time.Minute,
-		}}).Run(runCtx)
-	}()
-	go func() {
-		errCh <- (controlworker.JobWorker{Config: controlworker.JobWorkerConfig{
-			Pool: pool, WorkerID: workerID, Handlers: map[string]controlworker.JobHandler{},
-			PollInterval: time.Second, LeaseDuration: 30 * time.Second,
-		}}).Run(runCtx)
-	}()
-	go func() {
-		errCh <- (controlworker.RetentionCleaner{Config: controlworker.RetentionConfig{
-			Pool: pool, Metrics: metrics,
-			InboxRetention:        envDuration("CONTROL_WORKER_INBOX_RETENTION", 48*time.Hour),
-			OutboxRetention:       envDuration("CONTROL_WORKER_OUTBOX_RETENTION", 48*time.Hour),
-			SucceededJobRetention: envDuration("CONTROL_WORKER_SUCCEEDED_JOB_RETENTION", 7*24*time.Hour),
-			FailedJobRetention:    envDuration("CONTROL_WORKER_FAILED_JOB_RETENTION", 30*24*time.Hour),
-			PollInterval:          envDuration("CONTROL_WORKER_RETENTION_POLL_INTERVAL", time.Hour),
-			TempRoot:              os.Getenv("CONTROL_WORKER_JOB_TEMP_ROOT"),
-		}}).Run(runCtx)
-	}()
+	store := &control.Store{Pool: pool}
+	handlers := map[string]controlworker.JobHandler{}
+	exportDir := os.Getenv("TUBA_EXPORT_DIR")
+	if exportDir != "" {
+		// Q03 export executor: fail closed at startup when the controlled
+		// export directory is configured but the event store is not, so an
+		// accepted export can never be stranded without a runner.
+		esClient, err := es.New(c.ESURL, c.ESAPIKey)
+		if err != nil {
+			log.Fatalf("TUBA_EXPORT_DIR is set but the event store is not configured: %v", err)
+		}
+		handlers["export"] = controlworker.ExportExecutor{Config: controlworker.ExportExecutorConfig{
+			Store: store, ES: esClient, ExportRoot: exportDir, WorkerID: workerID,
+		}}.Handler()
+		log.Printf("export executor registered (root %s)", exportDir)
+	}
+	runners := []func(context.Context) error{
+		func(ctx context.Context) error {
+			return (controlworker.OutboxPublisher{Config: controlworker.OutboxConfig{
+				Pool: pool, Writer: writer, WorkerID: workerID, Metrics: metrics, BatchSize: 10,
+				PollInterval: 500 * time.Millisecond, LeaseDuration: 2 * time.Minute,
+				PublishTimeout: 10 * time.Second, MaxAttempts: 8, MaxConcurrentKeys: 4,
+				StuckThreshold: 5 * time.Minute,
+			}}).Run(ctx)
+		},
+		func(ctx context.Context) error {
+			return (controlworker.JobWorker{Config: controlworker.JobWorkerConfig{
+				Pool: pool, WorkerID: workerID, Handlers: handlers,
+				PollInterval: time.Second, LeaseDuration: 30 * time.Second,
+			}}).Run(ctx)
+		},
+		func(ctx context.Context) error {
+			return (controlworker.RetentionCleaner{Config: controlworker.RetentionConfig{
+				Pool: pool, Metrics: metrics,
+				InboxRetention:        envDuration("CONTROL_WORKER_INBOX_RETENTION", 48*time.Hour),
+				OutboxRetention:       envDuration("CONTROL_WORKER_OUTBOX_RETENTION", 48*time.Hour),
+				SucceededJobRetention: envDuration("CONTROL_WORKER_SUCCEEDED_JOB_RETENTION", 7*24*time.Hour),
+				FailedJobRetention:    envDuration("CONTROL_WORKER_FAILED_JOB_RETENTION", 30*24*time.Hour),
+				PollInterval:          envDuration("CONTROL_WORKER_RETENTION_POLL_INTERVAL", time.Hour),
+				TempRoot:              os.Getenv("CONTROL_WORKER_JOB_TEMP_ROOT"),
+			}}).Run(ctx)
+		},
+	}
+	if exportDir != "" {
+		runners = append(runners, func(ctx context.Context) error {
+			return (controlworker.ExportExpirer{Config: controlworker.ExportExpirerConfig{
+				Store:        store,
+				ExportRoot:   exportDir,
+				PollInterval: envDuration("CONTROL_WORKER_EXPORT_SWEEP_INTERVAL", time.Minute),
+			}}).Run(ctx)
+		})
+	}
+	errCh := make(chan error, len(runners))
+	for _, run := range runners {
+		go func() { errCh <- run(runCtx) }()
+	}
 	probeDependencies := func() error {
 		probeCtx, probeCancel := context.WithTimeout(runCtx, 10*time.Second)
 		defer probeCancel()
@@ -131,11 +163,9 @@ func main() {
 	}
 	metrics.SetReady(false)
 	cancel()
-	secondErr := <-errCh
-	thirdErr := <-errCh
-	for i, err := range []error{secondErr, thirdErr} {
-		if err != nil {
-			log.Printf("control worker stopped (%d): %v", i+2, err)
+	for i := 1; i < len(runners); i++ {
+		if err := <-errCh; err != nil {
+			log.Printf("control worker stopped (%d): %v", i+1, err)
 		}
 	}
 	if firstErr != nil {

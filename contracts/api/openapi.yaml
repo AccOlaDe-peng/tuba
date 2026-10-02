@@ -457,6 +457,109 @@ paths:
         "403": {$ref: "#/components/responses/Forbidden"}
         "503": {description: Event store unavailable}
         "504": {description: Synchronous query timeout (30s)}
+  /exports:
+    get:
+      operationId: listExports
+      x-required-permission: event:read
+      summary: List the tenant's export jobs (Q03), cursor-paginated
+      parameters:
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 100, default: 50}}
+        - {name: cursor, in: query, schema: {type: string}}
+      responses:
+        "200":
+          description: Export jobs, newest first
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {$ref: "#/components/schemas/Export"}}
+                  next_cursor: {type: string}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "503": {description: Control store unavailable}
+    post:
+      operationId: createExport
+      x-required-permission: event:read
+      summary: Request an asynchronous SPL-subset export (Q03)
+      description: >-
+        Exports are always asynchronous (design baseline §7): the request is validated like
+        /query (same SPL subset, catalog field whitelist, four enforced scoping elements,
+        31-day request cap) and registered as a processing job (job_type export) executed by
+        the control worker. The request snapshot (SPL, fixed time range, dataset, format,
+        limits) and the creator's permission snapshot (sensitive:read/raw:read) are frozen at
+        creation. Execution pins the dataset retention boundary; a fixed range starting before
+        it fails with retention_exceeded — never silent truncation. Completion re-verifies the
+        creator's permissions. Content is masked by the permission snapshot: catalog fields
+        declared sensitivity=sensitive are redacted ("[redacted]") without sensitive:read, and
+        original payloads (event.original, the raw dataset) require raw:read (the raw dataset
+        cannot be exported without it). Caps: 100,000 rows or 1 GiB, whichever first
+        (limit_reached records which). The completed file is downloadable for 15 minutes and
+        exactly once. create/complete/download/expire/fail are all audited.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [query]
+              properties:
+                query: {type: string, minLength: 1, maxLength: 4096, description: SPL text in the documented subset}
+                format: {type: string, enum: [ndjson, csv], default: ndjson, description: csv supports event queries only}
+                from: {type: string, format: date-time}
+                to: {type: string, format: date-time}
+                limit: {type: integer, minimum: 1, maximum: 100000, default: 100000}
+      responses:
+        "201":
+          description: Export registered (state queued)
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Export"}
+        "400": {description: SPL parse/whitelist error, invalid format/limits/range, or retention_exceeded}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Missing event:read, or raw dataset export without raw:read}
+        "503": {description: Control store or export storage unavailable}
+  /exports/{id}:
+    get:
+      operationId: getExport
+      x-required-permission: event:read
+      summary: Export job status (tenant-isolated)
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200":
+          description: Export job
+          content:
+            application/json:
+              schema: {$ref: "#/components/schemas/Export"}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {$ref: "#/components/responses/Forbidden"}
+        "404": {description: Not found in this tenant}
+  /exports/{id}/download:
+    get:
+      operationId: downloadExport
+      x-required-permission: event:read
+      summary: Download a completed export (Q03)
+      description: >-
+        Re-authorizes the live principal on every download — possessing the link is never
+        sufficient. The caller's freshly membership-resolved permissions must still match the
+        fingerprint frozen at creation (role revocation or a different subject is denied and
+        audited export.download_denied). Links expire 15 minutes after completion (410, audited
+        export.expire) and are single-use (a replay returns 410, audited export.download_denied).
+      parameters:
+        - {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+      responses:
+        "200":
+          description: Export file (application/x-ndjson or text/csv)
+          content:
+            application/x-ndjson: {}
+            text/csv: {}
+        "401": {$ref: "#/components/responses/Unauthorized"}
+        "403": {description: Re-authorization failed (permissions changed since creation)}
+        "404": {description: Not found in this tenant}
+        "409": {description: Export is not ready (queued/running)}
+        "410": {description: Link expired, already used, or export failed}
   /anomalies:
     get:
       operationId: listAnomalies
@@ -983,6 +1086,32 @@ components:
       description: Effective permissions do not allow the operation
       content: {application/json: {schema: {$ref: "#/components/schemas/Error"}}}
   schemas:
+    Export:
+      type: object
+      required: [id, job_id, dataset, format, query, from, to, row_limit, byte_limit, include_sensitive, include_raw, state, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        job_id: {type: string, format: uuid, description: Owning processing job (job_type export)}
+        dataset: {type: string}
+        format: {type: string, enum: [ndjson, csv]}
+        query: {type: string}
+        from: {type: string, format: date-time}
+        to: {type: string, format: date-time}
+        row_limit: {type: integer}
+        byte_limit: {type: integer, format: int64}
+        include_sensitive: {type: boolean, description: Permission snapshot at creation (sensitive:read)}
+        include_raw: {type: boolean, description: Permission snapshot at creation (raw:read)}
+        state: {type: string, enum: [queued, running, succeeded, failed, expired]}
+        retention_from: {type: string, format: date-time, description: Retention boundary pinned at execution}
+        limit_reached: {type: string, enum: [rows, bytes]}
+        file_sha256: {type: string}
+        row_count: {type: integer, format: int64}
+        byte_count: {type: integer, format: int64}
+        expires_at: {type: string, format: date-time}
+        downloaded_at: {type: string, format: date-time}
+        completed_at: {type: string, format: date-time}
+        error: {type: string}
+        created_at: {type: string, format: date-time}
     DatasetDecl:
       type: object
       required: [name, kind, active_generation, index_pattern]
