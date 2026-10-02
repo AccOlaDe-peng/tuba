@@ -39,3 +39,6 @@ tuba-normalizer-tenant_a-tenanta20260929
 tuba-quarantine-indexer-tenant_a-tenanta20260929
 tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-zeek_validation_20260927_001-zeeklive20260927r2
 tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-tenant_a-tenanta20260929
+# D2 entity/analysis workers (2026-10-02 部署): 16 域消费组 + 2 个分析消费组。
+tuba-entity-worker-(authentication|session|iam|directory|network|dns|web|tls)-(zeek_validation_20260927_001-zeeklive20260927r2|tenant_a-tenanta20260929)
+tuba-analysis-attributed-(zeek_validation_20260927_001|tenant_a)

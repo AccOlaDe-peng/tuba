@@ -133,7 +133,7 @@ A03 的单节点边界：根盘 70% warning、75% critical、80% 停止新增写
 
 ## Launcher 管理数据面（248 现状）
 
-248 的 11 个数据面服务由产品 Launcher 统一管理，**不注册 systemd**。清单 `/etc/tuba/tuba-services.json`（0600 root），密钥 `/etc/tuba/tuba.env`（0600 root），状态与日志分别在 `/var/lib/tuba/launcher` 与 `/var/log/tuba`。Launcher 二进制本身是受管制品：`/opt/tuba/bin/tuba-launcher` 由 `scripts/package_tuba.ps1` 从仓库源码构建（见 `dist/tuba-*-linux-amd64.tar.gz` 内 `bin/tuba-launcher`），同目录有 SHA-256 sidecar `tuba-launcher.sha256`（0640 root），更换后须 `sha256sum -c` 复核；替换磁盘文件不影响已运行的 Launcher 进程，下次重启自然用新版。
+248 的 17 个数据面服务（2026-10-02 起：原 11 + 每命名空间新增 entity-worker/analysis-worker/control-worker 各一）由产品 Launcher 统一管理，**不注册 systemd**。清单 `/etc/tuba/tuba-services.json`（0600 root），密钥 `/etc/tuba/tuba.env`（0600 root），状态与日志分别在 `/var/lib/tuba/launcher` 与 `/var/log/tuba`。Launcher 二进制本身是受管制品：`/opt/tuba/bin/tuba-launcher` 由 `scripts/package_tuba.ps1` 从仓库源码构建（见 `dist/tuba-*-linux-amd64.tar.gz` 内 `bin/tuba-launcher`），同目录有 SHA-256 sidecar `tuba-launcher.sha256`（0640 root），更换后须 `sha256sum -c` 复核；替换磁盘文件不影响已运行的 Launcher 进程，下次重启自然用新版。
 
 ```
 tuba-launcher status  --manifest /etc/tuba/tuba-services.json

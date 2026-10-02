@@ -139,7 +139,7 @@ def ready_model():
     return BaselineModel(
         model_id="auth.baseline",
         version="1.0.20261011000000",
-        feature_id="authentication.failure-burst",
+        feature_id="authentication.failure_burst",
         feature_version="1.0.0",
         generation="g1",
         status=BaselineStatus.READY,
@@ -274,7 +274,7 @@ class PipelineTests(unittest.TestCase):
         self.assertEqual(features[0]["document"]["window"]["start"], "2026-10-12T00:00:00Z")
         self.assertEqual(len(samples.saved), 1)
         _, feature_id, sample = samples.saved[0]
-        self.assertEqual(feature_id, "authentication.failure-burst")
+        self.assertEqual(feature_id, "authentication.failure_burst")
         self.assertEqual(sample.generation, "g1")
         self.assertEqual(sample.revision, 1)
 

@@ -55,6 +55,9 @@ MONITORED_CONSUMER_GROUPS = "|".join((
     r"tuba-quarantine-indexer-tenant_a-tenanta20260929",
     r"tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-zeek_validation_20260927_001-zeeklive20260927r2",
     r"tuba-standard-indexer-(authentication|session|iam|directory|network|dns|web|tls)-tenant_a-tenanta20260929",
+    # D2 entity/analysis workers (2026-10-02 部署): 16 域消费组 + 2 个分析消费组。
+    r"tuba-entity-worker-(authentication|session|iam|directory|network|dns|web|tls)-(zeek_validation_20260927_001-zeeklive20260927r2|tenant_a-tenanta20260929)",
+    r"tuba-analysis-attributed-(zeek_validation_20260927_001|tenant_a)",
 ))
 KAFKA_GROUP_FILTER = "^(" + MONITORED_CONSUMER_GROUPS + ")$"
 SERVICES = {

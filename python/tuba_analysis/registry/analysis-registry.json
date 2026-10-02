@@ -2,7 +2,7 @@
   "registry_version": "1.1.0",
   "features": [
     {
-      "id": "authentication.failure-burst",
+      "id": "authentication.failure_burst",
       "version": "1.0.0",
       "description": "Counts failed authentication events in the configured event-time lookback.",
       "parameters": {
@@ -15,7 +15,7 @@
       "id": "auth.failure-then-success",
       "version": "1.0.0",
       "algorithm": "failure_then_success",
-      "feature_id": "authentication.failure-burst",
+      "feature_id": "authentication.failure_burst",
       "severity": "high",
       "parameters": {
         "threshold": 5,
@@ -28,7 +28,7 @@
       "id": "auth.failure-burst",
       "version": "1.0.0",
       "algorithm": "failure_burst",
-      "feature_id": "authentication.failure-burst",
+      "feature_id": "authentication.failure_burst",
       "severity": "medium",
       "parameters": {
         "threshold": 10,
@@ -41,7 +41,7 @@
       "id": "auth.baseline-deviation",
       "version": "1.0.0",
       "algorithm": "baseline_deviation",
-      "feature_id": "authentication.failure-burst",
+      "feature_id": "authentication.failure_burst",
       "severity": "medium",
       "model_id": "auth.baseline",
       "parameters": {
@@ -56,7 +56,7 @@
     {
       "id": "auth.baseline",
       "version": "1.0.0",
-      "feature_id": "authentication.failure-burst",
+      "feature_id": "authentication.failure_burst",
       "feature_version": "1.0.0",
       "generation": "g1",
       "training": {
