@@ -105,12 +105,91 @@ export const caseSchema = z.object({
   updated_at: z.string(),
   closed_at: z.string().nullable().optional(),
   anomaly_ids: z.array(z.string()).optional().default([]),
+  hold: z.boolean().optional().default(false),
+  hold_reason: z.string().optional().default(""),
+  hold_at: z.string().nullable().optional(),
 });
 
 export const casesSchema = z.object({
   items: z.array(caseSchema),
   next_cursor: z.string().nullable().optional().default(""),
   total: z.number().int().nonnegative().optional().default(0),
+});
+
+export const caseLinkSchema = z.object({
+  link_type: z.enum(["entity", "risk_contribution", "evidence"]),
+  ref_kind: z.string(),
+  target_id: z.string(),
+  linked_by: z.string().optional().default(""),
+  linked_at: z.string(),
+});
+
+export const caseLinksSchema = z.object({
+  items: z.array(caseLinkSchema).optional().default([]),
+});
+
+// The frozen snapshot body is an opaque jsonb document; keep it as a loose
+// record so any frozen shape renders without schema drift.
+export const caseSnapshotSchema = z.object({
+  id: z.string(),
+  case_id: z.string(),
+  label: z.string(),
+  snapshot: z.record(z.string(), z.unknown()).optional().default({}),
+  created_by: z.string().optional().default(""),
+  created_at: z.string(),
+});
+
+export const caseSnapshotsSchema = z.object({
+  items: z.array(caseSnapshotSchema).optional().default([]),
+});
+
+export const auditEventSchema = z.object({
+  id: z.number(),
+  action: z.string(),
+  resource_type: z.string().optional().default(""),
+  resource_id: z.string().optional().default(""),
+  request_id: z.string().optional().default(""),
+  occurred_at: z.string(),
+  metadata: z.record(z.string(), z.unknown()).nullable().optional(),
+});
+
+export const auditPageSchema = z.object({
+  items: z.array(auditEventSchema).optional().default([]),
+  next_cursor: z.string().nullable().optional().default(""),
+});
+
+export const feedbackEvaluationRowSchema = z.object({
+  feedback_id: z.number(),
+  feedback_type: z.string(),
+  anomaly_id: z.string().optional().default(""),
+  rule_id: z.string().optional().default(""),
+  entity_id: z.string().optional().default(""),
+  event_ids: z.array(z.string()).optional().default([]),
+  reason: z.string().optional().default(""),
+  actor: z.string().optional().default(""),
+  source_case_id: z.string().nullable().optional(),
+  target_case_id: z.string().nullable().optional(),
+  created_at: z.string(),
+  finding_label: z.string().optional().default(""),
+  labeled_at: z.string().nullable().optional(),
+  case_verdict: z.string().optional().default(""),
+});
+
+export const feedbackEvaluationSchema = z.object({
+  rows: z.array(feedbackEvaluationRowSchema).optional().default([]),
+});
+
+export const feedbackRuleMetricsSchema = z.object({
+  rule_id: z.string(),
+  true_positive: z.number().int().nonnegative(),
+  false_positive: z.number().int().nonnegative(),
+  false_negative: z.number().int().nonnegative(),
+  inconclusive: z.number().int().nonnegative(),
+  precision: z.number().min(0).max(1),
+});
+
+export const feedbackMetricsSchema = z.object({
+  rules: z.array(feedbackRuleMetricsSchema).optional().default([]),
 });
 
 export const caseActivitySchema = z.object({
@@ -509,6 +588,11 @@ export type AnomalySummary = z.infer<typeof anomalySummarySchema>;
 export type AnomalyDetail = z.infer<typeof anomalyDetailSchema>;
 export type EvidenceEvent = z.infer<typeof evidenceEventSchema>;
 export type Case = z.infer<typeof caseSchema>;
+export type CaseLink = z.infer<typeof caseLinkSchema>;
+export type CaseSnapshot = z.infer<typeof caseSnapshotSchema>;
+export type AuditEvent = z.infer<typeof auditEventSchema>;
+export type FeedbackEvaluationRow = z.infer<typeof feedbackEvaluationRowSchema>;
+export type FeedbackRuleMetrics = z.infer<typeof feedbackRuleMetricsSchema>;
 export type CaseActivity = z.infer<typeof caseActivitySchema>;
 export type Member = z.infer<typeof memberSchema>;
 export type Principal = z.infer<typeof principalSchema>;

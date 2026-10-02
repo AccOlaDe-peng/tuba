@@ -12,6 +12,7 @@ import {
   Package,
   Radar,
   Radio,
+  ScrollText,
   ShieldCheck,
   Sparkles,
   Users,
@@ -32,6 +33,7 @@ const routeTitles: Record<string, string> = {
   releases: "版本发布",
   jobs: "任务与回放",
   access: "用户与权限",
+  audit: "审计事件",
 };
 
 export function AppShell() {
@@ -173,7 +175,10 @@ export function AppShell() {
           ? [{ key: "/releases", label: "版本发布", icon: <Package size={17} /> }]
           : []),
         ...(auth.can("user:manage")
-          ? [{ key: "/access", label: "用户与权限", icon: <Users size={17} /> }]
+          ? [
+              { key: "/access", label: "用户与权限", icon: <Users size={17} /> },
+              { key: "/audit", label: "审计事件", icon: <ScrollText size={17} /> },
+            ]
           : []),
       ],
     },

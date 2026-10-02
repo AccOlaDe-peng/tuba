@@ -29,6 +29,7 @@ const Quality = load("Quality");
 const Releases = load("Releases");
 const Jobs = load("Jobs");
 const Access = load("Access");
+const Audit = load("Audit");
 
 function wait(value: ReactNode) {
   return (
@@ -68,6 +69,7 @@ const router = createBrowserRouter(
         { path: "releases", element: guard("release:read", <Releases />) },
         { path: "jobs", element: guard("event:read", <Jobs />) },
         { path: "access", element: guard("user:manage", <Access />) },
+        { path: "audit", element: guard("user:manage", <Audit />) },
       ],
     },
   ],

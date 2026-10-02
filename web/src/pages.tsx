@@ -27,6 +27,7 @@ import {
 import {
   Activity,
   AlertTriangle,
+  Archive,
   ArrowLeft,
   ArrowRight,
   ArrowUpRight,
@@ -59,12 +60,17 @@ import {
   anomalyDetailSchema,
   anomalyPageSchema,
   caseActivityPageSchema,
+  caseLinksSchema,
   caseSchema,
   casesSchema,
+  caseSnapshotsSchema,
   catalogSchema,
+  auditPageSchema,
+  type AuditEvent,
   evidencePageSchema,
   collectorsSchema,
   exportsSchema,
+  feedbackMetricsSchema,
   formatDuration,
   membersSchema,
   operationsStatusSchema,
@@ -84,6 +90,8 @@ import {
   type AnomalySummary,
   type EntityAggregate,
   type Case,
+  type CaseLink,
+  type CaseSnapshot,
   type CatalogDataset,
   type CollectorSummary,
   type ExportJob,
@@ -318,6 +326,45 @@ type AnomalyFilters = {
   entity: string;
 };
 
+export function FeedbackMetricsPanel() {
+  const { token, can } = useAuth();
+  const enabled = can("analysis:feedback");
+  const query = useQuery({
+    queryKey: ["feedback-metrics"],
+    enabled,
+    queryFn: ({ signal }) => api("/analysis/feedback/metrics", token, undefined, feedbackMetricsSchema, signal),
+  });
+  if (!enabled) return null;
+  if (query.isLoading || query.error || !query.data || query.data.rules.length === 0) return null;
+  return (
+    <section className="panel">
+      <header className="panel-header">
+        <h3>规则反馈质量</h3>
+        <span className="muted-text">分析师反馈的离线评估汇总（R04）</span>
+      </header>
+      <Table
+        rowKey="rule_id"
+        size="small"
+        pagination={false}
+        dataSource={query.data.rules}
+        columns={[
+          { title: "规则", dataIndex: "rule_id", render: (value: string) => <code>{value}</code> },
+          { title: "确认", dataIndex: "true_positive", width: 90 },
+          { title: "误报", dataIndex: "false_positive", width: 90 },
+          { title: "漏报", dataIndex: "false_negative", width: 90 },
+          { title: "不确定", dataIndex: "inconclusive", width: 90 },
+          {
+            title: "精确率",
+            dataIndex: "precision",
+            width: 110,
+            render: (value: number) => `${(value * 100).toFixed(1)}%`,
+          },
+        ]}
+      />
+    </section>
+  );
+}
+
 export function Anomalies() {
   const { token } = useAuth();
   const [draft, setDraft] = useState<AnomalyFilters>({ severity: "", status: "", entity: "" });
@@ -405,6 +452,7 @@ export function Anomalies() {
         title="异常调查"
         description="以实体、严重度和处置状态缩小调查范围。"
       />
+      <FeedbackMetricsPanel />
       <section className="filter-bar">
         <div className="filter-search">
           <Search size={16} />
@@ -742,8 +790,17 @@ export function Cases() {
     {
       title: "状态",
       dataIndex: "status",
-      width: 100,
-      render: (value: string) => <CaseStatusTag value={value} />,
+      width: 140,
+      render: (value: string, record) => (
+        <Space size={4}>
+          <CaseStatusTag value={value} />
+          {record.hold && (
+            <Tooltip title={`证据保留：${record.hold_reason || "已启用"}`}>
+              <Tag className="signal-tag status-open" icon={<Lock size={12} />}>保留</Tag>
+            </Tooltip>
+          )}
+        </Space>
+      ),
     },
     {
       title: "负责人",
@@ -875,6 +932,9 @@ export function CaseDetail() {
   const queryClient = useQueryClient();
   const [closeOpen, setCloseOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
+  const [holdOpen, setHoldOpen] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const [snapshotOpen, setSnapshotOpen] = useState(false);
   const detail = useQuery({
     queryKey: ["case", id],
     enabled: Boolean(id),
@@ -892,6 +952,27 @@ export function CaseDetail() {
         signal,
       ),
   });
+  const links = useQuery({
+    queryKey: ["case", id, "links"],
+    enabled: Boolean(id),
+    queryFn: ({ signal }) =>
+      api(`/cases/${encodeURIComponent(id)}/links`, token, undefined, caseLinksSchema, signal),
+  });
+  const snapshots = useQuery({
+    queryKey: ["case", id, "snapshots"],
+    enabled: Boolean(id),
+    queryFn: ({ signal }) =>
+      api(`/cases/${encodeURIComponent(id)}/snapshots`, token, undefined, caseSnapshotsSchema, signal),
+  });
+  const refreshCase = () => {
+    void queryClient.invalidateQueries({ queryKey: ["case", id] });
+    void queryClient.invalidateQueries({ queryKey: ["cases"] });
+    void queryClient.invalidateQueries({ queryKey: ["overview"] });
+  };
+  const conflictMessage = (error: unknown) => {
+    const text = errorMessage(error);
+    return text.includes("conflict") ? "案件已被其他用户更新，请刷新后重试" : text;
+  };
   const update = useMutation({
     mutationFn: (input: CaseMutationInput) =>
       api<Case>(
@@ -907,14 +988,62 @@ export function CaseDetail() {
       void message.success("案件处置已记录");
       setCloseOpen(false);
       setAssignOpen(false);
-      void queryClient.invalidateQueries({ queryKey: ["case", id] });
-      void queryClient.invalidateQueries({ queryKey: ["cases"] });
-      void queryClient.invalidateQueries({ queryKey: ["overview"] });
+      refreshCase();
     },
-    onError: (error) => {
-      const text = errorMessage(error);
-      void message.error(text.includes("conflict") ? "案件已被其他用户更新，请刷新后重试" : text);
+    onError: (error) => void message.error(conflictMessage(error)),
+  });
+  const holdMutation = useMutation({
+    mutationFn: (input: { hold: boolean; reason: string }) =>
+      api<{ case: Case; changed: boolean }>(
+        `/cases/${encodeURIComponent(id)}/hold`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({ ...input, expected_version: detail.data?.version }),
+        },
+      ),
+    onSuccess: (result) => {
+      void message.success(result.changed ? "保留标识已更新" : "保留标识已是该状态（幂等重放，未变更）");
+      setHoldOpen(false);
+      refreshCase();
     },
+    onError: (error) => void message.error(conflictMessage(error)),
+  });
+  const linkMutation = useMutation({
+    mutationFn: (input: { link_type: string; ref_kind: string; target_id: string }) =>
+      api<{ case: Case; added: boolean }>(
+        `/cases/${encodeURIComponent(id)}/links`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({ ...input, expected_version: detail.data?.version }),
+        },
+      ),
+    onSuccess: (result) => {
+      void message.success(result.added ? "关联已添加" : "该关联已存在（幂等重放，未重复添加）");
+      setLinkOpen(false);
+      refreshCase();
+      void queryClient.invalidateQueries({ queryKey: ["case", id, "links"] });
+    },
+    onError: (error) => void message.error(conflictMessage(error)),
+  });
+  const snapshotMutation = useMutation({
+    mutationFn: (input: { label: string }) =>
+      api<CaseSnapshot>(
+        `/cases/${encodeURIComponent(id)}/snapshots`,
+        token,
+        {
+          method: "POST",
+          body: JSON.stringify({ ...input, expected_version: detail.data?.version }),
+        },
+      ),
+    onSuccess: () => {
+      void message.success("取证快照已冻结");
+      setSnapshotOpen(false);
+      refreshCase();
+      void queryClient.invalidateQueries({ queryKey: ["case", id, "snapshots"] });
+    },
+    onError: (error) => void message.error(conflictMessage(error)),
   });
 
   if (detail.isLoading) return <LoadingBlock rows={8} />;
@@ -952,16 +1081,33 @@ export function CaseDetail() {
                   重新打开
                 </Button>
               )}
+              <Button
+                icon={<Lock size={15} />}
+                danger={Boolean(current.hold)}
+                onClick={() => setHoldOpen(true)}
+              >
+                {current.hold ? "解除保留" : "设置保留"}
+              </Button>
             </Space>
           ) : undefined
         }
       />
+      {current.hold && (
+        <Alert
+          type="warning"
+          showIcon
+          icon={<Lock size={16} />}
+          title={`证据保留已启用：${current.hold_reason || "未填写原因"}`}
+          description="保留期间，引用该案件处理作业证据的清理任务不会清理相关数据；解除保留后恢复可清理。"
+        />
+      )}
       <CaseProgress status={current.status} />
       <section className="case-facts">
         <div><span>优先级</span><SeverityTag value={current.severity} /></div>
         <div><span>状态</span><CaseStatusTag value={current.status} /></div>
         <div><span>负责人</span><strong>{current.assignee || "未分派"}</strong></div>
         <div><span>判定结论</span><VerdictTag value={current.verdict} /></div>
+        <div><span>保留标识</span><strong>{current.hold ? "已保留" : "未保留"}</strong></div>
         <div><span>关联异常</span><strong>{current.anomaly_ids.length} 条</strong></div>
         <div><span>最后更新</span><TimeValue value={current.updated_at} /></div>
       </section>
@@ -1021,6 +1167,178 @@ export function CaseDetail() {
           </article>
         </aside>
       </section>
+      <section className="operations-grid">
+        <article className="panel">
+          <header className="panel-head">
+            <div>
+              <span className="panel-index">04</span>
+              <h2>实体/风险/证据关联</h2>
+              <p>重放同一关联为幂等空操作；事件本体在 ES，引用按形状合同校验</p>
+            </div>
+            {writable && (
+              <Button size="small" icon={<Plus size={15} />} onClick={() => setLinkOpen(true)}>
+                添加关联
+              </Button>
+            )}
+          </header>
+          {links.isLoading ? (
+            <LoadingBlock rows={3} />
+          ) : links.error ? (
+            <ErrorState message={errorMessage(links.error)} retry={() => void links.refetch()} />
+          ) : links.data?.items.length ? (
+            <Table
+              rowKey={(item) => `${item.link_type}-${item.ref_kind}-${item.target_id}`}
+              size="small"
+              pagination={false}
+              dataSource={links.data.items}
+              columns={[
+                {
+                  title: "类型",
+                  dataIndex: "link_type",
+                  width: 130,
+                  render: (value: CaseLink["link_type"]) => (
+                    <Tag>
+                      {value === "entity" ? "实体" : value === "risk_contribution" ? "风险贡献" : "证据"}
+                    </Tag>
+                  ),
+                },
+                { title: "引用类别", dataIndex: "ref_kind", width: 130 },
+                {
+                  title: "目标",
+                  dataIndex: "target_id",
+                  render: (value: string) => <code>{value}</code>,
+                },
+                {
+                  title: "关联时间",
+                  dataIndex: "linked_at",
+                  width: 130,
+                  render: (value: string) => <TimeValue value={value} />,
+                },
+              ]}
+            />
+          ) : (
+            <EmptyState title="暂无关联" description="可关联实体、风险贡献或事件证据引用。" />
+          )}
+        </article>
+        <article className="panel">
+          <header className="panel-head">
+            <div>
+              <span className="panel-index">05</span>
+              <h2>取证快照</h2>
+              <p>插入即冻结，不可修改或删除</p>
+            </div>
+            {writable && (
+              <Button size="small" icon={<Archive size={15} />} onClick={() => setSnapshotOpen(true)}>
+                冻结快照
+              </Button>
+            )}
+          </header>
+          {snapshots.isLoading ? (
+            <LoadingBlock rows={3} />
+          ) : snapshots.error ? (
+            <ErrorState message={errorMessage(snapshots.error)} retry={() => void snapshots.refetch()} />
+          ) : snapshots.data?.items.length ? (
+            <div className="linked-list">
+              {snapshots.data.items.map((snapshot) => (
+                <div key={snapshot.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                  <Archive size={15} />
+                  <div>
+                    <strong>{snapshot.label || snapshot.id}</strong>
+                    <small>
+                      {snapshot.created_by ? `${snapshot.created_by} · ` : ""}
+                      <TimeValue value={snapshot.created_at} />
+                    </small>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <EmptyState title="暂无快照" description="冻结当前案件头、异常集合与完整链接集。" />
+          )}
+        </article>
+      </section>
+
+      <Modal title={current.hold ? "解除证据保留" : "设置证据保留"} open={holdOpen} footer={null} onCancel={() => setHoldOpen(false)}>
+        <Form
+          layout="vertical"
+          onFinish={(values: { reason: string }) =>
+            holdMutation.mutate({ hold: !current.hold, reason: values.reason })
+          }
+        >
+          <Form.Item name="reason" label="保留原因" rules={[{ required: true, max: 2000 }]}>
+            <Input.TextArea autoFocus rows={3} maxLength={2000} placeholder={current.hold ? "解除保留也需记录原因" : "例如：案件调查期间需要保留证据"} />
+          </Form.Item>
+          <div className="modal-actions">
+            <Button onClick={() => setHoldOpen(false)}>取消</Button>
+            <Button type="primary" danger={Boolean(current.hold)} htmlType="submit" loading={holdMutation.isPending}>
+              {current.hold ? "确认解除" : "确认保留"}
+            </Button>
+          </div>
+        </Form>
+      </Modal>
+
+      <Modal title="添加案件关联" open={linkOpen} footer={null} onCancel={() => setLinkOpen(false)}>
+        <Form
+          layout="vertical"
+          onFinish={(values: { link_type: string; ref_kind: string; target_id: string }) =>
+            linkMutation.mutate(values)
+          }
+        >
+          <Form.Item name="link_type" label="关联类型" rules={[{ required: true }]}>
+            <Select
+              placeholder="选择关联类型"
+              options={[
+                { value: "entity", label: "实体（entity_id，需在身份空间可解析）" },
+                { value: "risk_contribution", label: "风险贡献（rc: 引用）" },
+                { value: "evidence", label: "证据引用" },
+              ]}
+            />
+          </Form.Item>
+          <Form.Item noStyle shouldUpdate>
+            {({ getFieldValue }) => {
+              const linkType = getFieldValue("link_type") as string | undefined;
+              const kinds =
+                linkType === "entity"
+                  ? [{ value: "entity_id", label: "entity_id" }]
+                  : linkType === "risk_contribution"
+                    ? [{ value: "contribution_id", label: "contribution_id" }]
+                    : [
+                        { value: "event_id", label: "event_id" },
+                        { value: "raw_event_id", label: "raw_event_id" },
+                        { value: "attribution", label: "attribution" },
+                        { value: "job_id", label: "job_id" },
+                      ];
+              return (
+                <Form.Item name="ref_kind" label="引用类别" rules={[{ required: true }]}>
+                  <Select placeholder="选择引用类别" options={kinds} disabled={!linkType} />
+                </Form.Item>
+              );
+            }}
+          </Form.Item>
+          <Form.Item name="target_id" label="目标引用" rules={[{ required: true, max: 512 }]}>
+            <Input placeholder="例如 ent:… / rc:… / evt:…" />
+          </Form.Item>
+          <div className="modal-actions">
+            <Button onClick={() => setLinkOpen(false)}>取消</Button>
+            <Button type="primary" htmlType="submit" loading={linkMutation.isPending}>添加关联</Button>
+          </div>
+        </Form>
+      </Modal>
+
+      <Modal title="冻结取证快照" open={snapshotOpen} footer={null} onCancel={() => setSnapshotOpen(false)}>
+        <Form
+          layout="vertical"
+          onFinish={(values: { label: string }) => snapshotMutation.mutate(values)}
+        >
+          <Form.Item name="label" label="快照标签" rules={[{ required: true, max: 200 }]}>
+            <Input autoFocus placeholder="例如：初检证据固定" maxLength={200} />
+          </Form.Item>
+          <div className="modal-actions">
+            <Button onClick={() => setSnapshotOpen(false)}>取消</Button>
+            <Button type="primary" htmlType="submit" loading={snapshotMutation.isPending}>冻结快照</Button>
+          </div>
+        </Form>
+      </Modal>
 
       <Modal title="分派案件" open={assignOpen} footer={null} onCancel={() => setAssignOpen(false)}>
         <Form
@@ -1427,6 +1745,122 @@ export function Operations() {
           <EmptyState title="暂无分析运行" description="启动 Python analysis worker 后会显示运行元数据。" />
         )}
       </section>
+
+      <section className="panel">
+        <header className="panel-header">
+          <h3>备份状态</h3>
+        </header>
+        <EmptyState
+          title="备份状态暂无在线 API"
+          description="备份（B04：ES 快照 + PG 转储 + rsync 到 21）由 scripts/backup_tuba_to_offsite.sh 运维执行，结果在 21:/opt/tuba-backup/248/ 与作业日志中核验；当前没有在线查询端点，本区块在端点落地前如实标注缺口，不展示模拟数据。"
+        />
+      </section>
+    </div>
+  );
+}
+
+export function Audit() {
+  const { token } = useAuth();
+  const [pages, setPages] = useState<AuditEvent[][]>([]);
+  const [cursor, setCursor] = useState("");
+  const query = useQuery({
+    queryKey: ["audit", cursor],
+    queryFn: ({ signal }) =>
+      api(`/audit?limit=100${cursor ? `&cursor=${encodeURIComponent(cursor)}` : ""}`, token, undefined, auditPageSchema, signal),
+  });
+  const items = useMemo(() => [...pages.flat(), ...(query.data?.items ?? [])], [pages, query.data]);
+  const nextCursor = query.data?.next_cursor ?? "";
+
+  const columns: TableProps<AuditEvent>["columns"] = [
+    {
+      title: "时间",
+      dataIndex: "occurred_at",
+      key: "occurred_at",
+      width: 190,
+      render: (value: string) => new Date(value).toLocaleString("zh-CN", { hour12: false }),
+    },
+    {
+      title: "动作",
+      dataIndex: "action",
+      key: "action",
+      render: (value: string) => <code>{value}</code>,
+    },
+    {
+      title: "资源",
+      key: "resource",
+      render: (_, value) =>
+        value.resource_type ? (
+          <span>
+            <Tag>{value.resource_type}</Tag>
+            <code className="muted-text">{value.resource_id}</code>
+          </span>
+        ) : (
+          <span className="muted-text">—</span>
+        ),
+    },
+    {
+      title: "请求",
+      dataIndex: "request_id",
+      key: "request_id",
+      render: (value: string) => <code className="muted-text">{value || "—"}</code>,
+    },
+  ];
+
+  return (
+    <div className="page-stack">
+      <PageHeader
+        eyebrow="审计追踪"
+        title="审计事件"
+        description="平台全量审计记录（append-only），按时间倒序。"
+        actions={
+          <Tooltip title="刷新">
+            <Button
+              aria-label="刷新"
+              icon={<RefreshCw size={16} />}
+              loading={query.isFetching}
+              onClick={() => {
+                setPages([]);
+                setCursor("");
+                void query.refetch();
+              }}
+            />
+          </Tooltip>
+        }
+      />
+      {query.isLoading && pages.length === 0 ? (
+        <LoadingBlock rows={8} />
+      ) : query.error ? (
+        <ErrorState message={errorMessage(query.error)} retry={() => void query.refetch()} />
+      ) : items.length === 0 ? (
+        <EmptyState title="暂无审计事件" description="平台操作产生后会写入审计。" />
+      ) : (
+        <>
+          <Table<AuditEvent>
+            rowKey="id"
+            columns={columns}
+            dataSource={items}
+            pagination={false}
+            size="small"
+            expandable={{
+              rowExpandable: (record) => !!record.metadata && Object.keys(record.metadata).length > 0,
+              expandedRowRender: (record) => (
+                <pre className="json-block">{JSON.stringify(record.metadata, null, 2)}</pre>
+              ),
+            }}
+          />
+          {nextCursor && (
+            <Button
+              loading={query.isFetching}
+              onClick={() => {
+                setPages((previous) => [...previous, query.data?.items ?? []]);
+                setCursor(nextCursor);
+              }}
+            >
+              加载更多
+            </Button>
+          )}
+        </>
+      )}
     </div>
   );
 }
