@@ -30,6 +30,10 @@ const (
 	ReasonNoActiveOccurrence        = "no_active_occurrence_at_event_time"
 	ReasonStrongWeakConflict        = "strong_weak_conflict"
 	ReasonMultipleActiveOccurrences = "multiple_active_candidates"
+	// ReasonRegistrationFailed marks a role whose register-on-sight call
+	// failed (invalid identifier, unregistered space, conflict). The role is
+	// forced unresolved — a failed registration never silently resolves.
+	ReasonRegistrationFailed = "registration_failed"
 )
 
 // RoleMappingVersionV1 is the role→entity mapping version folded into
@@ -296,6 +300,42 @@ func (a *Attributor) ruleVersion() string {
 		return RoleMappingVersionV1
 	}
 	return a.RoleMappingVersion
+}
+
+// RuleVersion exposes the effective role mapping version so callers that
+// build attributions alongside the Attributor (e.g. register-on-sight
+// failure handling) fold the same version into attribution.id.
+func (a *Attributor) RuleVersion() string { return a.ruleVersion() }
+
+// RegistrationFailureAttribution builds the deterministic unresolved
+// attribution for a role whose register-on-sight registration failed. The
+// registration error is recorded as per-identifier evidence; the state is
+// forced unresolved with ReasonRegistrationFailed regardless of what a
+// registry lookup would have found, so a bad or conflicting identifier never
+// blocks the event and never silently resolves.
+func RegistrationFailureAttribution(eventID string, at time.Time, role RoleObservation, registerErr error, ruleVersion string) RoleAttribution {
+	evidence := Evidence{Identifiers: make([]IdentifierEvidence, 0, len(role.Identifiers))}
+	errText := ReasonRegistrationFailed
+	if registerErr != nil {
+		errText = registerErr.Error()
+	}
+	for _, id := range role.Identifiers {
+		evidence.Identifiers = append(evidence.Identifiers, IdentifierEvidence{
+			Kind: id.Kind, Value: id.Value, LookupError: errText,
+		})
+	}
+	ra := adjudicate(eventID, at, role, evidence, ruleVersion)
+	// adjudicate would report identifier_invalid; keep the precise reason.
+	ra.State = StateUnresolved
+	ra.EntityID = ""
+	ra.Confidence = 0
+	ra.ValidFrom = time.Time{}
+	ra.ValidTo = nil
+	ra.Evidence.Reason = ReasonRegistrationFailed
+	ra.Evidence.Adjudication = append(ra.Evidence.Adjudication, "registration_failed_role_forced_unresolved")
+	ra.AttributionID = AttributionID(eventID,
+		attributionSnapshot(role, ra.State, "", "", nil), ruleVersion)
+	return ra
 }
 
 // Attribute resolves every role observation of one event at the event time.

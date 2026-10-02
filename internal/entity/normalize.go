@@ -76,7 +76,9 @@ var (
 	sidPattern       = regexp.MustCompile(`^[Ss]-\d+(-\d+)+$`)
 	guidPattern      = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 	agentPattern     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{7,127}$`)
-	usernamePattern  = regexp.MustCompile(`^[a-z0-9._-]{1,104}$`)
+	// A single trailing "$" is allowed: AD machine accounts (WIN-139$) are
+	// legitimate usernames observed in security events.
+	usernamePattern  = regexp.MustCompile(`^[a-z0-9._-]{1,104}\$?$`)
 	spaceNamePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._-]{0,127}$`)
 )
 
