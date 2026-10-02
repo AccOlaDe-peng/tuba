@@ -17,6 +17,7 @@ M4 analysis runtime schema starts at `00005_analysis_runtime.sql` and adds worke
 `00012_source_context_scope.sql` enforces that a newly created immutable source context exactly snapshots the owning source instance's tenant slug, namespace, vendor tuple, epoch, and release. This closes a database integrity gap where a malformed context row could otherwise claim another tenant while referencing a valid source instance.
 
 `00016_identity_spaces.sql` adds the identity space registry (organization-scoped, normalized name unique per tenant, stable `is:`-prefixed ID) and a composite FK so `entities.authority` can only reference a registered space of the same tenant. Entity rows are therefore impossible without prior space registration.
+`00018_baseline_training.sql` adds the persisted feature-sample store (windowed feature records written at window close, revision-guarded corrections) and the immutable baseline model version store (insert-only content, lifecycle status transitions only, cold_start queryable, superseding references for audit). Baseline training reads only these samples — never Raw/standard events or Kafka retention.
 
 `00013_release_publishing.sql` adds a global platform-publisher grant table and publisher-scoped idempotency records. These grants are separate from tenant memberships; release API permissions are resolved from this table after validating the caller's tenant membership. Release transition APIs write state and audit records in one transaction.
 
