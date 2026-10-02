@@ -35,6 +35,9 @@ type Server struct {
 	Metrics         *telemetry.Registry
 	KafkaConfigured bool
 	ReleaseRoot     string
+	// AutoCaseEnabled gates the auto case creation path (default-off per the
+	// design baseline); it is set from TUBA_AUTO_CASE_ENABLED at startup.
+	AutoCaseEnabled bool
 }
 
 func (s Server) Handler() http.Handler {
@@ -88,6 +91,9 @@ func (s Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/v1/platform/release-publishers/{subject}", s.protected("release:manage", s.setReleasePublisher(false)))
 	mux.HandleFunc("DELETE /api/v1/platform/release-publishers/{subject}", s.protected("release:manage", s.setReleasePublisher(true)))
 	mux.HandleFunc("POST /api/v1/analysis/feedback", s.protected("analysis:feedback", s.createAnalysisFeedback))
+	mux.HandleFunc("GET /api/v1/analysis/feedback/evaluation", s.protected("analysis:feedback", s.listFeedbackEvaluation))
+	mux.HandleFunc("GET /api/v1/analysis/feedback/metrics", s.protected("analysis:feedback", s.feedbackRuleMetrics))
+	mux.HandleFunc("POST /api/v1/cases/auto-findings", s.protected("case:write", s.autoCaseForFinding))
 	mux.HandleFunc("GET /api/v1/sources", s.protected("source:manage", s.listSources))
 	mux.HandleFunc("POST /api/v1/sources", s.protected("source:manage", s.registerSource))
 	mux.HandleFunc("POST /api/v1/sources/{id}/rotate", s.protected("source:manage", s.rotateSource))

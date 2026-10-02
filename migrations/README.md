@@ -21,6 +21,8 @@ M4 analysis runtime schema starts at `00005_analysis_runtime.sql` and adds worke
 
 `00019_case_links_holds.sql` completes the PostgreSQL case authority (R03): typed idempotent case links (entity / risk_contribution / evidence with per-type ref_kind constraints), insert-only forensic snapshots (trigger-enforced: no update, no selective delete; rows only disappear with the case itself), and the case legal-hold flag (hold/reason/actor/timestamp, consistency-checked). The retention cleaner never sweeps a processing job referenced as job_id evidence of a held case.
 
+`00020_feedback_evaluation_auto_case.sql` implements R04: feedback submissions gain an optional idempotency key (unique per tenant) and a resolvable case target; `finding_labels` holds the feedback-derived finding status annotation (metadata decoupled from model artifacts — feedback never mutates production models online); `auto_case_dedupe` enforces the default-off auto case creation dedupe contract (one case per tenant/entity/policy/time_bucket key, links accumulate); the `analysis_feedback_evaluation` view is the offline evaluation dataset joining feedback with finding labels and case verdicts.
+
 `00013_release_publishing.sql` adds a global platform-publisher grant table and publisher-scoped idempotency records. These grants are separate from tenant memberships; release API permissions are resolved from this table after validating the caller's tenant membership. Release transition APIs write state and audit records in one transaction.
 
 Migrations use goose annotations. Shared and production environments must run them with a dedicated DDL identity. Application credentials receive DML permissions only. Applied migrations are immutable; corrections require a new numbered file.

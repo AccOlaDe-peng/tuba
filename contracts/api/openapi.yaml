@@ -834,6 +834,43 @@ paths:
           content: {application/json: {schema: {$ref: "#/components/schemas/AnalysisFeedback"}}}
         "400": {description: Invalid feedback}
         "403": {$ref: "#/components/responses/Forbidden"}
+  /analysis/feedback/evaluation:
+    get:
+      operationId: listFeedbackEvaluation
+      x-required-permission: analysis:feedback
+      summary: Export the offline evaluation dataset (feedback joined with the decoupled finding label and attached case verdict); never reads or mutates production models
+      parameters:
+        - {name: rule_id, in: query, schema: {type: string}}
+        - {name: entity_id, in: query, schema: {type: string}}
+        - {name: feedback_type, in: query, schema: {type: string, enum: [true_positive, false_positive, false_negative, inconclusive]}}
+        - {name: since, in: query, schema: {type: string, format: date-time}}
+        - {name: limit, in: query, schema: {type: integer, minimum: 1, maximum: 1000}}
+      responses:
+        "200": {description: Evaluation dataset rows}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /analysis/feedback/metrics:
+    get:
+      operationId: feedbackRuleMetrics
+      x-required-permission: analysis:feedback
+      summary: Per-rule feedback aggregates (tp/fp/fn/inconclusive counts and precision) for offline rule quality assessment
+      responses:
+        "200": {description: Per-rule metrics}
+        "403": {$ref: "#/components/responses/Forbidden"}
+  /cases/auto-findings:
+    post:
+      operationId: autoCaseForFinding
+      x-required-permission: case:write
+      summary: Auto case creation (default-off, TUBA_AUTO_CASE_ENABLED); dedupe key tenant/entity/policy/time_bucket — one case per key, anomaly links accumulate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AutoCaseFindingInput"}
+      responses:
+        "200": {description: Finding linked to the existing case of the dedupe key}
+        "201": {description: Case created for a new dedupe key}
+        "400": {description: Invalid input}
+        "403": {description: Auto case creation disabled (default) or forbidden}
 components:
   securitySchemes:
     sourceApiKey:
@@ -1256,6 +1293,19 @@ components:
         entity_id: {type: string, maxLength: 256}
         event_ids: {type: array, maxItems: 100, items: {type: string, maxLength: 256}}
         reason: {type: string, maxLength: 2000}
+        idempotency_key: {type: string, minLength: 8, maxLength: 128, description: Optional replay-safe submission key; same (tenant, key) returns the stored row}
+        target_case_id: {type: string, format: uuid, description: Optional case target; must resolve to a case in the caller tenant}
+    AutoCaseFindingInput:
+      type: object
+      additionalProperties: false
+      required: [entity_id, policy_id, bucket_start, anomaly_id, severity]
+      properties:
+        entity_id: {type: string, pattern: '^ent:[a-f0-9]{64}$'}
+        policy_id: {type: string, minLength: 1, maxLength: 256}
+        bucket_start: {type: string, format: date-time, description: UTC hour-aligned time bucket of the dedupe key}
+        anomaly_id: {type: string, minLength: 1, maxLength: 256}
+        title: {type: string, maxLength: 300}
+        severity: {type: string, enum: [low, medium, high, critical]}
     AnalysisFeedback:
       type: object
       required: [id, feedback_type, event_ids, reason, created_at]
