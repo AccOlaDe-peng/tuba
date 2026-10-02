@@ -2,6 +2,7 @@ import unittest
 from datetime import datetime, timedelta, timezone
 
 from tuba_analysis.baseline import (
+    RevisionConflict,
     BaselineModel,
     BaselineStatus,
     FeatureSample,
@@ -496,3 +497,33 @@ class TrainingSchedulerTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ConflictOnceSampleStore(FakeSampleStore):
+    """Simulates a PG sample row left by a crashed run: revision 1 with
+    different content; reports stored revision 1 via stored_revision."""
+
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    def save(self, organization, feature_id, sample):
+        self.calls += 1
+        if sample.revision <= 1:
+            raise RevisionConflict("revision 1 already stored with different content")
+        return super().save(organization, feature_id, sample)
+
+    def stored_revision(self, organization, feature_id, sample):
+        return 1
+
+
+class TestSampleRevisionConflictRecovery(unittest.TestCase):
+    def test_conflicting_sample_is_republished_at_next_revision(self):
+        store = ConflictOnceSampleStore()
+        processor = new_processor(sample_store=store, model_store=FakeModelStore())
+        raws = [contribution(index, f"f{index}", index // 2, "failure") for index in range(6)]
+        raws.append(contribution(100, "tail", 15, "failure"))  # watermark closes the window
+        feed(processor, raws)
+        saved = [sample for _, _, sample in store.saved]
+        self.assertTrue(saved, "sample must be saved after conflict recovery")
+        self.assertTrue(all(sample.revision == 2 for sample in saved))

@@ -44,6 +44,7 @@ from .baseline import (
     FeatureSample,
     PostgresBaselineModelStore,
     FeatureSampleStore,
+    RevisionConflict,
     TrainingPolicy,
     run_training_job,
 )
@@ -497,7 +498,22 @@ class AttributedAnalysisProcessor:
                     generation=self.model_definition.generation,
                     revision=revision,
                 )
-                self.sample_store.save(self.organization, self.model_definition.feature_id, sample)
+                # 崩溃/状态重置后内存中的窗口 revision 可能落后于 PG 已存样本：
+                # 同键异内容按 F06 语义必须推进 revision 而非崩溃循环。
+                try:
+                    self.sample_store.save(self.organization, self.model_definition.feature_id, sample)
+                except RevisionConflict:
+                    stored = self.sample_store.stored_revision(
+                        self.organization, self.model_definition.feature_id, sample
+                    )
+                    revision = stored + 1
+                    self.window_frames[frame_key] = {"hash": digest, "revision": revision}
+                    sample = FeatureSample.from_record(
+                        record,
+                        generation=self.model_definition.generation,
+                        revision=revision,
+                    )
+                    self.sample_store.save(self.organization, self.model_definition.feature_id, sample)
             feature_object_id = "feat:" + _canonical_hash(
                 {
                     "organization": self.organization,

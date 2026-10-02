@@ -382,6 +382,26 @@ class PostgresFeatureSampleStore:
     def close(self) -> None:
         self.connection.close()
 
+    def stored_revision(self, organization: str, feature_id: str, sample: FeatureSample) -> int:
+        """Highest stored revision for the sample's business key, 0 if none."""
+        row = self.connection.execute(
+            """
+            SELECT revision FROM feature_samples
+            WHERE organization_id = %s AND feature_id = %s AND feature_version = %s
+              AND generation = %s AND entity_id = %s AND window_start = %s
+            ORDER BY revision DESC LIMIT 1
+            """,
+            (
+                organization,
+                feature_id,
+                sample.feature_version,
+                sample.generation,
+                sample.entity_id,
+                sample.window_start,
+            ),
+        ).fetchone()
+        return int(row[0]) if row else 0
+
     def save(self, organization: str, feature_id: str, sample: FeatureSample) -> str:
         digest = sample.content_hash()
         with self.connection.transaction():
