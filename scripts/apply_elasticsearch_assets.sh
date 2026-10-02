@@ -51,4 +51,11 @@ for asset in "$root"/elasticsearch/generated-v1/index-*.json; do
   template="tuba-${file#index-}"
   put "_index_template/$template" "$asset"
 done
-echo 'TUBA generated templates and anomaly mapping applied; legacy authentication and ILM retention policies were left unchanged'
+# E05 entity/relation state projection templates (latest-state indices
+# ueba-entities-*/ueba-relations-* with external-version revision guards).
+# Projection history indices are sink-managed dated indices, like quarantine.
+for projection in entity relation; do
+  put "_component_template/tuba-${projection}-projection-v1" "$root/elasticsearch/component-template-${projection}-projection-v1.json"
+  put "_index_template/tuba-${projection}-projection-v1" "$root/elasticsearch/index-template-${projection}-projection-v1.json"
+done
+echo 'TUBA generated templates, anomaly mapping and entity/relation projection templates applied; legacy authentication and ILM retention policies were left unchanged'

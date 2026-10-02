@@ -1,0 +1,79 @@
+{
+  "_meta": {
+    "managed_by": "tuba",
+    "version": 1
+  },
+  "template": {
+    "settings": {
+      "index.number_of_shards": 1,
+      "index.number_of_replicas": 0,
+      "index.mapping.total_fields.limit": 1000
+    },
+    "mappings": {
+      "dynamic": "strict",
+      "properties": {
+        "@timestamp": {
+          "type": "date"
+        },
+        "organization": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            }
+          }
+        },
+        "relation": {
+          "properties": {
+            "id": {
+              "type": "keyword"
+            },
+            "type": {
+              "type": "keyword"
+            },
+            "from_entity_id": {
+              "type": "keyword"
+            },
+            "to_entity_id": {
+              "type": "keyword"
+            },
+            "rule_version": {
+              "type": "keyword"
+            },
+            "confidence": {
+              "type": "float"
+            },
+            "revision": {
+              "type": "long"
+            }
+          }
+        },
+        "evidence": {
+          "type": "object",
+          "enabled": false
+        },
+        "valid_from": {
+          "type": "date"
+        },
+        "valid_to": {
+          "type": "date"
+        },
+        "source": {
+          "properties": {
+            "event_id": {
+              "type": "keyword"
+            },
+            "raw_event_id": {
+              "type": "keyword"
+            }
+          }
+        },
+        "projection_revision": {
+          "type": "long"
+        },
+        "content_hash": {
+          "type": "keyword"
+        }
+      }
+    }
+  }
+}
