@@ -23,6 +23,9 @@ type Case struct {
 	Verdict       string     `json:"verdict,omitempty"`
 	VerdictReason string     `json:"verdict_reason,omitempty"`
 	Version       int64      `json:"version"`
+	Hold          bool       `json:"hold"`
+	HoldReason    string     `json:"hold_reason,omitempty"`
+	HoldAt        *time.Time `json:"hold_at,omitempty"`
 	CreatedAt     time.Time  `json:"created_at"`
 	UpdatedAt     time.Time  `json:"updated_at"`
 	ClosedAt      *time.Time `json:"closed_at,omitempty"`
@@ -176,7 +179,7 @@ func (s *Store) ListCasesFiltered(ctx context.Context, p auth.Principal, limit i
 		args = append(args, t, id)
 		filters = append(filters, fmt.Sprintf("(c.updated_at,c.id)<($%d,$%d)", len(args)-1, len(args)))
 	}
-	q := `SELECT c.id,c.title,c.description,c.status,c.severity,coalesce(i.subject,''),coalesce(c.verdict,''),coalesce(c.verdict_reason,''),c.version,c.created_at,c.updated_at,c.closed_at,ARRAY(SELECT ca.anomaly_id FROM case_anomalies ca WHERE ca.case_id=c.id ORDER BY ca.anomaly_id) FROM cases c LEFT JOIN identities i ON i.id=c.assignee_identity_id WHERE ` + strings.Join(filters, " AND ") + ` ORDER BY c.updated_at DESC,c.id DESC LIMIT $2`
+	q := `SELECT c.id,c.title,c.description,c.status,c.severity,coalesce(i.subject,''),coalesce(c.verdict,''),coalesce(c.verdict_reason,''),c.version,c.hold,c.hold_reason,c.hold_at,c.created_at,c.updated_at,c.closed_at,ARRAY(SELECT ca.anomaly_id FROM case_anomalies ca WHERE ca.case_id=c.id ORDER BY ca.anomaly_id) FROM cases c LEFT JOIN identities i ON i.id=c.assignee_identity_id WHERE ` + strings.Join(filters, " AND ") + ` ORDER BY c.updated_at DESC,c.id DESC LIMIT $2`
 	rows, e := s.Pool.Query(ctx, q, args...)
 	if e != nil {
 		return nil, "", e
@@ -185,7 +188,7 @@ func (s *Store) ListCasesFiltered(ctx context.Context, p auth.Principal, limit i
 	out := []Case{}
 	for rows.Next() {
 		var c Case
-		if e = rows.Scan(&c.ID, &c.Title, &c.Description, &c.Status, &c.Severity, &c.Assignee, &c.Verdict, &c.VerdictReason, &c.Version, &c.CreatedAt, &c.UpdatedAt, &c.ClosedAt, &c.AnomalyIDs); e != nil {
+		if e = rows.Scan(&c.ID, &c.Title, &c.Description, &c.Status, &c.Severity, &c.Assignee, &c.Verdict, &c.VerdictReason, &c.Version, &c.Hold, &c.HoldReason, &c.HoldAt, &c.CreatedAt, &c.UpdatedAt, &c.ClosedAt, &c.AnomalyIDs); e != nil {
 			return nil, "", e
 		}
 		out = append(out, c)
@@ -204,7 +207,7 @@ func (s *Store) GetCase(ctx context.Context, p auth.Principal, id string) (Case,
 	if e != nil {
 		return c, e
 	}
-	e = s.Pool.QueryRow(ctx, `SELECT c.id,c.title,c.description,c.status,c.severity,coalesce(i.subject,''),coalesce(c.verdict,''),coalesce(c.verdict_reason,''),c.version,c.created_at,c.updated_at,c.closed_at,ARRAY(SELECT ca.anomaly_id FROM case_anomalies ca WHERE ca.case_id=c.id ORDER BY ca.anomaly_id) FROM cases c LEFT JOIN identities i ON i.id=c.assignee_identity_id WHERE c.organization_id=$1 AND c.id=$2`, org, id).Scan(&c.ID, &c.Title, &c.Description, &c.Status, &c.Severity, &c.Assignee, &c.Verdict, &c.VerdictReason, &c.Version, &c.CreatedAt, &c.UpdatedAt, &c.ClosedAt, &c.AnomalyIDs)
+	e = s.Pool.QueryRow(ctx, `SELECT c.id,c.title,c.description,c.status,c.severity,coalesce(i.subject,''),coalesce(c.verdict,''),coalesce(c.verdict_reason,''),c.version,c.hold,c.hold_reason,c.hold_at,c.created_at,c.updated_at,c.closed_at,ARRAY(SELECT ca.anomaly_id FROM case_anomalies ca WHERE ca.case_id=c.id ORDER BY ca.anomaly_id) FROM cases c LEFT JOIN identities i ON i.id=c.assignee_identity_id WHERE c.organization_id=$1 AND c.id=$2`, org, id).Scan(&c.ID, &c.Title, &c.Description, &c.Status, &c.Severity, &c.Assignee, &c.Verdict, &c.VerdictReason, &c.Version, &c.Hold, &c.HoldReason, &c.HoldAt, &c.CreatedAt, &c.UpdatedAt, &c.ClosedAt, &c.AnomalyIDs)
 	return c, e
 }
 func (s *Store) UpdateCase(ctx context.Context, p auth.Principal, id string, in CaseActionInput, requestID string) (Case, error) {
@@ -249,7 +252,7 @@ func (s *Store) UpdateCase(ctx context.Context, p auth.Principal, id string, in 
 	if e != nil {
 		return out, e
 	}
-	if e = tx.QueryRow(ctx, `SELECT coalesce(i.subject,''),coalesce(c.verdict,''),coalesce(c.verdict_reason,''),ARRAY(SELECT ca.anomaly_id FROM case_anomalies ca WHERE ca.case_id=c.id ORDER BY ca.anomaly_id) FROM cases c LEFT JOIN identities i ON i.id=c.assignee_identity_id WHERE c.id=$1`, id).Scan(&out.Assignee, &out.Verdict, &out.VerdictReason, &out.AnomalyIDs); e != nil {
+	if e = tx.QueryRow(ctx, `SELECT coalesce(i.subject,''),coalesce(c.verdict,''),coalesce(c.verdict_reason,''),c.hold,c.hold_reason,c.hold_at,ARRAY(SELECT ca.anomaly_id FROM case_anomalies ca WHERE ca.case_id=c.id ORDER BY ca.anomaly_id) FROM cases c LEFT JOIN identities i ON i.id=c.assignee_identity_id WHERE c.id=$1`, id).Scan(&out.Assignee, &out.Verdict, &out.VerdictReason, &out.Hold, &out.HoldReason, &out.HoldAt, &out.AnomalyIDs); e != nil {
 		return out, e
 	}
 	b1, _ := json.Marshal(before)

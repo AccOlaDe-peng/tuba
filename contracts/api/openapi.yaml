@@ -490,6 +490,62 @@ paths:
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
       responses: {"200": {description: Case activity page}, "404": {description: Case not found}}
+  /cases/{id}/links:
+    get:
+      operationId: listCaseLinks
+      x-required-permission: case:read
+      summary: List the typed entity/risk/evidence links of a case
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {"200": {description: Case link list}, "404": {description: Case not found}}
+    post:
+      operationId: addCaseLink
+      x-required-permission: case:write
+      summary: Associate an entity, risk contribution, or evidence reference with a case (idempotent per link identity)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/AddCaseLink"}
+      responses:
+        "200": {description: Case after the association; added=false on idempotent replay}
+        "400": {description: Invalid link type, ref_kind, or unresolvable reference}
+        "409": {description: Version conflict}
+  /cases/{id}/snapshots:
+    get:
+      operationId: listCaseSnapshots
+      x-required-permission: case:read
+      summary: List insert-only forensic snapshots of a case
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {"200": {description: Case snapshot list}, "404": {description: Case not found}}
+    post:
+      operationId: createCaseSnapshot
+      x-required-permission: case:write
+      summary: Freeze the current case header and link set into an immutable forensic snapshot
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/CreateCaseSnapshot"}
+      responses:
+        "201": {description: Snapshot created}
+        "409": {description: Version conflict}
+  /cases/{id}/hold:
+    post:
+      operationId: setCaseHold
+      x-required-permission: case:write
+      summary: Set or release the case legal hold; held case evidence is exempt from retention sweeps
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: "#/components/schemas/SetCaseHold"}
+      responses:
+        "200": {description: Case after the hold change; changed=false on idempotent replay}
+        "400": {description: Invalid hold request (enabling a hold requires a reason)}
+        "409": {description: Version conflict}
   /audit:
     get:
       operationId: listAuditEvents
@@ -1075,7 +1131,56 @@ components:
         created_at: {type: string, format: date-time}
         updated_at: {type: string, format: date-time}
         closed_at: {type: [string, "null"], format: date-time}
+        hold: {type: boolean}
+        hold_reason: {type: string}
+        hold_at: {type: [string, "null"], format: date-time}
         anomaly_ids: {type: array, items: {type: string}}
+    AddCaseLink:
+      type: object
+      additionalProperties: false
+      required: [link_type, ref_kind, target_id, expected_version]
+      properties:
+        link_type: {type: string, enum: [entity, risk_contribution, evidence]}
+        ref_kind:
+          type: string
+          enum: [entity, risk_contribution, event_id, raw_event_id, attribution, job_id]
+          description: Constrained per link_type (entity→entity, risk_contribution→risk_contribution, evidence→event_id/raw_event_id/attribution/job_id).
+        target_id: {type: string, minLength: 1, maxLength: 256}
+        expected_version: {type: integer, minimum: 1}
+    CaseLink:
+      type: object
+      required: [link_type, ref_kind, target_id, linked_at]
+      properties:
+        link_type: {type: string, enum: [entity, risk_contribution, evidence]}
+        ref_kind: {type: string}
+        target_id: {type: string}
+        linked_by: {type: string}
+        linked_at: {type: string, format: date-time}
+    CreateCaseSnapshot:
+      type: object
+      additionalProperties: false
+      required: [label, expected_version]
+      properties:
+        label: {type: string, minLength: 1, maxLength: 300}
+        expected_version: {type: integer, minimum: 1}
+    CaseSnapshot:
+      type: object
+      required: [id, case_id, label, snapshot, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        case_id: {type: string, format: uuid}
+        label: {type: string}
+        snapshot: {type: object, description: Frozen case header plus the complete link set at creation time; insert-only.}
+        created_by: {type: string}
+        created_at: {type: string, format: date-time}
+    SetCaseHold:
+      type: object
+      additionalProperties: false
+      required: [hold, expected_version]
+      properties:
+        hold: {type: boolean}
+        reason: {type: string, maxLength: 2000, description: Required when enabling a hold.}
+        expected_version: {type: integer, minimum: 1}
     CaseActivity:
       type: object
       required: [id, action, request_id, occurred_at, metadata]

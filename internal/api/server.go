@@ -72,6 +72,11 @@ func (s Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/cases/{id}", s.protected("case:read", s.caseDetail))
 	mux.HandleFunc("POST /api/v1/cases/{id}/actions", s.protected("case:write", s.caseAction))
 	mux.HandleFunc("GET /api/v1/cases/{id}/activity", s.protected("case:read", s.caseActivity))
+	mux.HandleFunc("POST /api/v1/cases/{id}/links", s.protected("case:write", s.addCaseLink))
+	mux.HandleFunc("GET /api/v1/cases/{id}/links", s.protected("case:read", s.listCaseLinks))
+	mux.HandleFunc("POST /api/v1/cases/{id}/snapshots", s.protected("case:write", s.createCaseSnapshot))
+	mux.HandleFunc("GET /api/v1/cases/{id}/snapshots", s.protected("case:read", s.listCaseSnapshots))
+	mux.HandleFunc("POST /api/v1/cases/{id}/hold", s.protected("case:write", s.setCaseHold))
 	mux.HandleFunc("GET /api/v1/operations/status", s.protected("operations:read", s.operations))
 	mux.HandleFunc("GET /api/v1/releases", s.protected("release:read", s.listReleases))
 	mux.HandleFunc("POST /api/v1/releases", s.protected("release:manage", s.createRelease))
@@ -456,6 +461,156 @@ func (s Server) caseActivity(w http.ResponseWriter, r *http.Request, p auth.Prin
 
 var transitions = map[string]map[string]bool{"open": {"in_progress": true, "closed": true}, "in_progress": {"open": true, "closed": true}, "closed": {"open": true}}
 var verdicts = map[string]bool{"true_positive": true, "benign_positive": true, "false_positive": true, "inconclusive": true}
+
+// R03 case link/snapshot/hold handlers. These endpoints are PG-authority
+// only; without the control store they fail closed with 503 rather than
+// falling back to the legacy Elasticsearch case mirror.
+func (s Server) requireControl(w http.ResponseWriter) bool {
+	if s.Control == nil {
+		http.Error(w, "control store unavailable", http.StatusServiceUnavailable)
+		return false
+	}
+	return true
+}
+
+func (s Server) listCaseLinks(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	if !s.requireControl(w) {
+		return
+	}
+	id := r.PathValue("id")
+	if !validCaseID(id) {
+		http.Error(w, "invalid case ID", http.StatusBadRequest)
+		return
+	}
+	links, err := s.Control.ListCaseLinks(r.Context(), p, id)
+	if err != nil {
+		http.Error(w, "case not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": links})
+}
+
+func (s Server) addCaseLink(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	if !s.requireControl(w) {
+		return
+	}
+	id := r.PathValue("id")
+	if !validCaseID(id) {
+		http.Error(w, "invalid case ID", http.StatusBadRequest)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var in control.AddCaseLinkInput
+	if err := decoder.Decode(&in); err != nil {
+		http.Error(w, "invalid link", http.StatusBadRequest)
+		return
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		http.Error(w, "trailing data", http.StatusBadRequest)
+		return
+	}
+	c, added, err := s.Control.AddCaseLink(r.Context(), p, id, in, requestID(r))
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, control.ErrVersionConflict) || strings.Contains(err.Error(), "conflict") {
+			code = http.StatusConflict
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"case": c, "added": added})
+}
+
+func (s Server) listCaseSnapshots(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	if !s.requireControl(w) {
+		return
+	}
+	id := r.PathValue("id")
+	if !validCaseID(id) {
+		http.Error(w, "invalid case ID", http.StatusBadRequest)
+		return
+	}
+	snapshots, err := s.Control.ListCaseSnapshots(r.Context(), p, id)
+	if err != nil {
+		http.Error(w, "case not found", http.StatusNotFound)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"items": snapshots})
+}
+
+func (s Server) createCaseSnapshot(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	if !s.requireControl(w) {
+		return
+	}
+	id := r.PathValue("id")
+	if !validCaseID(id) {
+		http.Error(w, "invalid case ID", http.StatusBadRequest)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var in struct {
+		Label           string `json:"label"`
+		ExpectedVersion int64  `json:"expected_version"`
+	}
+	if err := decoder.Decode(&in); err != nil {
+		http.Error(w, "invalid snapshot", http.StatusBadRequest)
+		return
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		http.Error(w, "trailing data", http.StatusBadRequest)
+		return
+	}
+	snapshot, err := s.Control.CreateCaseSnapshot(r.Context(), p, id, in.Label, in.ExpectedVersion, requestID(r))
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, control.ErrVersionConflict) || strings.Contains(err.Error(), "conflict") {
+			code = http.StatusConflict
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	writeJSON(w, http.StatusCreated, snapshot)
+}
+
+func (s Server) setCaseHold(w http.ResponseWriter, r *http.Request, p auth.Principal) {
+	if !s.requireControl(w) {
+		return
+	}
+	id := r.PathValue("id")
+	if !validCaseID(id) {
+		http.Error(w, "invalid case ID", http.StatusBadRequest)
+		return
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, 4096)
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	var in control.SetCaseHoldInput
+	if err := decoder.Decode(&in); err != nil {
+		http.Error(w, "invalid hold", http.StatusBadRequest)
+		return
+	}
+	var extra any
+	if decoder.Decode(&extra) != io.EOF {
+		http.Error(w, "trailing data", http.StatusBadRequest)
+		return
+	}
+	c, changed, err := s.Control.SetCaseHold(r.Context(), p, id, in, requestID(r))
+	if err != nil {
+		code := http.StatusBadRequest
+		if errors.Is(err, control.ErrVersionConflict) || strings.Contains(err.Error(), "conflict") {
+			code = http.StatusConflict
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"case": c, "changed": changed})
+}
 
 func applyAction(document map[string]any, actor string, action CaseAction) error {
 	if action.Status == "" && action.Assignee == "" && action.Verdict == "" {

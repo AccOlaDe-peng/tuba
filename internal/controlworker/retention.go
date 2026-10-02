@@ -209,6 +209,8 @@ func jobDeletable(state JobState, finishedAt *time.Time, leaseOwner *string, suc
 // job's temporary directory. Attempt rows cascade with the job. Jobs with a
 // live lease, a non-terminal state, or a missing finished_at are kept even
 // when old; failed and cancelled jobs are kept for the longer evidence window.
+// A job referenced as job_id evidence of a case under legal hold (R03) is
+// never swept: the hold's protection semantics extend to the case's evidence.
 func (r RetentionCleaner) sweepJobs(ctx context.Context, c RetentionConfig, succeededCutoff, failedCutoff time.Time) (int, error) {
 	total := 0
 	for batch := 0; ; batch++ {
@@ -217,12 +219,17 @@ func (r RetentionCleaner) sweepJobs(ctx context.Context, c RetentionConfig, succ
 		}
 		rows, err := c.Pool.Query(ctx, `
 			WITH doomed AS (
-				SELECT ctid FROM processing_jobs
-				WHERE finished_at IS NOT NULL AND lease_owner IS NULL AND (
-					(state = 'succeeded' AND finished_at < $1) OR
-					(state IN ('failed','cancelled') AND finished_at < $2)
+				SELECT pj.ctid FROM processing_jobs pj
+				WHERE pj.finished_at IS NOT NULL AND pj.lease_owner IS NULL AND (
+					(pj.state = 'succeeded' AND pj.finished_at < $1) OR
+					(pj.state IN ('failed','cancelled') AND pj.finished_at < $2)
 				)
-				ORDER BY finished_at LIMIT $3
+				AND NOT EXISTS (
+					SELECT 1 FROM case_links cl JOIN cases cs ON cs.id = cl.case_id
+					WHERE cs.hold AND cl.link_type = 'evidence' AND cl.ref_kind = 'job_id'
+						AND cl.target_id = pj.id::text
+				)
+				ORDER BY pj.finished_at LIMIT $3
 			)
 			DELETE FROM processing_jobs WHERE ctid IN (SELECT ctid FROM doomed)
 			RETURNING id::text`, succeededCutoff, failedCutoff, c.BatchSize)
