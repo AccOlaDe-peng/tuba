@@ -7,6 +7,7 @@ import (
 	"github.com/segmentio/kafka-go"
 	"tuba/product/internal/analysisworker"
 	"tuba/product/internal/config"
+	"tuba/product/internal/kafkautil"
 	"tuba/product/internal/lifecycle"
 	"tuba/product/internal/sink"
 	"tuba/product/internal/telemetry"
@@ -29,7 +30,16 @@ func main() {
 		topics = append(topics, c.AnalysisV2Topic)
 	}
 	group := "tuba-analysis-sink-" + c.Namespace
-	dlq := &kafka.Writer{Addr: kafka.TCP(c.Brokers...), Topic: c.DeadLetterTopic, RequiredAcks: kafka.RequireAll, Async: false}
+	kc := kafkautil.Config{Protocol: c.KafkaProtocol, Mechanism: c.KafkaSASLMechanism, Username: c.KafkaUsername, Password: c.KafkaPassword, CAFile: c.KafkaCAFile, CertFile: c.KafkaCertFile, KeyFile: c.KafkaKeyFile, ServerName: c.KafkaServerName}
+	dialer, err := kc.Dialer()
+	if err != nil {
+		log.Fatal(err)
+	}
+	transport, err := kc.Transport()
+	if err != nil {
+		log.Fatal(err)
+	}
+	dlq := &kafka.Writer{Transport: transport, Addr: kafka.TCP(c.Brokers...), Topic: c.DeadLetterTopic, RequiredAcks: kafka.RequireAll, Async: false}
 	defer dlq.Close()
 	ctx, stop := lifecycle.NotifyContext(context.Background())
 	defer stop()
@@ -46,7 +56,7 @@ func main() {
 	es := sink.New(c.ESURL, c.ESAPIKey, c.Namespace)
 	errs := make(chan error, len(topics))
 	for _, topic := range topics {
-		reader := kafka.NewReader(kafka.ReaderConfig{Brokers: c.Brokers, Topic: topic, GroupID: group, CommitInterval: 0, MinBytes: 1, MaxBytes: 10e6})
+		reader := kafka.NewReader(kafka.ReaderConfig{Dialer: dialer, Brokers: c.Brokers, Topic: topic, GroupID: group, CommitInterval: 0, MinBytes: 1, MaxBytes: 10e6})
 		defer reader.Close()
 		worker := analysisworker.Worker{Organization: c.Organization, Namespace: c.Namespace, Consumer: reader, DeadLetter: dlq, Sink: es, Metrics: metrics}
 		log.Printf("analysis sink consuming %s (group %s)", topic, group)
