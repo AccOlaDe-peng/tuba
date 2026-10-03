@@ -517,6 +517,91 @@ class ConflictOnceSampleStore(FakeSampleStore):
         return 1
 
 
+class TestWindowRevisionDurability(unittest.TestCase):
+    """Regression: same business key must never re-emit a stale revision."""
+
+    def test_idle_advance_does_not_forget_emitted_window_revisions(self):
+        processor = new_processor(model_store=FakeModelStore())
+        raws = five_failures_then_success()
+        raws.append(contribution(200, "tail", 15, "failure"))
+        first = feed(processor, raws)
+        first_features = [e for e in first if e["object_type"] == "feature"]
+        self.assertEqual(len(first_features), 1)
+        self.assertEqual(first_features[0]["revision"], 1)
+
+        # Hours of idle advance: the idle floor inflates the watermark far
+        # beyond the retained history. The first advance legitimately closes
+        # the tail window [00:10, 00:20) at revision 1; pruning must not
+        # forget the emitted frames while the windows' events are still
+        # retained, so subsequent advances re-emit nothing and the revision
+        # chain survives.
+        idle_at = datetime(2026, 10, 12, 6, 0, tzinfo=timezone.utc)
+        tail_features = [e for e in processor.advance(idle_at, "run-1") if e["object_type"] == "feature"]
+        self.assertEqual(len(tail_features), 1)
+        self.assertEqual(tail_features[0]["window_start"], "2026-10-12T00:10:00Z")
+        self.assertEqual(tail_features[0]["revision"], 1)
+        self.assertEqual(processor.advance(idle_at + timedelta(hours=1), "run-1"), [])
+        self.assertEqual(processor.advance(idle_at + timedelta(hours=2), "run-1"), [])
+
+        # A late correction inside the still-retained window must continue at
+        # revision 2 — never restart at revision 1 with different content.
+        second = feed(processor, [contribution(300, "late-f", 1, "failure")])
+        second_features = [e for e in second if e["object_type"] == "feature"]
+        self.assertEqual(len(second_features), 1)
+        self.assertEqual(second_features[0]["object_id"], first_features[0]["object_id"])
+        self.assertEqual(second_features[0]["revision"], 2)
+        self.assertEqual(second_features[0]["document"]["values"]["auth.failure.count"], 6)
+
+    def test_restored_processor_late_correction_continues_revision_chain(self):
+        processor = new_processor(model_store=FakeModelStore())
+        raws = five_failures_then_success()
+        raws.append(contribution(200, "tail", 15, "failure"))
+        first = feed(processor, raws)
+        first_features = [e for e in first if e["object_type"] == "feature"]
+        self.assertEqual(first_features[0]["revision"], 1)
+
+        # Worker restart: recovery from the persisted snapshot, then a late
+        # correction of the same window must emit revision 2, not revision 1.
+        restored = AttributedAnalysisProcessor.from_state(
+            ORG, NS, load_registry(), processor.export_state(), model_store=FakeModelStore()
+        )
+        second = feed(restored, [contribution(300, "late-f", 1, "failure")])
+        second_features = [e for e in second if e["object_type"] == "feature"]
+        self.assertEqual(len(second_features), 1)
+        self.assertEqual(second_features[0]["object_id"], first_features[0]["object_id"])
+        self.assertEqual(second_features[0]["revision"], 2)
+
+
+class StaleSampleStore(FakeSampleStore):
+    """Simulates a durable store ahead of in-memory tracking (state snapshot
+    lost frames that were already emitted and persisted): revision <= 2 is
+    stale for this business key, stored tip is revision 2."""
+
+    def save(self, organization, feature_id, sample):
+        if sample.revision <= 2:
+            return "stale_revision"
+        return super().save(organization, feature_id, sample)
+
+    def stored_revision(self, organization, feature_id, sample):
+        return 2
+
+
+class TestStaleSampleRevisionRecovery(unittest.TestCase):
+    def test_stale_candidate_revision_restarts_from_stored_tip(self):
+        store = StaleSampleStore()
+        processor = new_processor(sample_store=store, model_store=FakeModelStore())
+        raws = five_failures_then_success()
+        raws.append(contribution(200, "tail", 15, "failure"))
+        envelopes = feed(processor, raws)
+        features = [e for e in envelopes if e["object_type"] == "feature"]
+        self.assertEqual(len(features), 1)
+        # Never emit the stale revision 1: the envelope continues at the
+        # stored tip + 1 and the persisted sample lands at the same revision.
+        self.assertEqual(features[0]["revision"], 3)
+        saved = [sample for _, _, sample in store.saved]
+        self.assertTrue(all(sample.revision == 3 for sample in saved))
+
+
 class TestSampleRevisionConflictRecovery(unittest.TestCase):
     def test_conflicting_sample_is_republished_at_next_revision(self):
         store = ConflictOnceSampleStore()

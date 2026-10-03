@@ -500,9 +500,13 @@ class AttributedAnalysisProcessor:
                 )
                 # 崩溃/状态重置后内存中的窗口 revision 可能落后于 PG 已存样本：
                 # 同键异内容按 F06 语义必须推进 revision 而非崩溃循环。
+                # stale_revision（内存候选 revision 低于持久存储）同样按冲突处理：
+                # 从已存 revision 的顶端续推，绝不以更低/相同 revision 发出异内容。
                 try:
-                    self.sample_store.save(self.organization, self.model_definition.feature_id, sample)
+                    outcome = self.sample_store.save(self.organization, self.model_definition.feature_id, sample)
                 except RevisionConflict:
+                    outcome = "stale_revision"
+                if outcome == "stale_revision":
                     stored = self.sample_store.stored_revision(
                         self.organization, self.model_definition.feature_id, sample
                     )
@@ -559,13 +563,23 @@ class AttributedAnalysisProcessor:
         return envelopes
 
     def _prune_window_frames(self) -> None:
-        watermark = self.windows.watermark
-        if watermark is None:
-            return
-        cutoff = watermark - self._retention()
-        for key in sorted(self.window_frames):
-            _, start = key.rsplit("|", 1)
-            if parse_time(start) < cutoff:
+        # A frame may only be forgotten once its window can no longer be
+        # recomputed: event retention is anchored at the entity's maximum
+        # observed event time (FeatureWindows.observe). Pruning against the
+        # watermark — which the idle floor can inflate arbitrarily far beyond
+        # the retained history — would drop bookkeeping for windows whose
+        # events are still retained and reset their next emission to
+        # revision 1 (same business key, same revision, different content).
+        window = timedelta(seconds=self.feature_window_seconds)
+        for key in list(self.window_frames):
+            entity, start = key.rsplit("|", 1)
+            entity_max = self.windows.entity_max.get(entity)
+            if entity_max is None:
+                # Entity state was evicted; keep the frame fail-closed so a
+                # re-observed window continues its revision chain instead of
+                # restarting at revision 1.
+                continue
+            if parse_time(start) + window <= entity_max - self._retention():
                 del self.window_frames[key]
 
     # ------------------------------------------------------------------ state

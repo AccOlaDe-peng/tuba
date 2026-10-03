@@ -275,8 +275,20 @@ def main() -> None:
                 # emit their feature/statistical results.
                 wall_now = datetime.now(timezone.utc)
                 idle_results: list[dict[str, Any]] = []
-                for processor in processors.values():
-                    idle_results.extend(processor.advance(wall_now, run_id))
+                for partition, processor in processors.items():
+                    advanced = processor.advance(wall_now, run_id)
+                    if advanced:
+                        # Idle-close emissions advance window revisions; persist
+                        # them immediately or a crash would restore a state that
+                        # re-emits the same windows at stale revisions.
+                        store.save_processor_state(
+                            group_id,
+                            source_topic,
+                            partition,
+                            processor.export_state(),
+                            processor.watermark,
+                        )
+                    idle_results.extend(advanced)
                 # Periodic baseline training (F04): reads persisted feature
                 # samples only, publishes immutable versions / cold_start.
                 idle_results.extend(

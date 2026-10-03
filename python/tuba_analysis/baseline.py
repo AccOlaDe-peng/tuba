@@ -355,6 +355,8 @@ def sample_range(samples: list[FeatureSample]) -> dict[str, Any]:
 class FeatureSampleStore(Protocol):
     def save(self, organization: str, feature_id: str, sample: FeatureSample) -> str: ...
 
+    def stored_revision(self, organization: str, feature_id: str, sample: FeatureSample) -> int: ...
+
     def training_samples(
         self,
         organization: str,
