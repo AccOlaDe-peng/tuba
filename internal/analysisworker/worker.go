@@ -257,6 +257,7 @@ func (w Worker) processBatch(ctx context.Context, messages []kafka.Message) erro
 		}
 
 		next := make([]objectEntry, 0, len(pending))
+		var retrySamples []string
 		for i, itemErr := range results {
 			entry := pending[i]
 			switch {
@@ -279,10 +280,15 @@ func (w Worker) processBatch(ctx context.Context, messages []kafka.Message) erro
 					continue
 				}
 				next = append(next, entry)
+				if len(retrySamples) < 3 {
+					retrySamples = append(retrySamples, fmt.Sprintf("%s rev=%d: %v", entry.object.ObjectID, entry.object.Revision, itemErr))
+				}
 			}
 		}
 		pending = next
 		if len(pending) > 0 {
+			slog.Warn("analysis object batch has retryable item failures",
+				"attempt", attempt, "failing", len(pending), "samples", retrySamples)
 			if attempt >= w.MaxAttempts {
 				return fmt.Errorf("index %d analysis object(s) still failing after %d attempts", len(pending), attempt)
 			}
