@@ -111,6 +111,16 @@ func main() {
 			}}).Run(ctx)
 		},
 	}
+	if groups := controlworker.ParseGapCheckGroups(os.Getenv("CONTROL_WORKER_GAP_CHECK_GROUPS")); len(groups) > 0 {
+		checker := controlworker.RetentionGapChecker{
+			Offsets:      controlworker.NewKafkaOffsetSource(transport, c.Brokers),
+			Groups:       groups,
+			PollInterval: envDuration("CONTROL_WORKER_GAP_CHECK_INTERVAL", 5*time.Minute),
+			Metrics:      metrics,
+		}
+		log.Printf("retention gap checker watching %d consumer groups (detect-only, offsets are never auto-advanced)", len(groups))
+		runners = append(runners, checker.Run)
+	}
 	if exportDir != "" {
 		runners = append(runners, func(ctx context.Context) error {
 			return (controlworker.ExportExpirer{Config: controlworker.ExportExpirerConfig{
