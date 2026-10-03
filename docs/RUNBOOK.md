@@ -304,3 +304,13 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 1. 先导出全部 ACL（`kafka-acls.sh --list`）与目标 topic 的逐条 ACL、分区数与动态配置。KRaft 下 literal ACL **不随 topic 删除而删除**，重建后核对即可，通常无需重加。
 2. **topic 删除会连带删除消费组对该 topic 的已提交 offset**。**自 2026-10-01 部署的新版 source-adapter 起，运行期自愈**：停滞 watchdog（60 秒）发现 fetch 无进展后经 broker 元数据探测确认 topic 不存在（仅认 `UnknownTopicOrPartition`，瞬时故障不误判），记录周期停滞日志并抬起 `tuba_source_adapter_stall_events_total` / `topic_missing_events_total` 指标，关闭死 reader；探测到 topic 重建后自动新建 reader，按 `StartOffset: kafka.FirstOffset` 从 0 重读，积压由 receipt 去重吸收，无丢失无重复，**无需重启组件**（2026-10-01 COL-07b 4/5 复验实测：删除后 64 秒检出，重建后 16 秒恢复消费）。历史行为（2026-09-30 及更早版本）：旧版 source-adapter 对 topic 删除+重建**不自愈**，被重建那路静默停滞、无错误日志，必须 `tuba-launcher restart` 才能恢复（2026-09-30 COL-07b 4/5 实测）。若运行的是旧版二进制，仍按此处理。
 3. 重建前确认目标 topic 消费组 lag=0，避免删除时丢弃未消费数据。
+
+## 分析面运维（analysis-worker / analysis-sink，2026-10-03 起）
+
+1. **拓扑**：每命名空间一条 analysis 链——`{ns}-analysis-worker`（Python，消费 `tuba.collector.<ns>.attributed.events.v1`，产出 `…analysis.results.v2`）与 `{ns}-analysis-sink`（Go，消费 results.v2，写 ES `ueba-analysis-*` 状态/历史投影）。worker 的处理进度权威是 PG `analysis_checkpoints`（不是 Kafka committed offset 的唯一依据，两者逐消息同步推进）。
+2. **积压观测**：`kafka-consumer-groups.sh --describe` 输出**首行是空行**，用 `awk 'NR>1{s+=$5}'` 会把 LOG-END-OFFSET 错当 lag（2026-10-03 实测踩坑，虚报 161k/1.5M 积压）。正确口径：过滤空行与表头后取第 6 列（LAG），并校验数值：`grep -v '^$' | awk 'NR>1 && $6 ~ /^[0-9]+$/ {s+=$6}'`。worker 组 lag=0 属正常（贴着 log-end）；sink 组 lag 才反映投影积压。
+3. **sink 吞吐**：自 2026-10-03 起 sink 为批量写（`ANALYSIS_BATCH_SIZE` 默认 500 / `ANALYSIS_BATCH_BYTES` 16MiB / `ANALYSIS_BATCH_WAIT` 1s / `ANALYSIS_MAX_ATTEMPTS` 5 / `ANALYSIS_RETRY_BACKOFF` 200ms 指数封顶 6 档，清单环境变量可调）。实测 tenant_a 35–240 msg/s（内容相关）。批末统一提交 offset；DLQ 信封在提交前统一发布，发布失败整批不提交（fail-closed，重启重放幂等吸收）。
+4. **RevisionConflict / stale 处置**：`ANALYSIS_REVISION_CONFLICT`（同键同 rev 异内容）进 DLQ，属数据面毒消息，不可恢复、随积压排空出清；`stale revision dropped`（INFO 级）是乱序/迟到修订的正常防护，状态索引保留更高 revision。worker 侧自 2026-10-03 起 revision 链 fail-closed 自愈（`stored_revision+1` 续推），不再出现同 rev 异内容崩溃循环；若 worker 日志出现 RevisionConflict traceback 且 restarts 增长，说明存在比 PG 持久样本更旧的内存状态——先核对是否同组双 worker 并发（RUNBOOK 红线：重复监督），再查 feature_samples 是否被外部清退。
+5. **历史追赶**：大批量重放/追赶不要手搓临时二进制；2026-10-03 前 V09 曾用一次性 `cmd/tuba-analysis-catchup`（revision 幂等）追 70k，批量化 sink 上线后正常消费速率已足够，遗留 catchup 代码仅作参考。
+6. **诊断**：两 worker 的 metrics 端点 zeek 19112 / tenant_a 19113（`tuba_analysis_processed_events_total`/`emitted_results_total`/`watermark`）。Python 侧现场栈用 `/tmp/py-spy dump --pid <pid>`（若仍在；否则按 2026-10-03 ④ 记录重传）。
+7. **隔离修复**：事件级隔离在 quarantine 索引/主题（写保护，修复后按 DLQ 重放流程在隔离租户重放，见「DLQ 重放」）；分析面坏消息隔离在 `tuba.collector.<ns>.dlq.v1`（查询 envelope 的 stage/code/retryable 字段归类，修复源头后重放）。

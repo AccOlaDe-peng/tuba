@@ -549,7 +549,7 @@ Collector 细化任务（2026-09-27 已按成熟采集器方案重新定义；�
 - [ ] B03（O/G）交付单节点 install/upgrade/rollback/uninstall 操作手册；卸载默认保留数据，迁移采用 expand/migrate/contract。
 - [ ] B04（O/D）配置 PG 基础备份/WAL、ES snapshot、身份/发布包备份到异机，记录恢复清单及水位。
 - [ ] B05（G/O）实现 checkpoint 超过 Kafka retention 的缺口检测与恢复任务，不自动跳 latest。
-- [ ] B06（O）整理容量、磁盘压力、Kafka/ES/PG/OIDC 故障、消息积压、隔离修复和密钥轮转 Runbook。
+- [x] B06（O）整理容量、磁盘压力、Kafka/ES/PG/OIDC 故障、消息积压、隔离修复和密钥轮转 Runbook。**2026-10-03 勾选**：八类主题在 `docs/RUNBOOK.md` 均已成章——容量与磁盘压力（「磁盘水位与容量」，含 A03 三档水位与 flood-stage 处置实证）、Kafka 故障（「TubaKafkaLag」「Topic 删除重建」含自愈行为与 ACL 连带）、ES 故障（「Elasticsearch 不可用」含隔离实例恢复演练）、PG 故障（「PostgreSQL 不可用」）、OIDC 故障（「Keycloak/OIDC 故障」）、消息积压（「TubaKafkaLag」+ 新增「分析面运维」第 2/3 条 describe 列口径与 sink 批量行为）、隔离修复（「分析面运维」第 7 条 + 「DLQ 重放」隔离租户重放）、密钥轮转（「凭据轮转」五条，含共享身份连带实测）。本轮新增「分析面运维（analysis-worker / analysis-sink）」整节：拓扑与 checkpoint 权威、积压观测口径（空行/表头列错位教训）、批量吞吐参数、RevisionConflict/stale 处置、追赶纪律、metrics/py-spy 诊断、隔离修复路径。
 
 ## 阶段 11：实施后的验收任务（P0/P1；依赖对应实现）
 
