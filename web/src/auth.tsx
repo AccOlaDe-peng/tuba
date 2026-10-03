@@ -8,6 +8,7 @@ import {
   type ReactNode,
 } from "react";
 
+import { useQueryClient } from "@tanstack/react-query";
 import { principalSchema, type Principal } from "./api";
 
 type AuthValue = {
@@ -32,6 +33,7 @@ const issuer = (window.TUBA_CONFIG?.oidcIssuer ?? (import.meta.env.VITE_OIDC_ISS
 const clientId = window.TUBA_CONFIG?.oidcClientId ?? (import.meta.env.VITE_OIDC_CLIENT_ID as string | undefined) ?? "tuba-web";
 
 export function AuthProvider({ children }: { children: ReactNode }) {
+  const queryClient = useQueryClient();
   const [token, setToken] = useState<string | undefined>(
     () => sessionStorage.getItem("tuba.access_token") ?? undefined,
   );
@@ -40,10 +42,12 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string>();
 
   const clearSession = useCallback(() => {
+    queryClient.clear();
+    Object.keys(sessionStorage).filter(key=>key.startsWith("tuba.query-bookmarks:")).forEach(key=>sessionStorage.removeItem(key));
     sessionStorage.removeItem("tuba.access_token");
     setToken(undefined);
     setPrincipal(undefined);
-  }, []);
+  }, [queryClient]);
 
   const login = useCallback(async (username: string, password: string) => {
     setError(undefined);

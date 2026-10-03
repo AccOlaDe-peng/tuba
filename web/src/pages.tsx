@@ -13,6 +13,7 @@ import {
   Select,
   Space,
   Table,
+  Tabs,
   Tag,
   Tooltip,
 } from "antd";
@@ -51,7 +52,7 @@ import {
   UserPlus,
   Users,
 } from "lucide-react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 
 import {
   APIError,
@@ -111,6 +112,9 @@ import {
   type Release,
   type SourceInstance,
 } from "./api";
+import { PublisherPanel } from "./workbench";
+import { QueryBookmarks } from "./query-bookmarks";
+import { OverviewInsights } from "./overview-insights";
 import { useAuth } from "./auth";
 import {
   ActivityTimeline,
@@ -239,9 +243,9 @@ export function Overview() {
           icon={<FolderKanban size={20} />}
         />
         <MetricPanel
-          label="检测新鲜度"
+          label="最近异常距今"
           value={formatDuration(freshness)}
-          detail={freshness !== null && freshness < 300 ? "目标窗口内" : "关注分析消费状态"}
+          detail="按最近异常发现时间计算"
           tone={freshness !== null && freshness < 300 ? "good" : "warn"}
           icon={<Gauge size={20} />}
         />
@@ -254,6 +258,7 @@ export function Overview() {
         />
       </section>
 
+      <OverviewInsights/>
       <section className="dashboard-grid">
         <article className="panel panel-wide">
           <header className="panel-head">
@@ -562,6 +567,8 @@ export function AnomalyDetail() {
   const { token, can } = useAuth();
   const { message } = AntApp.useApp();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+  const [eventSelected, setEventSelected] = useState<EventRow>();
   const [createOpen, setCreateOpen] = useState(false);
   const [feedbackOpen, setFeedbackOpen] = useState(false);
   const detail = useQuery({
@@ -600,6 +607,8 @@ export function AnomalyDetail() {
         analysisFeedbackSchema,
       ),
     onSuccess: () => {
+      void queryClient.invalidateQueries({queryKey:["feedback-evaluation"]});
+      void queryClient.invalidateQueries({queryKey:["feedback-metrics"]});
       void message.success("分析反馈已记录");
       setFeedbackOpen(false);
     },
@@ -682,7 +691,7 @@ export function AnomalyDetail() {
           ) : evidence.error ? (
             <ErrorState message={errorMessage(evidence.error)} retry={() => void evidence.refetch()} />
           ) : evidence.data?.items.length ? (
-            <EvidenceTimeline items={evidence.data.items} />
+            <EvidenceTimeline items={evidence.data.items} onSelect={item=>setEventSelected({...item,"@timestamp":item.timestamp,event_id:item.id})} />
           ) : (
             <EmptyState title="没有可用证据" description="异常引用的原始事件尚未索引或已被保留策略清理。" />
           )}
@@ -725,6 +734,7 @@ export function AnomalyDetail() {
         </aside>
       </section>
 
+      {eventSelected&&<EventDetailDrawer item={eventSelected} onClose={()=>setEventSelected(undefined)}/>}
       <CreateCaseModal
         open={createOpen}
         prefill={prefill}
@@ -769,6 +779,7 @@ type CaseFilters = {
 
 export function Cases() {
   const { token, can } = useAuth();
+  const [view,setView]=useState("list");
   const [createOpen, setCreateOpen] = useState(false);
   const [draft, setDraft] = useState<CaseFilters>({ q: "", status: "", severity: "" });
   const [filters, setFilters] = useState<CaseFilters>(draft);
@@ -870,10 +881,11 @@ export function Cases() {
         }
       />
       <section className="metric-grid metric-grid-compact">
-        <MetricPanel label="进行中" value={overview.data?.cases.active_cases ?? 0} detail="当前处置负载" icon={<FolderKanban size={19} />} />
-        <MetricPanel label="待分派" value={overview.data?.cases.unassigned_cases ?? 0} detail="需要明确责任人" tone="warn" icon={<Users size={19} />} />
-        <MetricPanel label="今日结案" value={overview.data?.cases.closed_today ?? 0} detail="已完成判定和归档" tone="good" icon={<ShieldCheck size={19} />} />
+        <MetricPanel label="进行中" value={overview.data?.cases.active_cases ?? "—"} detail="当前处置负载" icon={<FolderKanban size={19} />} />
+        <MetricPanel label="待分派" value={overview.data?.cases.unassigned_cases ?? "—"} detail="需要明确责任人" tone="warn" icon={<Users size={19} />} />
+        <MetricPanel label="今日结案" value={overview.data?.cases.closed_today ?? "—"} detail="已完成判定和归档" tone="good" icon={<ShieldCheck size={19} />} />
       </section>
+      <Tabs activeKey={view} onChange={setView} items={[{key:"list",label:"案件列表"},{key:"board",label:"处置看板"}]}/>
       <section className="filter-bar">
         <div className="filter-search">
           <Search size={16} />
@@ -923,7 +935,7 @@ export function Cases() {
           <EmptyState title="没有匹配的案件" description="调整筛选条件，或从异常详情创建新案件。" />
         ) : (
           <>
-            <Table rowKey="id" columns={columns} dataSource={items} pagination={false} scroll={{ x: 900 }} />
+            {view==='list'?<Table rowKey="id" columns={columns} dataSource={items} pagination={false} scroll={{ x: 900 }} />:<div className="wb-kanban">{[['open','待分派'],['in_progress','调查中'],['closed','已结案']].map(([status,label])=><section className="wb-lane" key={status}><h3>{label}<small>{items.filter(x=>x.status===status).length}</small></h3>{items.filter(x=>x.status===status).map(x=><Link className="wb-case-card" to={'/cases/'+x.id} key={x.id}><SeverityTag value={x.severity}/><h3>{x.title}</h3><small>{x.assignee||'未分派'} · 异常 {x.anomaly_ids.length}</small></Link>)}</section>)}</div>}
             {query.hasNextPage && (
               <div className="load-more">
                 <Button loading={query.isFetchingNextPage} onClick={() => void query.fetchNextPage()}>
@@ -951,6 +963,7 @@ export function CaseDetail() {
   const { token, can } = useAuth();
   const { message } = AntApp.useApp();
   const queryClient = useQueryClient();
+  const [tab,setTab]=useState("workspace");
   const [closeOpen, setCloseOpen] = useState(false);
   const [assignOpen, setAssignOpen] = useState(false);
   const [holdOpen, setHoldOpen] = useState(false);
@@ -1122,6 +1135,7 @@ export function CaseDetail() {
           description="保留期间，引用该案件处理作业证据的清理任务不会清理相关数据；解除保留后恢复可清理。"
         />
       )}
+      {update.error instanceof APIError&&update.error.status===409&&<Alert showIcon type="warning" title="案件版本已发生变化" description="编辑内容保留。刷新当前版本，核对状态与结论差异后再提交。" action={<Button onClick={()=>void detail.refetch()}>刷新当前版本</Button>}/>}
       <CaseProgress status={current.status} />
       <section className="case-facts">
         <div><span>优先级</span><SeverityTag value={current.severity} /></div>
@@ -1132,7 +1146,9 @@ export function CaseDetail() {
         <div><span>关联异常</span><strong>{current.anomaly_ids.length} 条</strong></div>
         <div><span>最后更新</span><TimeValue value={current.updated_at} /></div>
       </section>
-      <section className="detail-layout">
+      <Tabs activeKey={tab} onChange={setTab} items={[{key:'workspace',label:'处置工作区'},{key:'snapshots',label:'证据与快照'},{key:'verdict',label:'反馈判定'}]}/>
+      {tab==='verdict'&&<section className="panel"><header className="panel-head"><h2>调查判定</h2></header><Descriptions column={1} items={[{key:'result',label:'当前判定',children:<VerdictTag value={current.verdict}/>},{key:'reason',label:'依据',children:current.verdict_reason||'尚未记录'}]}/>{writable&&<Form layout="vertical" className="wb-panel-body" onFinish={(values:{verdict:CaseMutationInput['verdict'];reason:string})=>update.mutate(values)}><Form.Item name="verdict" label="判定结果" rules={[{required:true}]}><Select options={[{value:'true_positive',label:'真实异常'},{value:'benign_positive',label:'有效但无害'},{value:'false_positive',label:'误报'},{value:'inconclusive',label:'证据不足'}]}/></Form.Item><Form.Item name="reason" label="证据与判定依据" rules={[{required:true,max:2000}]}><Input.TextArea rows={4}/></Form.Item><Button type="primary" htmlType="submit" loading={update.isPending}>提交判定</Button></Form>}</section>}
+      <section className="detail-layout" hidden={tab!=='workspace'}>
         <article className="panel">
           <header className="panel-head">
             <div>
@@ -1188,7 +1204,7 @@ export function CaseDetail() {
           </article>
         </aside>
       </section>
-      <section className="operations-grid">
+      <section className="operations-grid" hidden={tab!=="snapshots"}>
         <article className="panel">
           <header className="panel-head">
             <div>
@@ -1362,6 +1378,7 @@ export function CaseDetail() {
       </Modal>
 
       <Modal title="分派案件" open={assignOpen} footer={null} onCancel={() => setAssignOpen(false)}>
+        {update.error instanceof APIError&&update.error.status===409&&<Alert showIcon type="warning" title={"当前案件版本 "+current.version} description={"负责人 "+(current.assignee||'未分派')+" / 状态 "+current.status} action={<Button onClick={()=>void detail.refetch()}>刷新当前版本</Button>}/>}
         <Form
           layout="vertical"
           onFinish={(values: { assignee: string; reason?: string }) =>
@@ -1382,6 +1399,7 @@ export function CaseDetail() {
       </Modal>
 
       <Modal title="记录判定并结案" open={closeOpen} footer={null} onCancel={() => setCloseOpen(false)}>
+        {update.error instanceof APIError&&update.error.status===409&&<Alert showIcon type="warning" title={"当前案件版本 "+current.version} description={"判定 "+(current.verdict||'尚未记录')+" / 状态 "+current.status} action={<Button onClick={()=>void detail.refetch()}>刷新当前版本</Button>}/>}
         <Form
           layout="vertical"
           onFinish={(values: { verdict: CaseMutationInput["verdict"]; reason: string }) =>
@@ -1421,6 +1439,7 @@ type MemberGroup = {
 
 export function Access() {
   const { token } = useAuth();
+  const [tab,setTab]=useState("members");
   const { message } = AntApp.useApp();
   const queryClient = useQueryClient();
   const [addOpen, setAddOpen] = useState(false);
@@ -1502,7 +1521,7 @@ export function Access() {
     <div className="page-stack">
       <PageHeader
         eyebrow="租户控制面"
-        title="用户与权限"
+        title="访问控制"
         description="成员关系以 PostgreSQL 为权威，身份来自企业 IAM。"
         actions={
           <Button type="primary" icon={<UserPlus size={16} />} onClick={() => setAddOpen(true)}>
@@ -1510,7 +1529,18 @@ export function Access() {
           </Button>
         }
       />
-      <section className="access-layout">
+      <Tabs activeKey={tab} onChange={setTab} items={[{key:'members',label:'成员'},{key:'roles',label:'角色与权限'},{key:'service',label:'服务身份'},{key:'publishers',label:'独立发布授权'}]}/>
+      {tab==='roles'&&<section className="panel"><header className="panel-head"><h2>角色权限边界</h2></header><Table rowKey="capability" pagination={false} dataSource={[
+      {capability:'事件、异常、案件读取',viewer:'✓',analyst:'✓',admin:'✓',publisher:'—'},
+      {capability:'案件处置与分析反馈',viewer:'—',analyst:'✓',admin:'✓',publisher:'—'},
+      {capability:'敏感字段',viewer:'—',analyst:'✓',admin:'✓',publisher:'—'},
+      {capability:'原文',viewer:'—',analyst:'—',admin:'✓',publisher:'—'},
+      {capability:'来源、成员与运行管理',viewer:'—',analyst:'—',admin:'✓',publisher:'—'},
+      {capability:'发布读取与推进',viewer:'—',analyst:'—',admin:'—',publisher:'✓'}
+      ]} columns={[{title:'能力',dataIndex:'capability'},{title:'审计员',dataIndex:'viewer'},{title:'分析师',dataIndex:'analyst'},{title:'租户管理员',dataIndex:'admin'},{title:'独立发布者',dataIndex:'publisher'}]}/><Alert type="info" title="组合角色按 /me 返回的权限判断" description="实际权限以服务端会话为准；平台管理员与发布者是独立角色。"/></section>}
+      {tab==='service'&&<section className="panel"><header className="panel-head"><h2>服务身份</h2></header><EmptyState title="独立服务身份目录尚未接入" description="来源凭据和 Agent 身份在各自管理页注册与轮换，管理身份与数据身份分别授权。"/><div className="wb-panel-body"><Link to="/sources">来源凭据管理 →</Link><br/><Link to="/agents">Agent 身份管理 →</Link></div></section>}
+      {tab==='publishers'&&<><PublisherPanel/><Alert type="info" title="独立平台授权" description="发布授权不由租户管理员自动取得；若当前会话无 release:manage，请由获授权的平台操作者管理。"/></>}
+      <section className="access-layout" hidden={tab!=='members'}>
         <article className="data-panel">
           <div className="data-summary"><span>{groups.length} 位成员</span></div>
           {query.isLoading ? (
@@ -1616,6 +1646,7 @@ export function Access() {
 
 export function Operations() {
   const { token } = useAuth();
+  const [tab,setTab]=useState("runtime");
   const query = useQuery({
     queryKey: ["operations"],
     queryFn: ({ signal }) =>
@@ -1634,7 +1665,7 @@ export function Operations() {
     <div className="page-stack">
       <PageHeader
         eyebrow="平台遥测"
-        title="系统运行"
+        title="运行与容量"
         description="检查控制面、检索依赖和分析新鲜度。"
         actions={
           <Tooltip title="刷新状态">
@@ -1675,7 +1706,8 @@ export function Operations() {
           icon={<Database size={19} />}
         />
       </section>
-      <section className="operations-grid">
+      <Tabs activeKey={tab} onChange={setTab} items={[{key:"runtime",label:"服务与积压"},{key:"capacity",label:"容量与保留"},{key:"alerts",label:"告警与恢复"}]}/>
+      <section className="operations-grid" hidden={tab!=="runtime"}>
         <article className="panel">
           <header className="panel-head">
             <div>
@@ -1713,7 +1745,7 @@ export function Operations() {
           </div>
         </article>
       </section>
-      <section className="panel runtime-panel">
+      <section className="panel runtime-panel" hidden={tab!=="runtime"}>
         <header className="panel-head">
           <div>
             <span className="panel-index">03</span>
@@ -1767,15 +1799,9 @@ export function Operations() {
         )}
       </section>
 
-      <section className="panel">
-        <header className="panel-header">
-          <h3>备份状态</h3>
-        </header>
-        <EmptyState
-          title="备份状态暂无在线 API"
-          description="备份（B04：ES 快照 + PG 转储 + rsync 到 21）由 scripts/backup_tuba_to_offsite.sh 运维执行，结果在 21:/opt/tuba-backup/248/ 与作业日志中核验；当前没有在线查询端点，本区块在端点落地前如实标注缺口，不展示模拟数据。"
-        />
-      </section>
+      <section className="panel" hidden={tab!=="capacity"}><header className="panel-head"><h2>容量与保留</h2></header><EmptyState title="容量遥测尚未接入" description="数据盘使用率、Kafka 保留和样本独立预算尚无在线接口，不将原型中的阈值当作当前环境实测结果。"/></section>
+      <section className="panel" hidden={tab!=="alerts"}><header className="panel-head"><h2>当前依赖提醒</h2></header>{status.dependencies.filter(x=>x.status!=='ok').length?status.dependencies.filter(x=>x.status!=='ok').map(x=><Alert key={x.name} showIcon type="warning" title={x.name+' / '+x.status} description={x.detail}/>):<EmptyState title="本次检查未发现依赖异常" description="在线检查范围之外的容量、缺口和通知送达不能从此结果推断。"/>}<Alert type="info" title="通知配置尚无管理接口" description="当前仅呈现接口返回的依赖检查结果。"/></section>
+      <Link to="/backups">备份与恢复 →</Link>
     </div>
   );
 }
@@ -1831,7 +1857,7 @@ export function Audit() {
     <div className="page-stack">
       <PageHeader
         eyebrow="审计追踪"
-        title="审计事件"
+        title="审计日志"
         description="平台全量审计记录（append-only），按时间倒序。"
         actions={
           <Tooltip title="刷新">
@@ -2871,7 +2897,7 @@ export function Jobs() {
     <div className="page-stack">
       <PageHeader
         eyebrow="处理治理"
-        title="任务与回放"
+        title="任务中心"
         description="处理作业、回放/回填与导出任务的状态视图；不展示任何模拟数据。"
       />
       <section className="panel">
@@ -2918,7 +2944,7 @@ export function Jobs() {
                 key: "export",
                 render: (_, value: ExportJob) => (
                   <div className="primary-cell">
-                    <strong>{value.dataset} · {value.format.toUpperCase()}</strong>
+                    <strong><Link to={"/exports/"+encodeURIComponent(value.id)}>{value.dataset} · {value.format.toUpperCase()}</Link></strong>
                     <small>{value.query}</small>
                   </div>
                 ),
@@ -3376,8 +3402,10 @@ export function Events() {
   const { token } = useAuth();
   const { message } = AntApp.useApp();
   const queryClient = useQueryClient();
-  const [dataset, setDataset] = useState("authentication");
-  const [spl, setSpl] = useState(defaultQuery("authentication"));
+  const [params]=useSearchParams();
+  const initialDataset=params.get("dataset")??"authentication";
+  const [dataset, setDataset] = useState(initialDataset);
+  const [spl, setSpl] = useState(defaultQuery(initialDataset));
   const [range, setRange] = useState("24h");
   const [result, setResult] = useState<QueryResult | null>(null);
   const [items, setItems] = useState<EventRow[]>([]);
@@ -3391,7 +3419,7 @@ export function Events() {
     mutationFn: (values: { query: string; format: string; from: string }) =>
       api("/exports", token, { method: "POST", body: JSON.stringify(values) }),
     onSuccess: () => {
-      void message.success("导出任务已创建，可在“任务与回放”页查看进度");
+      void message.success("导出任务已创建，可在“任务中心”页查看进度");
       void queryClient.invalidateQueries({ queryKey: ["exports"] });
       setExportOpen(false);
     },
@@ -3432,7 +3460,7 @@ export function Events() {
     <div className="page-stack">
       <PageHeader
         eyebrow="调查"
-        title="事件查询"
+        title="事件检索"
         description="SPL 子集查询：数据集、字段与时间范围由服务端按 Catalog 白名单与租户/代次强制约束。"
         actions={
           <Select
@@ -3501,6 +3529,7 @@ export function Events() {
             >
               导出当前查询
             </Button>
+            <QueryBookmarks dataset={dataset} spl={spl} range={range} onLoad={value=>{setDataset(value.dataset);setSpl(value.spl);setRange(value.range);setResult(null);setItems([]);setCursor("");setError(undefined);}}/>
             <span className="muted">
               禁止子查询、join、eval、正则、通配符与任意 ES DSL；字段必须在 Catalog 白名单内
             </span>
@@ -3615,8 +3644,7 @@ export function Events() {
             <span className="panel-index">03</span>
             <h2>数据集状态（索引新鲜度 / 可查询边界）</h2>
             <p>
-              按 30 天窗口的最新事件时间评估索引滞后；Catalog 尚未返回每数据集的实际可查询起点与
-              retention（IMPLEMENTATION-TODO 前置门禁 #2），“归档中/已过期”后端无权威信号，此处仅呈现可得信号并如实标注
+              查看最近事件时间与查询范围。当前未提供每数据集的实际保留起点和归档状态，不能据此判断证据是否已经过期。
             </p>
           </div>
         </header>
@@ -3956,6 +3984,8 @@ export function EntityDetail() {
   const { id = "" } = useParams();
   const entityId = decodeURIComponent(id);
   const { token } = useAuth();
+  const [params] = useSearchParams();
+  const [tab, setTab] = useState(params.get("tab") ?? "profile");
   const [hours, setHours] = useState(24 * 7);
   const [window, setWindow] = useState(() => anomalyWindow(24 * 7));
   const anomalies = useInfiniteQuery({
@@ -4171,7 +4201,8 @@ export function EntityDetail() {
         actions={effectiveEntityType ? <Tag className="signal-tag">{effectiveEntityType}</Tag> : undefined}
       />
 
-      <section className="panel">
+      <Tabs activeKey={tab} onChange={setTab} items={[{key:'profile',label:'主体画像'},{key:'relations',label:'身份与关系'},{key:'features',label:'特征与基线'},{key:'findings',label:'关联异常'},{key:'risk',label:'风险解释'}]}/>
+      <section className="panel" hidden={tab!=="profile"}>
         <header className="panel-head">
           <div>
             <span className="panel-index">01</span>
@@ -4217,7 +4248,7 @@ export function EntityDetail() {
         )}
       </section>
 
-      <section className="panel">
+      <section className="panel" hidden={tab!=="relations"}>
         <header className="panel-head">
           <div>
             <span className="panel-index">02</span>
@@ -4279,7 +4310,7 @@ export function EntityDetail() {
         )}
       </section>
 
-      <section className="panel">
+      <section className="panel" hidden={tab!=="features"}>
         <header className="panel-head">
           <div>
             <span className="panel-index">03</span>
@@ -4352,7 +4383,7 @@ export function EntityDetail() {
         )}
       </section>
 
-      <section className="panel">
+      <section className="panel" hidden={tab!=="findings"}>
         <header className="panel-head">
           <div>
             <span className="panel-index">04</span>
@@ -4404,7 +4435,7 @@ export function EntityDetail() {
         )}
       </section>
 
-      <section className="panel">
+      <section className="panel" hidden={tab!=="risk"}>
         <header className="panel-head">
           <div>
             <span className="panel-index">05</span>

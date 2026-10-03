@@ -12,6 +12,7 @@ dist/
 output/backups/
 
 # Web 构建产物
+.vite/
 web/node_modules/
 web/dist/
 web/*.tsbuildinfo

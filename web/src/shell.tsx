@@ -1,4 +1,4 @@
-import { Alert, Avatar, Button, Input, Layout, Menu, Spin, Tooltip } from "antd";
+import { Alert, Avatar, Button, Input, Layout, Menu, Spin, Tooltip, Modal, Empty } from "antd";
 import type { MenuProps } from "antd";
 import { useState, type FormEvent } from "react";
 import {
@@ -8,6 +8,10 @@ import {
   FolderKanban,
   LayoutDashboard,
   ListTodo,
+  Search,
+  Database,
+  RotateCcw,
+  ChartNoAxesCombined,
   LogOut,
   Package,
   Radar,
@@ -19,27 +23,15 @@ import {
 } from "lucide-react";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router-dom";
 
+import { routeTitles, routeParents, workbenchNavigation } from "./navigation";
 import { useAuth } from "./auth";
-
-const routeTitles: Record<string, string> = {
-  overview: "安全总览",
-  events: "事件查询",
-  anomalies: "异常调查",
-  entities: "实体画像",
-  cases: "案件中心",
-  operations: "系统运行",
-  sources: "来源与采集器",
-  quality: "数据质量",
-  releases: "版本发布",
-  jobs: "任务与回放",
-  access: "用户与权限",
-  audit: "审计事件",
-};
 
 export function AppShell() {
   const auth = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [search, setSearch] = useState("");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -79,8 +71,8 @@ export function AppShell() {
           </div>
           <div className="login-copy">
             <span className="eyebrow">受控调查环境</span>
-            <h1>认证事件调查控制台</h1>
-            <p>租户身份、权限与数据范围由后端授权模型确定。</p>
+            <h1>登录工作台</h1>
+            <p>连接事件、实体与风险，在统一工作台完成研判和处置。</p>
           </div>
           {auth.error && <Alert type="error" showIcon title={auth.error} />}
           <form className="login-form" onSubmit={(event) => void submitLogin(event)}>
@@ -118,72 +110,23 @@ export function AppShell() {
           </div>
         </section>
         <aside className="login-signal" aria-hidden="true">
-          <div className="signal-grid" />
-          <div className="signal-line line-a" />
-          <div className="signal-line line-b" />
-          <div className="signal-core">AUTH</div>
+          <div className="brand"><span>T</span><div><strong>TUBA</strong><small>BEHAVIOR INTELLIGENCE</small></div></div>
+          <div className="login-story"><span className="eyebrow">从行为线索，到可验证的判断。</span><h1>让每一次调查<br/>都有证据可循。</h1><p>连接事件、实体与风险，在统一工作台完成研判和处置。</p></div>
+          <small>受控调查环境 · 身份验证与租户隔离</small>
         </aside>
       </main>
     );
   }
 
-  if (location.pathname === "/") return <Navigate replace to="/overview" />;
+  if (location.pathname === "/") return <Navigate replace to={"/"+(workbenchNavigation.flatMap(g=>g.items).find(([, ,p])=>!p||auth.can(p))?.[0]??"overview")} />;
 
-  const navItems: MenuProps["items"] = [
-    {
-      type: "group",
-      label: "调查",
-      children: [
-        { key: "/overview", label: "安全总览", icon: <LayoutDashboard size={17} /> },
-        ...(auth.can("event:read")
-          ? [{ key: "/events", label: "事件查询", icon: <FileSearch size={17} /> }]
-          : []),
-        ...(auth.can("anomaly:read")
-          ? [
-              { key: "/anomalies", label: "异常调查", icon: <Radar size={17} /> },
-              { key: "/entities", label: "实体画像", icon: <Users size={17} /> },
-            ]
-          : []),
-        ...(auth.can("case:read")
-          ? [{ key: "/cases", label: "案件中心", icon: <FolderKanban size={17} /> }]
-          : []),
-      ],
-    },
-    {
-      type: "group",
-      label: "运营",
-      children: [
-        ...(auth.can("operations:read")
-          ? [{ key: "/operations", label: "系统运行", icon: <Activity size={17} /> }]
-          : []),
-        ...(auth.can("source:manage")
-          ? [{ key: "/sources", label: "来源与采集器", icon: <Radio size={17} /> }]
-          : []),
-        ...(auth.can("event:read")
-          ? [
-              { key: "/quality", label: "数据质量", icon: <Sparkles size={17} /> },
-              { key: "/jobs", label: "任务与回放", icon: <ListTodo size={17} /> },
-            ]
-          : []),
-      ],
-    },
-    {
-      type: "group",
-      label: "管理",
-      children: [
-        ...(auth.can("release:read")
-          ? [{ key: "/releases", label: "版本发布", icon: <Package size={17} /> }]
-          : []),
-        ...(auth.can("user:manage")
-          ? [
-              { key: "/access", label: "用户与权限", icon: <Users size={17} /> },
-              { key: "/audit", label: "审计事件", icon: <ScrollText size={17} /> },
-            ]
-          : []),
-      ],
-    },
-  ];
-
+  const navIcons: Record<string, React.ReactNode> = {
+    overview:<LayoutDashboard size={17}/>, anomalies:<Radar size={17}/>, risks:<ShieldCheck size={17}/>, entities:<Users size={17}/>, cases:<FolderKanban size={17}/>,
+    events:<FileSearch size={17}/>,sources:<Radio size={17}/>,quality:<Sparkles size={17}/>,catalog:<Database size={17}/>,analysis:<ChartNoAxesCombined size={17}/>,baseline:<Activity size={17}/>,feedback:<ScrollText size={17}/>,
+    releases:<Package size={17}/>,jobs:<ListTodo size={17}/>,replay:<RotateCcw size={17}/>,operations:<Activity size={17}/>,audit:<ScrollText size={17}/>,access:<Users size={17}/>
+  };
+  const availableGroups = workbenchNavigation.map(g=>({ ...g, items:g.items.filter(([, ,p])=>!p||auth.can(p)) })).filter(g=>g.items.length);
+  const navItems: MenuProps['items'] = availableGroups.map(g=>({type:'group',label:g.group,children:g.items.map(([p,t])=>({key:'/'+p,label:t,icon:navIcons[p]}))}));
   const section = location.pathname.split("/")[1] ?? "overview";
   const detail =
     location.pathname.split("/").filter(Boolean).length > 1
@@ -195,7 +138,7 @@ export function AppShell() {
     <Layout className="app-shell">
       <Layout.Sider
         className="command-nav"
-        width={252}
+        width={228}
         breakpoint="lg"
         collapsedWidth={72}
         theme="dark"
@@ -204,13 +147,13 @@ export function AppShell() {
           <span>T</span>
           <div>
             <strong>TUBA</strong>
-            <small>Investigation</small>
+            <small>BEHAVIOR INTELLIGENCE</small>
           </div>
         </div>
         <Menu
           theme="dark"
           mode="inline"
-          selectedKeys={[`/${section}`]}
+          selectedKeys={[`/${routeParents[section] ?? section}`]}
           items={navItems}
           onClick={({ key }) => navigate(key)}
         />
@@ -224,12 +167,8 @@ export function AppShell() {
       </Layout.Sider>
       <Layout className="workspace">
         <Layout.Header className="topbar">
-          <div className="breadcrumb">
-            <span>TUBA</span>
-            <ArrowRight size={13} />
-            <strong>{routeTitles[section] ?? "调查"}</strong>
-            {detail && <small>{detail}</small>}
-          </div>
+          <div className="workspace-scope"><small>工作空间</small><strong>{auth.principal.organization_id}</strong><span>{auth.principal.namespace}</span></div>
+          <Button className="workspace-search" icon={<Search size={14}/>} onClick={()=>setSearchOpen(true)}>搜索功能页面</Button>
           <div className="identity">
             <div>
               <strong>{auth.principal.organization_id}</strong>
@@ -249,12 +188,19 @@ export function AppShell() {
         <Layout.Content className="content">
           {auth.error && <Alert className="global-alert" closable type="warning" showIcon title={auth.error} />}
           <Alert.ErrorBoundary>
+            <div className="workspace-crumb"><span>工作空间</span><ArrowRight size={12}/><button onClick={()=>navigate('/'+(routeParents[section]??section))}>{routeTitles[section]??'调查'}</button>{detail&&<small>{detail}</small>}</div>
             <div className="page-frame">
               <Outlet />
             </div>
           </Alert.ErrorBoundary>
+          <footer className="workspace-footer"><span>TUBA · 可解释行为分析与调查</span><span>权限与数据范围由服务端验证</span></footer>
         </Layout.Content>
       </Layout>
+      <Modal title="快速跳转" open={searchOpen} onCancel={()=>setSearchOpen(false)} footer={null}>
+        <Input autoFocus placeholder="搜索页面名称…" value={search} onChange={e=>setSearch(e.target.value)} allowClear/>
+        <div className="page-search-results">{availableGroups.flatMap(g=>g.items).filter(([,t])=>t.includes(search.trim())).map(([p,t])=><button key={p} onClick={()=>{navigate('/'+p);setSearchOpen(false);setSearch('');}}>{t}<ArrowRight size={14}/></button>)}
+        {!availableGroups.flatMap(g=>g.items).some(([,t])=>t.includes(search.trim()))&&<Empty description="没有匹配页面"/>}</div>
+      </Modal>
     </Layout>
   );
 }

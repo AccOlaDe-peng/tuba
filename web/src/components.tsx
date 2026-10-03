@@ -206,7 +206,7 @@ export function ScoreGauge({ score }: { score: number }) {
   return <Progress type="circle" size={68} percent={percent} strokeColor={stroke} railColor="#e6eceb" format={(value) => <strong>{value}</strong>} />;
 }
 
-export function EvidenceTimeline({ items }: { items: EvidenceEvent[] }) {
+export function EvidenceTimeline({ items, onSelect }: { items: EvidenceEvent[]; onSelect?: (item: EvidenceEvent) => void }) {
   return (
     <div className="evidence-timeline">
       {items.map((item, index) => {
@@ -226,6 +226,7 @@ export function EvidenceTimeline({ items }: { items: EvidenceEvent[] }) {
               </div>
               <p>{dataset} · {String(item.user.id ?? item.user.name ?? "未知实体")}</p>
               <code>{item.id}</code>
+              {onSelect && <Button type="link" size="small" onClick={() => onSelect(item)}>查看事件证据 →</Button>}
             </div>
             <TimeValue value={item.timestamp} />
           </article>

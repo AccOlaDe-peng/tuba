@@ -23,6 +23,7 @@
 | [SECURITY-MODEL.md](SECURITY-MODEL.md) | OIDC、租户授权、服务凭据和审计原则 |
 | [ANALYTICS.md](ANALYTICS.md) | 现有分析 worker 的窗口、水位、checkpoint、反馈和回放 |
 | [FRONTEND.md](FRONTEND.md) | 控制台路由、会话、API 和敏感数据展示约束 |
+| [FRONTEND-WORKBENCH.md](FRONTEND-WORKBENCH.md) | 原型 v2 前端实施、功能边界、验证和 248 静态部署回退 |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | 已有 Helm 部署制品；当前单节点目标以架构文档为准 |
 | [OBSERVABILITY.md](OBSERVABILITY.md) | 指标、SLO、告警和 dashboard |
 | [RUNBOOK.md](RUNBOOK.md) | 故障排查和运行操作 |

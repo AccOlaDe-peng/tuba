@@ -107,6 +107,21 @@ go run ./cmd/tuba-source-topic-admin -context ctx_0123456789abcdef0123456789abcd
 
 当前 Web 登录页直接向配置的开发 Keycloak realm 提交用户名和密码，realm 需允许 `tuba-web` 的 Direct Access Grants；API 仍校验返回的访问令牌并基于 PostgreSQL 成员关系授权。该简化登录仅用于当前开发验收，不代表生产身份接入已定版。既有 M1–M5 UI/认证记录见历史验收文档，不作为完整目标架构的交付证明。
 
+248 HTTP 开发入口（2026-10-03）：`http://10.6.68.248:8088/tuba/`。
+网关配置源为 `deploy/proxy/tuba-http-dev.conf`，部署至 `/etc/tuba/tuba-http-dev.conf`，
+由 `/opt/adms/webserver/conf/webserver.conf` 的 `http` 块 include。
+运行时 `config.js` 将 issuer 设置为同源 `/tuba-auth/realms/tuba`；只有 token POST 路径代理到
+247 Keycloak，返回的 token issuer 保持原身份服务值，API 授权仍按原配置验证。
+前端/API 路由、SPA fallback、静态资产与无效账号 token 请求已验证；真实成员登录另行验收。
+Keycloak `tuba-web` 的 `webOrigins` 必须包含精确来源 `http://10.6.68.248:8088`；
+代理会保留浏览器 Origin，不能只用没有 Origin 的命令行请求验收。
+2026-10-03 已通过 Admin API 添加并读回该来源，配置模板同步更新；携带浏览器 Origin 的
+真实操作者 token 请求和 `/api/v1/me` 均返回 200。客户端变更前快照保存于本机
+`output/backups/keycloak-http-entry-*/tuba-web.before.json`（Git 忽略目录）。
+部署前配置备份位于 248 `/opt/tuba/backups/http-entry-20261003T064358Z/`。
+网关校验与平滑重载需设置 `LD_LIBRARY_PATH=/opt/adms/webserver/lib`；回滚时恢复备份中的
+`webserver.conf`，校验通过后 reload。该入口仅用于内网开发验收；生产传输要求见 O03。
+
 ### 247 开发环境首个租户管理员引导
 
 247 的开发 realm 与本机 local-dev realm 是不同 issuer。首个 247 操作者必须先在 Keycloak 创建用户，再通过 `cmd/tuba-bootstrap-operator` 为实际 Keycloak `sub` 建立首个 `tenant_admin` 成员关系。该一次性工具要求目标 issuer 下尚无有效 tenant administrator；它在同一 PostgreSQL 事务内建立 identity/membership 并写入 `identity.bootstrap_membership` 审计事件，`actor_identity_id` 为空表示这是无现存登录操作者时的显式 bootstrap，`approved_by` 记录外部授权依据。已有管理员时工具会拒绝执行，后续成员变更必须走受保护的 `/api/v1/members` API。不要手工 SQL 修改成员关系。
