@@ -85,8 +85,8 @@ func TestAnalysisObjectRoutingCoversEveryType(t *testing.T) {
 		}
 		found := false
 		fake.mu.Lock()
-		for _, request := range fake.requests {
-			if strings.Contains(request, state+"/_doc/") && strings.Contains(request, "version_type=external&version=1") {
+		for _, bulk := range fake.bulkBodies {
+			if strings.Contains(bulk, `"_index":"`+state+`"`) && strings.Contains(bulk, `"version_type":"external"`) && strings.Contains(bulk, `"version":1`) {
 				found = true
 			}
 		}

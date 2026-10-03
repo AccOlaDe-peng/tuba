@@ -34,6 +34,8 @@ type Config struct {
 	ConsumerGroupSuffix                                                        string
 	IngestRate, IngestBurst, IndexBatchSize, IndexBatchBytes, IndexMaxAttempts int
 	IndexBatchWait, IndexRetryBackoff                                          time.Duration
+	AnalysisBatchSize, AnalysisBatchBytes, AnalysisMaxAttempts                 int
+	AnalysisBatchWait, AnalysisRetryBackoff                                    time.Duration
 	HTTPRequestTimeout                                                         time.Duration
 }
 
@@ -70,6 +72,26 @@ func Load() (Config, error) {
 	if err != nil {
 		return Config{}, err
 	}
+	analysisBatchSize, err := intValue("ANALYSIS_SINK_BATCH_SIZE", 500, 1, 10_000)
+	if err != nil {
+		return Config{}, err
+	}
+	analysisBatchBytes, err := intValue("ANALYSIS_SINK_BATCH_BYTES", 16<<20, 2<<20, 64<<20)
+	if err != nil {
+		return Config{}, err
+	}
+	analysisMaxAttempts, err := intValue("ANALYSIS_SINK_MAX_ATTEMPTS", 5, 1, 100)
+	if err != nil {
+		return Config{}, err
+	}
+	analysisBatchWait, err := durationValue("ANALYSIS_SINK_BATCH_WAIT", "1s", time.Millisecond, time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
+	analysisRetryBackoff, err := durationValue("ANALYSIS_SINK_RETRY_BACKOFF", "200ms", time.Millisecond, time.Minute)
+	if err != nil {
+		return Config{}, err
+	}
 	httpRequestTimeout, err := HTTPRequestTimeout()
 	if err != nil {
 		return Config{}, err
@@ -103,6 +125,7 @@ func Load() (Config, error) {
 		KafkaProtocol:     value("KAFKA_SECURITY_PROTOCOL", "plaintext"), KafkaSASLMechanism: value("KAFKA_SASL_MECHANISM", "none"), KafkaUsername: os.Getenv("KAFKA_SASL_USERNAME"), KafkaPassword: os.Getenv("KAFKA_SASL_PASSWORD"), KafkaCAFile: os.Getenv("KAFKA_TLS_CA_FILE"), KafkaCertFile: os.Getenv("KAFKA_TLS_CERT_FILE"), KafkaKeyFile: os.Getenv("KAFKA_TLS_KEY_FILE"), KafkaServerName: os.Getenv("KAFKA_TLS_SERVER_NAME"),
 		ConsumerGroupSuffix: os.Getenv("KAFKA_CONSUMER_GROUP_SUFFIX"),
 		IngestRate:          ingestRate, IngestBurst: ingestBurst, IndexBatchSize: indexBatchSize, IndexBatchBytes: indexBatchBytes, IndexMaxAttempts: indexMaxAttempts, IndexBatchWait: indexBatchWait, IndexRetryBackoff: indexRetryBackoff,
+		AnalysisBatchSize:   analysisBatchSize, AnalysisBatchBytes: analysisBatchBytes, AnalysisMaxAttempts: analysisMaxAttempts, AnalysisBatchWait: analysisBatchWait, AnalysisRetryBackoff: analysisRetryBackoff,
 		HTTPRequestTimeout: httpRequestTimeout,
 	}
 	if len(c.Brokers) == 0 || strings.TrimSpace(c.Brokers[0]) == "" || c.Organization == "" || c.Namespace == "" {

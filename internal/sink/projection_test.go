@@ -19,13 +19,18 @@ import (
 // document readback. Documents are stored per index/id with their external
 // version so version-conflict semantics are real, not scripted.
 type fakeProjectionES struct {
-	mu        sync.Mutex
-	indices   map[string]bool
-	aliases   map[string][]string
-	docs      map[string]map[string]fakeStoredDoc // index -> id -> doc
-	requests  []string
-	failNext  int // next N requests return 503
-	closeDown bool
+	mu         sync.Mutex
+	indices    map[string]bool
+	aliases    map[string][]string
+	docs       map[string]map[string]fakeStoredDoc // index -> id -> doc
+	requests   []string
+	bulkBodies []string
+	failNext   int // next N requests return 503
+	// truncateBulkItems makes bulk responses drop the last item (item outcomes
+	// unknown); failNextHistoryBulk makes the first history-style (create)
+	// bulk request return 503.
+	truncateBulkItems, failNextHistoryBulk bool
+	closeDown                              bool
 }
 
 type fakeStoredDoc struct {
@@ -65,6 +70,7 @@ func (f *fakeProjectionES) handler() http.Handler {
 		path := strings.TrimPrefix(r.URL.Path, "/")
 		switch {
 		case path == "_bulk" && r.Method == http.MethodPost:
+			f.bulkBodies = append(f.bulkBodies, string(body))
 			f.serveBulk(w, body)
 		case path == "_aliases" && r.Method == http.MethodPost:
 			var req struct {
@@ -105,6 +111,12 @@ func (f *fakeProjectionES) handler() http.Handler {
 
 func (f *fakeProjectionES) serveBulk(w http.ResponseWriter, body []byte) {
 	lines := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if f.failNextHistoryBulk && strings.Contains(lines[0], `"create"`) {
+		f.failNextHistoryBulk = false
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = w.Write([]byte(`{"error":{"type":"fake_history_bulk_unavailable"}}`))
+		return
+	}
 	var items []map[string]any
 	for i := 0; i < len(lines); i += 2 {
 		var meta struct {
@@ -112,6 +124,12 @@ func (f *fakeProjectionES) serveBulk(w http.ResponseWriter, body []byte) {
 				Index string `json:"_index"`
 				ID    string `json:"_id"`
 			} `json:"create"`
+			Index struct {
+				Index       string `json:"_index"`
+				ID          string `json:"_id"`
+				VersionType string `json:"version_type"`
+				Version     int64  `json:"version"`
+			} `json:"index"`
 		}
 		if err := json.Unmarshal([]byte(lines[i]), &meta); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
@@ -121,6 +139,26 @@ func (f *fakeProjectionES) serveBulk(w http.ResponseWriter, body []byte) {
 		if err := json.Unmarshal([]byte(lines[i+1]), &source); err != nil {
 			w.WriteHeader(http.StatusBadRequest)
 			return
+		}
+		if meta.Index.Index != "" {
+			// versioned index action (external versioning)
+			if meta.Index.VersionType != "external" {
+				items = append(items, map[string]any{"index": map[string]any{"_index": meta.Index.Index, "_id": meta.Index.ID, "status": http.StatusBadRequest,
+					"error": map[string]any{"type": "fake_expected_external_version", "reason": "version_type must be external"}}})
+				continue
+			}
+			if !f.indices[meta.Index.Index] {
+				f.indices[meta.Index.Index] = true
+				f.docs[meta.Index.Index] = map[string]fakeStoredDoc{}
+			}
+			if existing, ok := f.docs[meta.Index.Index][meta.Index.ID]; ok && meta.Index.Version <= existing.version {
+				items = append(items, map[string]any{"index": map[string]any{"_index": meta.Index.Index, "_id": meta.Index.ID, "status": http.StatusConflict,
+					"error": map[string]any{"type": "version_conflict_engine_exception", "reason": "version conflict, current version [" + strconv.FormatInt(existing.version, 10) + "] is higher or equal to the one provided [" + strconv.FormatInt(meta.Index.Version, 10) + "]"}}})
+				continue
+			}
+			f.docs[meta.Index.Index][meta.Index.ID] = fakeStoredDoc{version: meta.Index.Version, source: source}
+			items = append(items, map[string]any{"index": map[string]any{"_index": meta.Index.Index, "_id": meta.Index.ID, "_version": meta.Index.Version, "status": http.StatusOK}})
+			continue
 		}
 		if !f.indices[meta.Create.Index] {
 			w.WriteHeader(http.StatusBadRequest)
@@ -134,6 +172,9 @@ func (f *fakeProjectionES) serveBulk(w http.ResponseWriter, body []byte) {
 			f.docs[meta.Create.Index][meta.Create.ID] = fakeStoredDoc{version: 1, source: source}
 		}
 		items = append(items, map[string]any{"create": map[string]any{"_index": meta.Create.Index, "_id": meta.Create.ID, "status": status}})
+	}
+	if f.truncateBulkItems && len(items) > 0 {
+		items = items[:len(items)-1]
 	}
 	w.WriteHeader(http.StatusOK)
 	_ = json.NewEncoder(w).Encode(map[string]any{"items": items})

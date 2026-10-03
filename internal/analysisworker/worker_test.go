@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+	"time"
 
 	"github.com/segmentio/kafka-go"
 	"tuba/product/internal/analysis"
@@ -43,6 +44,8 @@ type testSink struct {
 	objectCalls int
 	legacyErr   error
 	objectErr   error
+	batchErr    error
+	objectErrs  func(analysis.ObjectResult) error
 	objects     []analysis.ObjectResult
 }
 
@@ -57,6 +60,20 @@ func (s *testSink) PutAnalysisObject(_ context.Context, object analysis.ObjectRe
 	return s.objectErr
 }
 
+func (s *testSink) PutAnalysisObjectBatch(_ context.Context, objects []analysis.ObjectResult) ([]error, error) {
+	results := make([]error, len(objects))
+	for i, object := range objects {
+		s.objectCalls++
+		s.objects = append(s.objects, object)
+		if s.objectErrs != nil {
+			results[i] = s.objectErrs(object)
+		} else {
+			results[i] = s.objectErr
+		}
+	}
+	return results, s.batchErr
+}
+
 const legacyMessage = `{"contract_version":"1.0.0","result_type":"anomaly","result_id":"a1","organization_id":"tenant_a","namespace":"tenant_a","rule_id":"r1","rule_version":"1.0.0","run_id":"run-1","document":{"organization":{"id":"tenant_a"},"detection":{"window":{"start":"2026-09-26T10:00:00Z"}}}}`
 
 const legacyMessageNoWindow = `{"contract_version":"1.0.0","result_type":"anomaly","result_id":"a1","organization_id":"tenant_a","namespace":"tenant_a","rule_id":"r1","rule_version":"1.0.0","run_id":"run-1","document":{"organization":{"id":"tenant_a"}}}`
@@ -66,7 +83,7 @@ func v2Message(objectType string, revision int) string {
 }
 
 func newWorker(consumer *testConsumer, deadLetter *testDeadLetter, s *testSink) Worker {
-	return Worker{Organization: "tenant_a", Namespace: "tenant_a", Consumer: consumer, DeadLetter: deadLetter, Sink: s}
+	return Worker{Organization: "tenant_a", Namespace: "tenant_a", Consumer: consumer, DeadLetter: deadLetter, Sink: s, MaxAttempts: 3, RetryBackoff: time.Millisecond}
 }
 
 func deadLetterEnvelope(t *testing.T, message kafka.Message) (code, stage string, retryable bool) {

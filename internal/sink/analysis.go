@@ -134,33 +134,188 @@ func validateAnalysisObject(object analysis.ObjectResult) error {
 	return nil
 }
 
-// PutAnalysisObject routes one analysis-result v2 object to its per-type state
-// index (external version = producer revision) and appends the same frame to
-// the dated history index. A stale revision returns StaleRevisionError (state
-// untouched, history not appended); a same-revision identical replay is a
-// no-op success; the same revision with different content is a permanent
-// conflict and never overwrites.
+// PutAnalysisObject writes one analysis-result v2 object through the batch
+// path (a batch of one). See PutAnalysisObjectBatch for the semantics.
 func (s *Elasticsearch) PutAnalysisObject(ctx context.Context, object analysis.ObjectResult) error {
-	if err := validateAnalysisObject(object); err != nil {
-		return err
-	}
-	if object.Namespace != s.Namespace {
-		return PermanentIndexError{"ANALYSIS_CONTRACT_INVALID", "object namespace does not match sink namespace"}
-	}
-	body, err := analysisObjectBody(object)
+	results, err := s.PutAnalysisObjectBatch(ctx, []analysis.ObjectResult{object})
 	if err != nil {
 		return err
 	}
-	state := analysisObjectStateIndex(object.ObjectType, s.Namespace)
-	if err := s.ensureAnalysisStateIndex(ctx, state); err != nil {
-		return err
+	return results[0]
+}
+
+// PutAnalysisObjectBatch routes a batch of analysis-result v2 objects with two
+// Elasticsearch _bulk requests: one for the per-type state indices (external
+// version = producer revision) and one for the dated history indices. ES
+// applies bulk items in request order, so same-key objects inside one batch
+// are applied in batch order. Per-object results mirror the single-write
+// semantics exactly:
+//   - a stale revision is StaleRevisionError (state untouched, history not
+//     appended);
+//   - a same-revision identical replay is an idempotent no-op success;
+//   - the same revision with different content is a permanent
+//     ANALYSIS_REVISION_CONFLICT and never overwrites;
+//   - transport/429/5xx failures stay retryable.
+//
+// The history frame of an object is appended only when its state write was
+// accepted (applied or identical replay), matching PutAnalysisObject. A
+// batch-level error is returned only for failures that prevented the item
+// results from being known (transport loss, malformed response); the caller
+// must treat it as retryable unless it is a PermanentIndexError.
+func (s *Elasticsearch) PutAnalysisObjectBatch(ctx context.Context, objects []analysis.ObjectResult) ([]error, error) {
+	if len(objects) == 0 {
+		return nil, nil
 	}
-	if err := s.putVersioned(ctx, state, object.ObjectID, object.Revision, body); err != nil {
-		return translateAnalysisError(err)
+	results := make([]error, len(objects))
+	type prepared struct {
+		position int
+		object   analysis.ObjectResult
+		state    string
+		body     []byte
 	}
-	historyID := fmt.Sprintf("%s:%d", object.ObjectID, object.Revision)
-	return translateAnalysisError(s.putHistory(ctx, analysisObjectHistoryIndex(object.ObjectType, s.Namespace, object.DateKey),
-		analysisObjectHistoryAlias(object.ObjectType, s.Namespace), historyID, body, analysisObjectHistoryMapping))
+	ready := make([]prepared, 0, len(objects))
+	for i, object := range objects {
+		if err := validateAnalysisObject(object); err != nil {
+			results[i] = err
+			continue
+		}
+		if object.Namespace != s.Namespace {
+			results[i] = PermanentIndexError{"ANALYSIS_CONTRACT_INVALID", "object namespace does not match sink namespace"}
+			continue
+		}
+		body, err := analysisObjectBody(object)
+		if err != nil {
+			results[i] = err
+			continue
+		}
+		state := analysisObjectStateIndex(object.ObjectType, s.Namespace)
+		if err := s.ensureAnalysisStateIndex(ctx, state); err != nil {
+			return nil, translateAnalysisError(err)
+		}
+		ready = append(ready, prepared{i, object, state, body})
+	}
+	if len(ready) == 0 {
+		return results, nil
+	}
+
+	// Phase 1: state bulk, external version = revision.
+	var stateBulk bytes.Buffer
+	enc := json.NewEncoder(&stateBulk)
+	for _, p := range ready {
+		meta := map[string]any{"index": map[string]any{
+			"_index": p.state, "_id": p.object.ObjectID,
+			"version_type": "external", "version": p.object.Revision,
+		}}
+		if err := enc.Encode(meta); err != nil {
+			return nil, err
+		}
+		stateBulk.Write(p.body)
+		stateBulk.WriteByte('\n')
+	}
+	items, err := s.doBulk(ctx, &stateBulk, len(ready))
+	if err != nil {
+		return nil, err
+	}
+	accepted := make([]prepared, 0, len(ready))
+	for i, itemResult := range items {
+		p := ready[i]
+		item := itemResult["index"]
+		switch {
+		case item.Status >= 200 && item.Status < 300:
+			accepted = append(accepted, p)
+		case item.Status == http.StatusConflict && item.Error != nil && item.Error.Type == "version_conflict_engine_exception":
+			conflictErr := translateAnalysisError(s.resolveVersionConflict(ctx, p.state, p.object.ObjectID, p.object.Revision, p.body))
+			if conflictErr == nil {
+				// same-revision identical replay: no-op success, history frame
+				// is still appended (its deterministic id absorbs the replay).
+				accepted = append(accepted, p)
+			} else {
+				results[p.position] = conflictErr
+			}
+		case item.Status == 429 || item.Status >= 500:
+			results[p.position] = fmt.Errorf("analysis state write returned %d: %s", item.Status, item.errorReason())
+		default:
+			results[p.position] = translateAnalysisError(PermanentIndexError{"PROJECTION_STATE_REJECTED", item.errorReason()})
+		}
+	}
+	if len(accepted) == 0 {
+		return results, nil
+	}
+
+	// Phase 2: history bulk with deterministic "<object_id>:<revision>" ids.
+	var historyBulk bytes.Buffer
+	henc := json.NewEncoder(&historyBulk)
+	for _, p := range accepted {
+		index := analysisObjectHistoryIndex(p.object.ObjectType, s.Namespace, p.object.DateKey)
+		if err := s.ensureHistoryIndex(ctx, index, analysisObjectHistoryAlias(p.object.ObjectType, s.Namespace), analysisObjectHistoryMapping); err != nil {
+			return nil, translateAnalysisError(err)
+		}
+		if err := henc.Encode(map[string]any{"create": map[string]string{"_index": index, "_id": fmt.Sprintf("%s:%d", p.object.ObjectID, p.object.Revision)}}); err != nil {
+			return nil, err
+		}
+		historyBulk.Write(p.body)
+		historyBulk.WriteByte('\n')
+	}
+	historyItems, err := s.doBulk(ctx, &historyBulk, len(accepted))
+	if err != nil {
+		// State writes already succeeded; only the history outcomes are
+		// unknown. Classify per item so the caller retries the affected
+		// objects (replay is idempotent) instead of failing the batch.
+		for _, p := range accepted {
+			results[p.position] = err
+		}
+		return results, nil
+	}
+	for i, itemResult := range historyItems {
+		p := accepted[i]
+		item := itemResult["create"]
+		switch {
+		case item.Status >= 200 && item.Status < 300:
+		case item.Status == http.StatusConflict:
+			index := analysisObjectHistoryIndex(p.object.ObjectType, s.Namespace, p.object.DateKey)
+			results[p.position] = translateAnalysisError(s.verifyHistoryDuplicate(ctx, index, fmt.Sprintf("%s:%d", p.object.ObjectID, p.object.Revision), p.body))
+		case item.Status == 429 || item.Status >= 500:
+			results[p.position] = fmt.Errorf("analysis history write returned %d: %s", item.Status, item.errorReason())
+		default:
+			results[p.position] = translateAnalysisError(PermanentIndexError{"PROJECTION_HISTORY_REJECTED", item.errorReason()})
+		}
+	}
+	return results, nil
+}
+
+// doBulk posts one NDJSON bulk body and returns the per-item results. The
+// request body must contain exactly want items; a mismatched or undecodable
+// response is a retryable batch-level error because the per-item outcomes are
+// unknown.
+func (s *Elasticsearch) doBulk(ctx context.Context, body *bytes.Buffer, want int) ([]map[string]rawBulkItem, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, s.URL+"/_bulk", body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Content-Type", "application/x-ndjson")
+	req.Header.Set("Authorization", "ApiKey "+s.APIKey)
+	resp, err := s.Client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		message, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
+		if resp.StatusCode == 429 || resp.StatusCode >= 500 {
+			return nil, fmt.Errorf("analysis bulk returned %d: %s", resp.StatusCode, message)
+		}
+		return nil, PermanentIndexError{"PROJECTION_BULK_REJECTED", string(message)}
+	}
+	var result struct {
+		Items []map[string]rawBulkItem `json:"items"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+	if len(result.Items) != want {
+		return nil, fmt.Errorf("analysis bulk response item count %d, want %d", len(result.Items), want)
+	}
+	return result.Items, nil
 }
 
 // translateAnalysisError re-codes the shared projection-layer permanent

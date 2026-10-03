@@ -58,7 +58,8 @@ func main() {
 	for _, topic := range topics {
 		reader := kafka.NewReader(kafka.ReaderConfig{Dialer: dialer, Brokers: c.Brokers, Topic: topic, GroupID: group, CommitInterval: 0, MinBytes: 1, MaxBytes: 10e6})
 		defer reader.Close()
-		worker := analysisworker.Worker{Organization: c.Organization, Namespace: c.Namespace, Consumer: reader, DeadLetter: dlq, Sink: es, Metrics: metrics}
+		worker := analysisworker.Worker{Organization: c.Organization, Namespace: c.Namespace, Consumer: reader, DeadLetter: dlq, Sink: es, Metrics: metrics,
+			BatchSize: c.AnalysisBatchSize, MaxBatchBytes: c.AnalysisBatchBytes, BatchWait: c.AnalysisBatchWait, MaxAttempts: c.AnalysisMaxAttempts, RetryBackoff: c.AnalysisRetryBackoff}
 		log.Printf("analysis sink consuming %s (group %s)", topic, group)
 		go func() { errs <- worker.Run(ctx) }()
 	}
