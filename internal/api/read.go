@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -106,7 +107,16 @@ func (s Server) getAnomaly(ctx context.Context, id string, principal auth.Princi
 		return hit, document, http.StatusServiceUnavailable, err
 	}
 	if status == http.StatusNotFound {
-		return hit, document, http.StatusNotFound, nil
+		if s.OrgIDs == nil {
+			return hit, document, http.StatusNotFound, nil
+		}
+		// v2 findings are only in the F07 state index, never in the v1
+		// mirror index: fall through to the v2 projection before giving up.
+		orgUUID, resolveErr := s.OrgIDs.Resolve(ctx, principal.Organization)
+		if resolveErr != nil {
+			return hit, document, http.StatusServiceUnavailable, resolveErr
+		}
+		return s.getAnomalyV2(ctx, id, principal, orgUUID)
 	}
 	if status != http.StatusOK {
 		return hit, document, http.StatusServiceUnavailable, fmt.Errorf("elasticsearch HTTP %d", status)
@@ -120,6 +130,166 @@ func (s Server) getAnomaly(ctx context.Context, id string, principal auth.Princi
 	}
 	return hit, document, http.StatusOK, nil
 }
+
+// v2AnomalyState is the F07 state-projection envelope (ueba-analysis-anomaly-
+// <namespace>) around a finding document. The tenant key is the control-plane
+// organization UUID; the finding payload itself is the opaque document field.
+type v2AnomalyState struct {
+	Timestamp    string `json:"@timestamp"`
+	Organization struct {
+		ID string `json:"id"`
+	} `json:"organization"`
+	Object struct {
+		ID        string `json:"id"`
+		Operation string `json:"operation"`
+	} `json:"object"`
+	Document json.RawMessage `json:"document"`
+}
+
+func decodeV2AnomalyState(raw json.RawMessage) (v2AnomalyState, error) {
+	var state v2AnomalyState
+	err := json.Unmarshal(raw, &state)
+	return state, err
+}
+
+// getAnomalyV2 reads one finding from the v2 state index. The projection is
+// keyed by object_id, which for findings is the anomaly id; the org check uses
+// the resolved UUID, and a retracted tombstone reads as not found.
+func (s Server) getAnomalyV2(ctx context.Context, id string, principal auth.Principal, orgUUID string) (es.Hit, anomalyDocument, int, error) {
+	var hit es.Hit
+	var document anomalyDocument
+	var raw struct {
+		Found  bool            `json:"found"`
+		Source json.RawMessage `json:"_source"`
+	}
+	status, err := s.ES.Do(ctx, http.MethodGet, "/ueba-analysis-anomaly-"+principal.Namespace+"/_doc/"+es.EscapeID(id), nil, &raw)
+	if err != nil {
+		return hit, document, http.StatusServiceUnavailable, err
+	}
+	if status == http.StatusNotFound || (status == http.StatusOK && !raw.Found) {
+		return hit, document, http.StatusNotFound, nil
+	}
+	if status != http.StatusOK {
+		return hit, document, http.StatusServiceUnavailable, fmt.Errorf("elasticsearch HTTP %d", status)
+	}
+	state, err := decodeV2AnomalyState(raw.Source)
+	if err != nil {
+		return hit, document, http.StatusServiceUnavailable, err
+	}
+	if state.Organization.ID != orgUUID || state.Object.Operation != "upsert" {
+		return hit, document, http.StatusNotFound, nil
+	}
+	document, err = decodeAnomaly(state.Document, id)
+	if err != nil {
+		return hit, document, http.StatusServiceUnavailable, err
+	}
+	if document.Timestamp == "" {
+		document.Timestamp = state.Timestamp
+	}
+	hit.ID = state.Object.ID
+	return hit, document, http.StatusOK, nil
+}
+
+// searchV2Anomalies queries the v2 anomaly state index for the organization
+// UUID. The finding payload (document) is stored with enabled:false, so only
+// envelope fields (organization, operation, @timestamp) are filterable in
+// Elasticsearch; severity/status/entity filters are applied in memory after
+// decoding. maybeMore reports that the state index returned a full page, in
+// which case more v2 findings may exist beyond it.
+func (s Server) searchV2Anomalies(ctx context.Context, principal auth.Principal, orgUUID string, limit int, severity, status, entity string, from, to time.Time) (items []map[string]any, total int64, maybeMore bool, err error) {
+	query := map[string]any{
+		"size":             limit,
+		"track_total_hits": true,
+		"sort":             []any{map[string]any{"@timestamp": "desc"}, map[string]any{"object.id": "asc"}},
+		"query": map[string]any{"bool": map[string]any{"filter": []any{
+			map[string]any{"term": map[string]any{"organization.id": orgUUID}},
+			map[string]any{"term": map[string]any{"object.operation": "upsert"}},
+			map[string]any{"range": map[string]any{"@timestamp": map[string]any{"gte": from.Format(time.RFC3339), "lte": to.Format(time.RFC3339)}}},
+		}}},
+	}
+	var result es.SearchResult
+	httpStatus, err := s.ES.Do(ctx, http.MethodPost, "/ueba-analysis-anomaly-"+principal.Namespace+"/_search", query, &result)
+	if err == nil && httpStatus == http.StatusNotFound {
+		return []map[string]any{}, 0, false, nil
+	}
+	if err != nil || httpStatus != http.StatusOK {
+		return nil, 0, false, fmt.Errorf("elasticsearch HTTP %d", httpStatus)
+	}
+	items = make([]map[string]any, 0, len(result.Hits.Hits))
+	for _, hit := range result.Hits.Hits {
+		state, decodeErr := decodeV2AnomalyState(hit.Source)
+		if decodeErr != nil {
+			return nil, 0, false, decodeErr
+		}
+		if state.Organization.ID != orgUUID || state.Object.Operation != "upsert" {
+			continue
+		}
+		var inner map[string]any
+		if json.Unmarshal(state.Document, &inner) != nil {
+			return nil, 0, false, errors.New("invalid v2 anomaly document")
+		}
+		summary := anomalySummary(inner, state.Object.ID)
+		if summary["timestamp"] == "" {
+			summary["timestamp"] = state.Timestamp
+		}
+		if severity != "" && summary["severity"] != severity {
+			continue
+		}
+		if status != "" && summary["status"] != status {
+			continue
+		}
+		if entity != "" {
+			entityMap, _ := summary["entity"].(map[string]any)
+			if entityMap["id"] != entity {
+				continue
+			}
+		}
+		items = append(items, summary)
+	}
+	return items, result.Hits.Total.Value, len(result.Hits.Hits) == limit, nil
+}
+
+// mergeAnomalyItems combines the v1 and v2 summary pages: findings present in
+// both (the F07 sink mirrors v1 anomalies into v2, possibly under a different
+// document id but the same anomaly.id) appear once, ordered newest first with
+// the anomaly id as the tiebreak, truncated to limit.
+func mergeAnomalyItems(v1, v2 []map[string]any, limit int) []map[string]any {
+	combined := make([]map[string]any, 0, len(v1)+len(v2))
+	combined = append(combined, v1...)
+	combined = append(combined, v2...)
+	timestamp := func(item map[string]any) time.Time {
+		raw, _ := item["timestamp"].(string)
+		parsed, err := time.Parse(time.RFC3339Nano, raw)
+		if err != nil {
+			return time.Time{}
+		}
+		return parsed
+	}
+	sort.SliceStable(combined, func(i, j int) bool {
+		ti, tj := timestamp(combined[i]), timestamp(combined[j])
+		if !ti.Equal(tj) {
+			return ti.After(tj)
+		}
+		idi, _ := combined[i]["id"].(string)
+		idj, _ := combined[j]["id"].(string)
+		return idi < idj
+	})
+	seen := map[string]bool{}
+	merged := make([]map[string]any, 0, minInt(len(combined), limit))
+	for _, item := range combined {
+		id, _ := item["id"].(string)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+		merged = append(merged, item)
+		if len(merged) == limit {
+			break
+		}
+	}
+	return merged
+}
+
 
 func (s Server) anomalyDetail(w http.ResponseWriter, r *http.Request, principal auth.Principal) {
 	id := r.PathValue("id")

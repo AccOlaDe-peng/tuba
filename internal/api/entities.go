@@ -190,11 +190,23 @@ func (s Server) entityBaseline(w http.ResponseWriter, r *http.Request, p auth.Pr
 
 // entityRisk reads back the entity's current R02 risk projection from the
 // strict state index. An entity without any finding contributions has no
-// projection document; that is reported as projection:null, not as an error.
+// projection document; that is reported as projection:null, not an error.
+// The projection's tenant key is the control-plane organization UUID, so the
+// principal's slug is resolved first; without a resolver the legacy slug
+// comparison applies (v1-only deployments).
 func (s Server) entityRisk(w http.ResponseWriter, r *http.Request, p auth.Principal) {
 	id, ok := entityPathID(w, r)
 	if !ok {
 		return
+	}
+	orgID := p.Organization
+	if s.OrgIDs != nil {
+		resolved, err := s.OrgIDs.Resolve(r.Context(), p.Organization)
+		if err != nil {
+			http.Error(w, "data store unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		orgID = resolved
 	}
 	var source struct {
 		Organization struct {
@@ -223,7 +235,7 @@ func (s Server) entityRisk(w http.ResponseWriter, r *http.Request, p auth.Princi
 		http.Error(w, "data store unavailable", http.StatusServiceUnavailable)
 		return
 	}
-	if json.Unmarshal(hit.Source, &source) != nil || source.Organization.ID != p.Organization {
+	if json.Unmarshal(hit.Source, &source) != nil || source.Organization.ID != orgID {
 		http.Error(w, "invalid stored document", http.StatusServiceUnavailable)
 		return
 	}

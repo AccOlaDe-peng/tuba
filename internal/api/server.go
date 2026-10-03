@@ -45,6 +45,11 @@ type Server struct {
 	// Entities serves the entity profile read endpoints (W03); nil fails
 	// every entity endpoint closed with 503.
 	Entities *entity.Queries
+	// OrgIDs resolves the principal's organization slug to the control-plane
+	// UUID that analysis v2 state indices (ueba-analysis-*) store as
+	// organization.id. Nil disables the v2 read path entirely (legacy v1-only
+	// behavior); a resolution error fails the request closed with 503.
+	OrgIDs *OrgResolver
 }
 
 func (s Server) Handler() http.Handler {
@@ -182,8 +187,10 @@ func (s Server) list(kind string) func(http.ResponseWriter, *http.Request, auth.
 			tie = "case.id"
 		}
 		filters := []any{map[string]any{"term": map[string]any{"organization.id": p.Organization}}}
+		var severity, statusFilter, entity string
+		var from, to time.Time
 		if kind == "anomalies" {
-			severity := r.URL.Query().Get("severity")
+			severity = r.URL.Query().Get("severity")
 			if severity != "" && !map[string]bool{"low": true, "medium": true, "high": true, "critical": true}[severity] {
 				http.Error(w, "invalid severity", 400)
 				return
@@ -191,15 +198,15 @@ func (s Server) list(kind string) func(http.ResponseWriter, *http.Request, auth.
 			if severity != "" {
 				filters = append(filters, map[string]any{"term": map[string]any{"anomaly.severity": severity}})
 			}
-			status := r.URL.Query().Get("status")
-			if status != "" && !map[string]bool{"open": true, "investigating": true, "closed": true, "false_positive": true}[status] {
+			statusFilter = r.URL.Query().Get("status")
+			if statusFilter != "" && !map[string]bool{"open": true, "investigating": true, "closed": true, "false_positive": true}[statusFilter] {
 				http.Error(w, "invalid status", 400)
 				return
 			}
-			if status != "" {
-				filters = append(filters, map[string]any{"term": map[string]any{"anomaly.status": status}})
+			if statusFilter != "" {
+				filters = append(filters, map[string]any{"term": map[string]any{"anomaly.status": statusFilter}})
 			}
-			entity := strings.TrimSpace(r.URL.Query().Get("entity"))
+			entity = strings.TrimSpace(r.URL.Query().Get("entity"))
 			if len(entity) > 128 {
 				http.Error(w, "entity filter is too long", 400)
 				return
@@ -207,8 +214,8 @@ func (s Server) list(kind string) func(http.ResponseWriter, *http.Request, auth.
 			if entity != "" {
 				filters = append(filters, map[string]any{"term": map[string]any{"entity.id": entity}})
 			}
-			to := time.Now().UTC()
-			from := to.Add(-24 * time.Hour)
+			to = time.Now().UTC()
+			from = to.Add(-24 * time.Hour)
 			var err error
 			if v := r.URL.Query().Get("from"); v != "" {
 				from, err = time.Parse(time.RFC3339, v)
@@ -247,8 +254,14 @@ func (s Server) list(kind string) func(http.ResponseWriter, *http.Request, auth.
 		var result es.SearchResult
 		status, err := s.ES.Do(r.Context(), "POST", "/ueba-"+kind+"-"+p.Namespace+"/_search", query, &result)
 		if kind == "anomalies" && err == nil && status == http.StatusNotFound {
-			writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "next_cursor": "", "total": 0})
-			return
+			if s.OrgIDs == nil {
+				writeJSON(w, http.StatusOK, map[string]any{"items": []any{}, "next_cursor": "", "total": 0})
+				return
+			}
+			// No v1 index yet, but v2 findings may still exist: continue with
+			// an empty v1 page so the merge below queries the v2 state index.
+			result = es.SearchResult{}
+			status = 200
 		}
 		if err != nil || status != 200 {
 			http.Error(w, "data store unavailable", 503)
@@ -274,7 +287,35 @@ func (s Server) list(kind string) func(http.ResponseWriter, *http.Request, auth.
 				next = base64.RawURLEncoding.EncodeToString(b)
 			}
 		}
-		writeJSON(w, 200, map[string]any{"items": items, "next_cursor": next, "total": result.Hits.Total.Value})
+		total := result.Hits.Total.Value
+		if kind == "anomalies" && s.OrgIDs != nil {
+			// V2 analysis findings live in the F07 state index keyed by the
+			// organization UUID; merge them into the v1 list (dedupe by id,
+			// newest first). Pagination is intentionally simple: both sources
+			// contribute up to limit hits and the merged page is truncated to
+			// limit. next_cursor keeps v1 search_after semantics only; when
+			// the v2 source may hold more rows than returned, the response
+			// carries a note instead of a v2 cursor.
+			orgUUID, resolveErr := s.OrgIDs.Resolve(r.Context(), p.Organization)
+			if resolveErr != nil {
+				http.Error(w, "data store unavailable", 503)
+				return
+			}
+			v2Items, v2Total, v2More, v2Err := s.searchV2Anomalies(r.Context(), p, orgUUID, limit, severity, statusFilter, entity, from, to)
+			if v2Err != nil {
+				http.Error(w, "data store unavailable", 503)
+				return
+			}
+			items = mergeAnomalyItems(items, v2Items, limit)
+			total += v2Total
+			response := map[string]any{"items": items, "next_cursor": next, "total": total}
+			if v2More {
+				response["note"] = "additional v2 analysis findings exist beyond this page; v2 findings do not support cursor pagination yet"
+			}
+			writeJSON(w, 200, response)
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": items, "next_cursor": next, "total": total})
 	}
 }
 
