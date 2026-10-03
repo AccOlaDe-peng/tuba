@@ -64,14 +64,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
           password,
         }),
       });
-      if (!response.ok) throw new Error("用户名或密码错误，或账号暂不可登录。");
+      if (!response.ok) {
+        const rejection = await response.json().catch(() => ({})) as {error?: string};
+        if (rejection.error === "Invalid origin") throw new Error("身份服务拒绝当前页面来源，请检查开发代理或登录客户端的允许来源配置。");
+        if (response.status >= 500) throw new Error("身份服务暂不可用，请稍后重试。");
+        if (rejection.error === "unauthorized_client" || rejection.error === "invalid_client") throw new Error("登录客户端配置不匹配，请检查身份服务配置。");
+        throw new Error("用户名或密码错误，或账号暂不可登录。");
+      }
       const payload = (await response.json()) as { access_token?: string };
       if (!payload.access_token) throw new Error("身份服务未返回访问令牌。");
       sessionStorage.setItem("tuba.access_token", payload.access_token);
       setToken(payload.access_token);
     } catch (reason) {
       clearSession();
-      setError(reason instanceof Error ? reason.message : "登录失败，请重试。");
+      setError(reason instanceof TypeError ? "无法连接身份服务，请检查登录服务地址、网络和开发代理配置。" : reason instanceof Error ? reason.message : "登录失败，请重试。");
     }
   }, [clearSession]);
 

@@ -366,7 +366,7 @@ export function FeedbackMetricsPanel() {
     <section className="panel">
       <header className="panel-header">
         <h3>规则反馈质量</h3>
-        <span className="muted-text">分析师反馈的离线评估汇总（R04）</span>
+        <span className="muted-text">当前组织的分析师反馈汇总；未绑定规则的反馈单独列出。</span>
       </header>
       <Table
         rowKey="rule_id"
@@ -374,21 +374,39 @@ export function FeedbackMetricsPanel() {
         pagination={false}
         dataSource={query.data.rules}
         columns={[
-          { title: "规则", dataIndex: "rule_id", render: (value: string) => <code>{value}</code> },
-          { title: "确认", dataIndex: "true_positive", width: 90 },
-          { title: "误报", dataIndex: "false_positive", width: 90 },
-          { title: "漏报", dataIndex: "false_negative", width: 90 },
-          { title: "不确定", dataIndex: "inconclusive", width: 90 },
+          { title: "规则", dataIndex: "rule_id", render: (value: string) => value ? <Tooltip title={`规则 ID：${value}`}><span>{anomalyTypeLabels[value] ?? value}</span></Tooltip> : <Tooltip title="反馈记录没有绑定具体规则，可能来自案件判定。"><span>未关联具体规则</span></Tooltip> },
+          { title: <Tooltip title="分析师确认检测到的异常确实存在。">确认异常</Tooltip>, dataIndex: "true_positive", width: 100 },
+          { title: <Tooltip title="规则产生了告警，但分析师判定并非真实异常。">误报</Tooltip>, dataIndex: "false_positive", width: 90 },
+          { title: <Tooltip title="实际存在异常，但规则没有检测出来；由分析师补录。">漏报</Tooltip>, dataIndex: "false_negative", width: 90 },
+          { title: <Tooltip title="现有证据不足，暂时无法判定是否为真实异常。">不确定</Tooltip>, dataIndex: "inconclusive", width: 90 },
           {
-            title: "精确率",
+            title: <Tooltip title="确认异常 ÷（确认异常 + 误报）；漏报和不确定不参与计算。仅反映已反馈记录。">精确率</Tooltip>,
             dataIndex: "precision",
             width: 110,
-            render: (value: number) => `${(value * 100).toFixed(1)}%`,
+            render: (value: number, row) => row.true_positive + row.false_positive > 0 ? `${(value * 100).toFixed(1)}%` : <Tooltip title="没有确认异常或误报反馈，暂无法计算。">—</Tooltip>,
           },
         ]}
       />
     </section>
   );
+}
+
+function AnomalyEntity({entity}: {entity: AnomalySummary["entity"]}) {
+  const {token} = useAuth();
+  const isReference = /^ent:[a-f0-9]{64}$/.test(entity.id);
+  const profile = useQuery({
+    queryKey: ["entities", entity.id, "profile"],
+    enabled: isReference,
+    staleTime: 300_000,
+    retry: false,
+    queryFn: ({signal}) => getEntity(token, entity.id, signal),
+  });
+  const name = profile.data?.canonical_key || (isReference ? `${entity.id.slice(0, 12)}…${entity.id.slice(-6)}` : entity.id);
+  const type = entity.type === "account" ? "账户" : entity.type === "device" ? "主机" : entity.type;
+  return <div className="entity-cell">
+    <Tooltip title={entity.id}><Link to={`/entities/${encodeURIComponent(entity.id)}`}>{name}</Link></Tooltip>
+    <small>{type}{profile.data?.authority ? ` · ${profile.data.authority}` : ""}{profile.isLoading ? " · 解析中" : profile.isError ? " · 名称暂不可用" : ""}</small>
+  </div>;
 }
 
 export function Anomalies() {
@@ -424,7 +442,9 @@ export function Anomalies() {
       render: (_, value) => (
         <div className="primary-cell">
           <Link to={`/anomalies/${encodeURIComponent(value.id)}`}>{anomalyTitle(value)}</Link>
-          <small>{value.rule_id}@{value.rule_version} · {value.id.slice(0, 22)}</small>
+          <Tooltip title={<div><div>规则 ID：{value.rule_id || "未提供"}</div><div>异常 ID：{value.id}</div></div>}>
+            <small>检测规则：{value.rule_id ? (anomalyTypeLabels[value.rule_id] ?? value.rule_id) : "未提供"} · 版本：{value.rule_version || "未提供"}</small>
+          </Tooltip>
         </div>
       ),
     },
@@ -432,12 +452,7 @@ export function Anomalies() {
       title: "实体",
       key: "entity",
       width: 170,
-      render: (_, value) => (
-        <div className="entity-cell">
-          <strong>{value.entity.id}</strong>
-          <small>{value.entity.type}</small>
-        </div>
-      ),
+      render: (_, value) => <AnomalyEntity entity={value.entity} />,
     },
     {
       title: "状态",

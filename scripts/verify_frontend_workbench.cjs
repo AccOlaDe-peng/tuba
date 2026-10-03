@@ -46,6 +46,9 @@ const fixture={
  });
  const routes=['overview','anomalies','anomalies/'+encodeURIComponent(anomaly.id),'risks','entities','entities/'+encodeURIComponent(entity),'cases','cases/fixture-case','events','sources','sources/'+source,'agents','agents/'+agent,'quality','catalog','analysis','baseline','feedback','releases','releases/windows-1','jobs','exports/fixture-export','jobs/fixture-job','replay','operations','backups','audit','access','publishers'];
  for(const path of routes){await page.goto(base+'/'+path);await page.waitForSelector('.workspace-crumb');await page.locator('.page-loading').waitFor({state:'hidden'});await page.locator('.loading-block').first().waitFor({state:'hidden'});assert.equal(await page.getByText('Something went wrong').count(),0);checks.push(path);}
+ await page.goto(base+'/anomalies');
+ await page.getByRole('link',{name:'fixture.user',exact:true}).waitFor();
+ assert.equal(await page.getByRole('link',{name:'fixture.user',exact:true}).getAttribute('href'),'/entities/'+encodeURIComponent(entity));
  await page.goto(base+'/sources');await page.getByRole('button',{name:'新增来源',exact:true}).click();
  for(const [name,value]of[['厂商','Microsoft'],['产品','Windows'],['数据集','Security']])await page.getByLabel(name,{exact:true}).fill(value);
  await page.getByRole('button',{name:'下一步',exact:true}).click();await page.getByLabel('语义发布包').click();await page.getByText('windows-1 / staged',{exact:true}).click();

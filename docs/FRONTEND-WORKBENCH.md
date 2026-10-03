@@ -31,6 +31,16 @@
 
 ## 开发入口与回退
 
+本地前端需要连接共享开发环境时，在 PowerShell 执行（不用读取或修改 `.env`）：
+
+```powershell
+$env:TUBA_DEV_GATEWAY='http://10.6.68.248:8088'
+Set-Location C:\code\tuba\web
+node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5175 --strictPort
+```
+
+此模式的 `/config.js` 指定同源登录入口，`/api` 和 `/tuba-auth` 代理到共享网关，业务操作会作用于真实 248 环境。未设置 `TUBA_DEV_GATEWAY` 时维持原本本地后端代理。已启动进程若改变该变量，需要重启 Vite。
+
 入口：http://10.6.68.248:8088/tuba/ 。已有标签页可使用 Ctrl+F5 刷新。
 
 当前 `/opt/tuba/web/dist` 指向 `/opt/tuba/web/dist-workbench-20261003-v2`，旧版 `/opt/tuba/web/dist-w03-20261003` 保留。新目录也保留旧哈希资源，供已有标签页加载。仅更新静态前端，无后端重启。
