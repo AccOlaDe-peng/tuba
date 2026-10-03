@@ -86,9 +86,20 @@ import {
   statsTotal,
   eventProvenance,
   anomalyWindow,
+  getEntity,
+  getEntityBaseline,
+  getEntityRisk,
   groupEntities,
+  listEntityAttributions,
+  listEntityFeatures,
+  listEntityRelations,
+  listEntities,
   type AnomalySummary,
   type EntityAggregate,
+  type EntityAttribution,
+  type EntityRelation,
+  type EntityFeatureSample,
+  type EntitySummary,
   type Case,
   type CaseLink,
   type CaseSnapshot,
@@ -3673,7 +3684,17 @@ export function Entities() {
   const navigate = useNavigate();
   const [hours, setHours] = useState(24 * 7);
   const [lookup, setLookup] = useState("");
+  const [directorySearch, setDirectorySearch] = useState("");
+  const [directoryType, setDirectoryType] = useState("");
   const [window, setWindow] = useState(() => anomalyWindow(24 * 7));
+  const directory = useInfiniteQuery({
+    queryKey: ["entities", "directory", directorySearch, directoryType],
+    initialPageParam: "",
+    queryFn: ({ pageParam, signal }) =>
+      listEntities(token, { query: directorySearch || undefined, type: directoryType || undefined, cursor: pageParam, limit: 50 }, signal),
+    getNextPageParam: (last) => last.next_cursor || undefined,
+  });
+  const directoryItems = directory.data?.pages.flatMap((page) => page.items) ?? [];
   const anomalies = useInfiniteQuery({
     queryKey: ["entities", "anomaly-entities", window.from, window.to],
     initialPageParam: "",
@@ -3690,6 +3711,54 @@ export function Entities() {
   const items = anomalies.data?.pages.flatMap((page) => page.items) ?? [];
   const total = anomalies.data?.pages[0]?.total ?? items.length;
   const entities = useMemo(() => groupEntities(items), [items]);
+
+  const directoryColumns: TableProps<EntitySummary>["columns"] = [
+    {
+      title: "实体",
+      dataIndex: "entity_id",
+      render: (value: string, row) => (
+        <div className="primary-cell">
+          <Link to={`/entities/${encodeURIComponent(value)}`}>
+            <strong>{row.canonical_key}</strong>
+          </Link>
+          <small>{value.slice(0, 24)}…</small>
+        </div>
+      ),
+    },
+    {
+      title: "类型",
+      dataIndex: "entity_type",
+      width: 90,
+      render: (value: string) => <Tag className="signal-tag">{value}</Tag>,
+    },
+    {
+      title: "标识强度",
+      dataIndex: "identity_strength",
+      width: 96,
+      render: (value: string) => (
+        <Tag className={`signal-tag ${value === "strong" ? "status-ok" : "status-warn"}`}>{value}</Tag>
+      ),
+    },
+    { title: "身份空间", dataIndex: "authority", width: 150 },
+    {
+      title: "生效自",
+      dataIndex: "valid_from",
+      width: 130,
+      render: (value: string) => <TimeValue value={value} />,
+    },
+    {
+      title: "",
+      key: "action",
+      width: 52,
+      render: (_, row) => (
+        <Tooltip title="实体详情">
+          <Link aria-label={`实体 ${row.entity_id}`} className="icon-link" to={`/entities/${encodeURIComponent(row.entity_id)}`}>
+            <ChevronRight size={18} />
+          </Link>
+        </Tooltip>
+      ),
+    },
+  ];
 
   const columns: TableProps<EntityAggregate>["columns"] = [
     {
@@ -3747,7 +3816,7 @@ export function Entities() {
       <PageHeader
         eyebrow="实体画像"
         title="Account / Device 实体"
-        description="实体主档、角色关系、特征基线与风险解释的统一入口；后端缺失的区块如实标注，不展示模拟数据。"
+        description="实体目录、主档、角色关系、特征基线与风险解释的统一入口。"
       />
       <section className="panel">
         <header className="panel-head">
@@ -3777,11 +3846,63 @@ export function Entities() {
         <header className="panel-head">
           <div>
             <span className="panel-index">02</span>
+            <h2>实体目录</h2>
+            <p>控制面实体注册表（register-on-sight）：支持规范化键子串搜索与类型过滤</p>
+          </div>
+          <Space>
+            <Input.Search
+              allowClear
+              placeholder="搜索 canonical_key，如 win-139"
+              style={{ width: 260 }}
+              onSearch={(value) => setDirectorySearch(value.trim())}
+            />
+            <Select
+              value={directoryType}
+              onChange={setDirectoryType}
+              options={[
+                { value: "", label: "全部类型" },
+                { value: "account", label: "account" },
+                { value: "device", label: "device" },
+              ]}
+              style={{ width: 130 }}
+            />
+            {directory.isFetching && <span className="fetching"><RefreshCw size={13} /> 更新中</span>}
+          </Space>
+        </header>
+        {directory.isLoading ? (
+          <LoadingBlock rows={6} />
+        ) : directory.error ? (
+          <ErrorState message={errorMessage(directory.error)} retry={() => void directory.refetch()} />
+        ) : directoryItems.length === 0 ? (
+          <EmptyState title="目录为空" description="没有匹配的实体；实体由 entity-worker 在事件流中按需注册。" />
+        ) : (
+          <>
+            <div className="data-summary">
+              <span>已加载 {directoryItems.length} 个实体</span>
+            </div>
+            <Table
+              rowKey="entity_id"
+              columns={directoryColumns}
+              dataSource={directoryItems}
+              pagination={false}
+              scroll={{ x: 860 }}
+            />
+            {directory.hasNextPage && (
+              <div className="load-more">
+                <Button loading={directory.isFetchingNextPage} onClick={() => void directory.fetchNextPage()}>
+                  加载更多实体
+                </Button>
+              </div>
+            )}
+          </>
+        )}
+      </section>
+      <section className="panel">
+        <header className="panel-head">
+          <div>
+            <span className="panel-index">03</span>
             <h2>窗口内出现异常的实体</h2>
-            <p>
-              实体主档查询 API 待后端（PG entities 无查询端点）——本列表仅来自所选窗口内异常中的实体引用，
-              不是租户全量实体目录
-            </p>
+            <p>来自所选窗口内异常（finding）中的实体引用聚合，不是租户全量实体目录</p>
           </div>
           <Space>
             <Select
@@ -3803,7 +3924,7 @@ export function Entities() {
         ) : entities.length === 0 ? (
           <EmptyState
             title="窗口内没有带异常的实体"
-            description="扩大时间窗口或改用上方实体 ID 直达；无异常的实体需待后端实体查询 API 提供。"
+            description="扩大时间窗口，或改用上方实体目录/实体 ID 直达；无异常的实体出现在实体目录中。"
           />
         ) : (
           <>
@@ -3854,6 +3975,136 @@ export function EntityDetail() {
   const items = anomalies.data?.pages.flatMap((page) => page.items) ?? [];
   const total = anomalies.data?.pages[0]?.total ?? items.length;
   const entityType = items.find((item) => item.entity.type)?.entity.type ?? "";
+
+  // The entity registry API keys on the strong entity reference
+  // (ent:<sha256>); a free-form account/hostname lookup cannot resolve the
+  // registry panels, which then say so instead of guessing.
+  const isEntityRef = /^ent:[a-f0-9]{64}$/.test(entityId);
+  const profile = useQuery({
+    queryKey: ["entities", entityId, "profile"],
+    enabled: isEntityRef,
+    retry: false,
+    queryFn: ({ signal }) => getEntity(token, entityId, signal),
+  });
+  const attributions = useInfiniteQuery({
+    queryKey: ["entities", entityId, "attributions"],
+    enabled: isEntityRef,
+    initialPageParam: "",
+    queryFn: ({ pageParam, signal }) => listEntityAttributions(token, entityId, { cursor: pageParam, limit: 50 }, signal),
+    getNextPageParam: (last) => last.next_cursor || undefined,
+  });
+  const relations = useQuery({
+    queryKey: ["entities", entityId, "relations"],
+    enabled: isEntityRef,
+    queryFn: ({ signal }) => listEntityRelations(token, entityId, true, signal),
+  });
+  const features = useQuery({
+    queryKey: ["entities", entityId, "features"],
+    enabled: isEntityRef,
+    queryFn: ({ signal }) => listEntityFeatures(token, entityId, 20, signal),
+  });
+  const baseline = useQuery({
+    queryKey: ["entities", entityId, "baseline"],
+    enabled: isEntityRef,
+    queryFn: ({ signal }) => getEntityBaseline(token, entityId, signal),
+  });
+  const risk = useQuery({
+    queryKey: ["entities", entityId, "risk"],
+    enabled: isEntityRef,
+    queryFn: ({ signal }) => getEntityRisk(token, entityId, signal),
+  });
+  const attributionItems = attributions.data?.pages.flatMap((page) => page.items) ?? [];
+  const profileData = profile.data;
+  const effectiveEntityType = profileData?.entity_type ?? entityType;
+
+  const attributionColumns: TableProps<EntityAttribution>["columns"] = [
+    {
+      title: "事件时间",
+      dataIndex: "event_time",
+      width: 150,
+      render: (value: string) => <TimeValue value={value} />,
+    },
+    { title: "角色", dataIndex: "role", width: 150, render: (value: string) => <code>{value}</code> },
+    {
+      title: "状态",
+      dataIndex: "state",
+      width: 96,
+      render: (value: string) => (
+        <Tag className={`signal-tag ${value === "resolved" ? "status-ok" : "status-warn"}`}>{value}</Tag>
+      ),
+    },
+    { title: "规则版本", dataIndex: "rule_version", width: 100 },
+    {
+      title: "证据/原因",
+      dataIndex: "reason",
+      ellipsis: true,
+      render: (value: string, row) => <span title={value}>{value || row.event_id}</span>,
+    },
+  ];
+
+  const relationColumns: TableProps<EntityRelation>["columns"] = [
+    { title: "关系", dataIndex: "relation_type", width: 140, render: (value: string) => <code>{value}</code> },
+    {
+      title: "对端实体",
+      key: "peer",
+      render: (_, row) => {
+        const peer = row.from_entity_id === entityId ? row.to_entity_id : row.from_entity_id;
+        return (
+          <Link to={`/entities/${encodeURIComponent(peer)}`}>
+            <code>{peer.slice(0, 24)}…</code>
+          </Link>
+        );
+      },
+    },
+    {
+      title: "置信度",
+      dataIndex: "confidence",
+      width: 90,
+      render: (value: number) => value.toFixed(2),
+    },
+    {
+      title: "生效区间",
+      key: "valid",
+      width: 250,
+      render: (_, row) => (
+        <span>
+          <TimeValue value={row.valid_from} /> → {row.valid_to ? <TimeValue value={row.valid_to} /> : "当前有效"}
+        </span>
+      ),
+    },
+  ];
+
+  const featureColumns: TableProps<EntityFeatureSample>["columns"] = [
+    { title: "特征", dataIndex: "feature_id", width: 210, render: (value: string) => <code>{value}</code> },
+    {
+      title: "窗口",
+      dataIndex: "window_start",
+      width: 150,
+      render: (value: string) => <TimeValue value={value} />,
+    },
+    { title: "rev", dataIndex: "revision", width: 60 },
+    {
+      title: "质量",
+      dataIndex: "quality",
+      width: 90,
+      render: (value: string) => (
+        <Tag className={`signal-tag ${value === "qualified" ? "status-ok" : "status-warn"}`}>{value}</Tag>
+      ),
+    },
+    {
+      title: "特征值",
+      dataIndex: "values",
+      ellipsis: true,
+      render: (value: Record<string, unknown>) => (
+        <code title={JSON.stringify(value)}>
+          {Object.entries(value)
+            .slice(0, 4)
+            .map(([k, v]) => `${k}=${typeof v === "number" ? v.toFixed?.(2) ?? v : String(v)}`)
+            .join("  ") || "—"}
+        </code>
+      ),
+    },
+  ];
 
   const findingColumns: TableProps<AnomalySummary>["columns"] = [
     {
@@ -3916,8 +4167,8 @@ export function EntityDetail() {
       <PageHeader
         eyebrow="实体详情"
         title={entityId}
-        description="实体主档、角色关系、特征基线、异常与风险解释；仅异常数据当前有真实 API，其余区块如实标注缺口。"
-        actions={entityType ? <Tag className="signal-tag">{entityType}</Tag> : undefined}
+        description="实体主档、角色关系、特征基线、异常与风险解释的统一视图。"
+        actions={effectiveEntityType ? <Tag className="signal-tag">{effectiveEntityType}</Tag> : undefined}
       />
 
       <section className="panel">
@@ -3928,28 +4179,42 @@ export function EntityDetail() {
             <p>标识、类型、身份空间与来源</p>
           </div>
         </header>
-        <Descriptions column={2} size="small" items={[
-          { key: "id", label: "实体标识", children: <code>{entityId}</code> },
-          {
-            key: "type",
-            label: "实体类型",
-            children: entityType || <span className="muted">窗口内无异常引用，无法从既有 API 得知</span>,
-          },
-          {
-            key: "space",
-            label: "身份空间 / 来源",
-            children: (
-              <span className="muted">
-                待后端——实体主档存于控制面 PG entities 表，当前无实体查询 API，UI 不推断
-              </span>
-            ),
-          },
-          {
-            key: "ref",
-            label: "可见性来源",
-            children: "本页信息来自异常（finding）中的实体引用与直接输入的实体 ID",
-          },
-        ]} />
+        {isEntityRef ? (
+          profile.isLoading ? (
+            <LoadingBlock rows={3} />
+          ) : profile.error || !profileData ? (
+            <ErrorState message={errorMessage(profile.error ?? new Error("实体不存在"))} retry={() => void profile.refetch()} />
+          ) : (
+            <Descriptions column={2} size="small" items={[
+              { key: "id", label: "实体标识", children: <code>{profileData.entity_id}</code> },
+              { key: "key", label: "规范化键", children: <code>{profileData.canonical_key}</code> },
+              { key: "type", label: "实体类型", children: <Tag className="signal-tag">{profileData.entity_type}</Tag> },
+              { key: "strength", label: "标识强度", children: profileData.identity_strength },
+              { key: "space", label: "身份空间 / 来源", children: profileData.authority },
+              {
+                key: "valid",
+                label: "生效区间",
+                children: (
+                  <span>
+                    <TimeValue value={profileData.valid_from} /> →{" "}
+                    {profileData.valid_to ? <TimeValue value={profileData.valid_to} /> : "当前有效"}
+                  </span>
+                ),
+              },
+              { key: "rev", label: "主档版本", children: `rev ${profileData.revision}` },
+              {
+                key: "recent",
+                label: "最近归因",
+                children: `${profileData.recent_attributions.length} 条（详见 02 区块）`,
+              },
+            ]} />
+          )
+        ) : (
+          <EmptyState
+            title="主档查询需要强实体标识"
+            description="实体注册表以 ent:…（强标识哈希）为主键。从实体列表、异常或风险页面点入可自动携带该标识；直接输入账户/主机名时本区块无法解析。"
+          />
+        )}
       </section>
 
       <section className="panel">
@@ -3960,10 +4225,58 @@ export function EntityDetail() {
             <p>归因角色与时态关系区间</p>
           </div>
         </header>
-        <EmptyState
-          title="实体/关系查询待后端"
-          description="归因角色在 PG entity_attributions、关系在 PG entity_relations，E05 时态投影在 ES ueba-entities/relations-*——后端尚无实体查询 API，且 Q01 Catalog 未注册这些数据集（SPL 数据集白名单 fail-closed），浏览器无法可达。本区块待后端落地后接入真实数据，不以模拟数据填充。"
-        />
+        {!isEntityRef ? (
+          <EmptyState
+            title="归因/关系查询需要强实体标识"
+            description="归因与关系以 ent:… 强标识为键。从实体列表或异常点入可自动携带。"
+          />
+        ) : attributions.isLoading || relations.isLoading ? (
+          <LoadingBlock rows={5} />
+        ) : attributions.error || relations.error ? (
+          <ErrorState
+            message={errorMessage(attributions.error ?? relations.error)}
+            retry={() => {
+              void attributions.refetch();
+              void relations.refetch();
+            }}
+          />
+        ) : (
+          <>
+            <div className="data-summary">
+              <span>归因 {attributions.data?.pages[0] ? attributionItems.length : 0} 条（含分页）</span>
+              <span>时态关系 {relations.data?.items.length ?? 0} 条（含历史区间）</span>
+            </div>
+            {attributionItems.length > 0 && (
+              <Table
+                rowKey="attribution_id"
+                columns={attributionColumns}
+                dataSource={attributionItems}
+                pagination={false}
+                size="small"
+                scroll={{ x: 720 }}
+              />
+            )}
+            {attributions.hasNextPage && (
+              <div className="load-more">
+                <Button loading={attributions.isFetchingNextPage} onClick={() => void attributions.fetchNextPage()}>
+                  加载更多归因
+                </Button>
+              </div>
+            )}
+            {(relations.data?.items.length ?? 0) > 0 ? (
+              <Table
+                rowKey="relation_id"
+                columns={relationColumns}
+                dataSource={relations.data?.items}
+                pagination={false}
+                size="small"
+                scroll={{ x: 720 }}
+              />
+            ) : (
+              attributionItems.length === 0 && <EmptyState title="无归因与关系记录" description="该实体尚未产生归因观察或时态关系。" />
+            )}
+          </>
+        )}
       </section>
 
       <section className="panel">
@@ -3974,10 +4287,69 @@ export function EntityDetail() {
             <p>窗口特征值与基线模型状态（cold_start/ready、训练信息）</p>
           </div>
         </header>
-        <EmptyState
-          title="特征/基线查询待后端"
-          description="F03 窗口特征样本与 F04 基线模型状态存于控制面 PG（feature_samples / baseline_models），v2 状态投影在 ES ueba-analysis-feature/baseline-*——均无查询 API 且未注册进 Catalog。cold_start/ready 状态与训练版本信息待后端落地后呈现，不以模拟数据填充。"
-        />
+        {!isEntityRef ? (
+          <EmptyState
+            title="特征/基线查询需要强实体标识"
+            description="特征样本与基线状态以 ent:… 强标识为键。从实体列表或异常点入可自动携带。"
+          />
+        ) : features.isLoading || baseline.isLoading ? (
+          <LoadingBlock rows={5} />
+        ) : features.error || baseline.error ? (
+          <ErrorState
+            message={errorMessage(features.error ?? baseline.error)}
+            retry={() => {
+              void features.refetch();
+              void baseline.refetch();
+            }}
+          />
+        ) : (
+          <>
+            <div className="data-summary">
+              <span>最近 {features.data?.items.length ?? 0} 个窗口特征样本</span>
+              <span>
+                基线模型{" "}
+                {baseline.data?.items.map((model) => `${model.model_id} ${model.status}${model.covers_entity ? "（覆盖本实体）" : ""}`).join("、") ||
+                  "无"}
+              </span>
+            </div>
+            {(features.data?.items.length ?? 0) > 0 ? (
+              <Table
+                rowKey={(row) => `${row.feature_id}|${row.window_start}|${row.revision}`}
+                columns={featureColumns}
+                dataSource={features.data?.items}
+                pagination={false}
+                size="small"
+                scroll={{ x: 760 }}
+              />
+            ) : (
+              <EmptyState
+                title="无窗口特征样本"
+                description="该实体尚未有已关闭窗口的特征样本（基线处于 cold_start 或窗口未关闭）。"
+              />
+            )}
+            {(baseline.data?.items.length ?? 0) > 0 && (
+              <Descriptions
+                column={2}
+                size="small"
+                items={(baseline.data?.items ?? []).map((model) => ({
+                  key: model.model_id,
+                  label: `${model.model_id}（${model.generation}）`,
+                  children: (
+                    <span>
+                      <Tag className={`signal-tag ${model.status === "ready" ? "status-ok" : "status-warn"}`}>{model.status}</Tag>
+                      {" "}v{model.model_version} · 样本 {model.sample_count} · 完整日 {model.complete_days}
+                      {model.trained_at ? (
+                        <>
+                          {" "}· 训练于 <TimeValue value={model.trained_at} />
+                        </>
+                      ) : null}
+                    </span>
+                  ),
+                }))}
+              />
+            )}
+          </>
+        )}
       </section>
 
       <section className="panel">
@@ -4040,10 +4412,71 @@ export function EntityDetail() {
             <p>当前风险分、贡献构成与衰减参数</p>
           </div>
         </header>
-        <EmptyState
-          title="风险投影查询待后端"
-          description="R01/R02 的 entity_risk 投影（risk_score、rc: 不可变贡献引用、decay half_life=7d/zero_after=30d、compute_version 1.0.0、updated_at）经 v2 信封落在 ES ueba-analysis-entity_risk-<ns> 状态索引——后端无风险查询 API，且该数据集未注册进 Q01 Catalog（SPL 不可达）。当前风险分与贡献构成待后端落地后呈现，不以模拟数据填充。"
-        />
+        {!isEntityRef ? (
+          <EmptyState
+            title="风险投影查询需要强实体标识"
+            description="风险投影以 ent:… 强标识为键。从实体列表或异常点入可自动携带。"
+          />
+        ) : risk.isLoading ? (
+          <LoadingBlock rows={3} />
+        ) : risk.error ? (
+          <ErrorState message={errorMessage(risk.error)} retry={() => void risk.refetch()} />
+        ) : !risk.data?.projection ? (
+          <EmptyState
+            title="无风险投影"
+            description="该实体尚无 finding 贡献（无投影属正常状态，不代表查询失败）。"
+          />
+        ) : (
+          (() => {
+            const projection = risk.data.projection;
+            const score = typeof projection.risk_score === "number" ? projection.risk_score : null;
+            const contributions = Array.isArray(projection.contributions) ? projection.contributions : [];
+            return (
+              <>
+                <Descriptions column={2} size="small" items={[
+                  {
+                    key: "score",
+                    label: "当前风险分",
+                    children: (
+                      <strong className={score !== null && score >= 3 ? "status-danger" : undefined}>
+                        {score !== null ? score.toFixed(3) : "—"}
+                      </strong>
+                    ),
+                  },
+                  { key: "rev", label: "投影版本", children: risk.data.revision ? `rev ${risk.data.revision}` : "—" },
+                  {
+                    key: "decay",
+                    label: "衰减",
+                    children: (
+                      <span>
+                        半衰期 {String(projection.half_life ?? "7d")} · 归零 {String(projection.zero_after ?? "30d")}
+                      </span>
+                    ),
+                  },
+                  {
+                    key: "updated",
+                    label: "更新时间",
+                    children: typeof projection.updated_at === "string" ? <TimeValue value={projection.updated_at} /> : "—",
+                  },
+                ]} />
+                {contributions.length > 0 && (
+                  <div className="data-summary">
+                    <span>不可变贡献 {contributions.length} 条：</span>
+                    {contributions.slice(0, 12).map((c, i) => {
+                      const entry = c as Record<string, unknown>;
+                      return (
+                        <Tag key={i} className="signal-tag">
+                          {String(entry.contribution_id ?? entry.id ?? `rc#${i + 1}`).slice(0, 18)}…{" "}
+                          {typeof entry.score_delta === "number" ? entry.score_delta.toFixed(3) : ""}
+                        </Tag>
+                      );
+                    })}
+                  </div>
+                )}
+              </>
+            );
+          })()
+        )}
       </section>
     </div>
   );
