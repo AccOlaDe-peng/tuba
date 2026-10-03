@@ -464,10 +464,14 @@ func (s Server) anomalyOverview(ctx context.Context, principal auth.Principal) (
 		"query":            map[string]any{"term": map[string]any{"organization.id": principal.Organization}},
 		"track_total_hits": false,
 	}, &latestResult)
-	if err == nil && status == http.StatusNotFound {
-		return 0, 0, nil, nil
+	latestSearchFailed := err != nil || status != http.StatusOK
+	if status == http.StatusNotFound {
+		// No v1 index yet: v1 contributes nothing, but v2 findings may still
+		// exist, so fall through to the v2 merge instead of returning early.
+		latestResult = es.SearchResult{}
+		latestSearchFailed = false
 	}
-	if err != nil || status != http.StatusOK {
+	if latestSearchFailed {
 		return 0, 0, nil, fmt.Errorf("elasticsearch search failed")
 	}
 	var latest *time.Time
@@ -477,6 +481,34 @@ func (s Server) anomalyOverview(ctx context.Context, principal auth.Principal) (
 		}
 		if json.Unmarshal(latestResult.Hits.Hits[0].Source, &source) == nil && !source.Timestamp.IsZero() {
 			latest = &source.Timestamp
+		}
+	}
+	if s.OrgIDs != nil {
+		orgUUID, err := s.OrgIDs.Resolve(ctx, principal.Organization)
+		if err != nil {
+			return 0, 0, nil, err
+		}
+		// v2 envelope fields cannot filter status/severity in Elasticsearch
+		// (document is enabled:false), so a bounded page is classified in
+		// memory, mirroring the /anomalies list merge. A full page means more
+		// v2 findings exist; counts stay a lower bound in that case.
+		v2Items, _, _, err := s.searchV2Anomalies(ctx, principal, orgUUID, 1000, "", "", "", time.Time{}, time.Now().UTC())
+		if err != nil {
+			return 0, 0, nil, err
+		}
+		for _, item := range v2Items {
+			if item["status"] != "open" {
+				continue
+			}
+			open++
+			if sev, _ := item["severity"].(string); sev == "high" || sev == "critical" {
+				high++
+			}
+			if ts, _ := item["timestamp"].(string); ts != "" {
+				if t, err := time.Parse(time.RFC3339, ts); err == nil && (latest == nil || t.After(*latest)) {
+					latest = &t
+				}
+			}
 		}
 	}
 	return open, high, latest, nil
