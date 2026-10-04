@@ -1,3 +1,4 @@
+import { ReadableValue, readable } from "./readable";
 import { Alert, Avatar, Button, Input, Layout, Menu, Spin, Tooltip, Modal, Empty } from "antd";
 import type { MenuProps } from "antd";
 import { useState, type FormEvent } from "react";
@@ -132,7 +133,7 @@ export function AppShell() {
     location.pathname.split("/").filter(Boolean).length > 1
       ? ` / ${decodeURIComponent(location.pathname.split("/").filter(Boolean).at(-1) ?? "")}`
       : "";
-  const initials = auth.principal.subject.slice(0, 2).toUpperCase();
+  const initials = readable(auth.principal.subject,"用户").slice(0, 2).toUpperCase();
 
   return (
     <Layout className="app-shell">
@@ -167,12 +168,12 @@ export function AppShell() {
       </Layout.Sider>
       <Layout className="workspace">
         <Layout.Header className="topbar">
-          <div className="workspace-scope"><small>工作空间</small><strong>{auth.principal.organization_id}</strong><span>{auth.principal.namespace}</span></div>
+          <div className="workspace-scope"><small>工作空间</small><strong><ReadableValue value={auth.principal.organization_id} label="当前组织"/></strong><span>{auth.principal.namespace}</span></div>
           <Button className="workspace-search" icon={<Search size={14}/>} onClick={()=>setSearchOpen(true)}>搜索功能页面</Button>
           <div className="identity">
             <div>
-              <strong>{auth.principal.organization_id}</strong>
-              <small>{auth.principal.subject}</small>
+              <strong><ReadableValue value={auth.principal.organization_id} label="当前组织"/></strong>
+              <small><ReadableValue value={auth.principal.subject} label="当前用户"/></small>
             </div>
             <Avatar className="identity-avatar">{initials}</Avatar>
             <Tooltip title="退出登录">

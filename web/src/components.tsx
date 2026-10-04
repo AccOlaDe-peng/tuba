@@ -1,3 +1,4 @@
+import { readable } from "./readable";
 import {
   Alert,
   App as AntApp,
@@ -222,10 +223,10 @@ export function EvidenceTimeline({ items, onSelect }: { items: EvidenceEvent[]; 
             <div className="evidence-copy">
               <div>
                 <strong>{outcome === "failure" ? "认证失败" : outcome === "success" ? "认证成功" : "认证事件"}</strong>
-                <Tag>{action}</Tag>
+                <Tag>{readable(action)}</Tag>
               </div>
-              <p>{dataset} · {String(item.user.id ?? item.user.name ?? "未知实体")}</p>
-              <code>{item.id}</code>
+              <p>{readable(dataset)} · {String(item.user.name ?? item.user.id ?? "账户名称未提供")}</p>
+              <Tooltip title={`事件标识：${item.id}`}><small>事件证据 {index+1}</small></Tooltip>
               {onSelect && <Button type="link" size="small" onClick={() => onSelect(item)}>查看事件证据 →</Button>}
             </div>
             <TimeValue value={item.timestamp} />
@@ -239,6 +240,8 @@ export function EvidenceTimeline({ items, onSelect }: { items: EvidenceEvent[]; 
 const actionLabels: Record<string, string> = {
   "case.create": "创建案件",
   "case.update": "更新案件",
+  "case.link": "关联调查证据",
+  "case.snapshot": "保存证据快照",
 };
 
 export function ActivityTimeline({ items }: { items: CaseActivity[] }) {
@@ -253,12 +256,12 @@ export function ActivityTimeline({ items }: { items: CaseActivity[] }) {
             <strong>{actionLabels[item.action] ?? item.action}</strong>
             <p>
               <UserRound size={13} />
-              {item.actor || "系统"}
+              {item.actor ? readable(item.actor,"调查操作员") : "系统"}
               <span>·</span>
               <TimeValue value={item.occurred_at} />
             </p>
           </div>
-          <code>{item.request_id}</code>
+          <Tooltip title={`操作追溯标识：${item.request_id}`}><small>操作已记录</small></Tooltip>
         </article>
       ))}
     </div>

@@ -38,3 +38,5 @@ CLAUDE.md
 # 组件签名私钥(COL-09;离线保管,永不入库)
 *.ed25519.key
 component-signing-key*
+
+web/.env.development.local

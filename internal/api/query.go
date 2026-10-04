@@ -153,7 +153,10 @@ func (s Server) query(w http.ResponseWriter, r *http.Request, principal auth.Pri
 	ctx, cancel := context.WithTimeout(r.Context(), spl.QueryTimeout)
 	defer cancel()
 	var result map[string]any
-	status, err := s.ES.Do(ctx, http.MethodPost, "/"+env.Index+"/_search", body, &result)
+	// A declared dataset may have no index before its first event arrives.
+	// Missing indices represent an empty result; authorization and other ES
+	// failures still propagate as errors.
+	status, err := s.ES.Do(ctx, http.MethodPost, "/"+env.Index+"/_search?ignore_unavailable=true&allow_no_indices=true", body, &result)
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
 			http.Error(w, "query_timeout: synchronous queries are limited to 30s", http.StatusGatewayTimeout)

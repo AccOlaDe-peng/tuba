@@ -1,3 +1,4 @@
+import { EntityName, ReadableValue, readable, readableDescription } from "./readable";
 import { useMemo, useState } from "react";
 import {
   Alert,
@@ -129,7 +130,6 @@ import {
   MetricPanel,
   PageHeader,
   RoleTag,
-  ScoreGauge,
   SeverityTag,
   TimeValue,
   VerdictTag,
@@ -139,6 +139,7 @@ import {
 
 const anomalyTypeLabels: Record<string, string> = {
   "auth.failure-then-success": "失败后成功登录",
+  "auth.failure-burst": "登录失败集中发生",
 };
 
 function anomalyTitle(value: AnomalySummary): string {
@@ -197,7 +198,7 @@ export function Overview() {
       render: (_, value) => (
         <div className="primary-cell">
           <Link to={`/anomalies/${encodeURIComponent(value.id)}`}>{anomalyTitle(value)}</Link>
-          <small>{value.entity.id}</small>
+          <small><EntityName id={value.entity.id}/></small>
         </div>
       ),
     },
@@ -216,11 +217,10 @@ export function Overview() {
   ];
 
   return (
-    <div className="page-stack">
-      <PageHeader
+    <div className="page-stack overview-page">  <PageHeader
         eyebrow={`${principal?.organization_id ?? "租户"} / 24 小时视角`}
         title="安全总览"
-        description="聚焦开放风险、调查责任和分析链路新鲜度。"
+        description="聚焦待处理异常、认证事件趋势和案件分派情况。"
         actions={
           <Button type="primary" onClick={() => navigate("/anomalies")} icon={<Search size={16} />}>
             开始调查
@@ -258,9 +258,8 @@ export function Overview() {
         />
       </section>
 
-      <OverviewInsights/>
-      <section className="dashboard-grid">
-        <article className="panel panel-wide">
+      <OverviewInsights mainBelow={(
+<article className="panel panel-wide">
           <header className="panel-head">
             <div>
               <span className="panel-index">01</span>
@@ -285,8 +284,8 @@ export function Overview() {
             <EmptyState title="当前没有异常" description="新的检测结果会出现在这里。" />
           )}
         </article>
-
-        <article className="panel case-balance">
+      )} asideBelow={(
+<article className="panel case-balance">
           <header className="panel-head">
             <div>
               <span className="panel-index">02</span>
@@ -331,7 +330,7 @@ export function Overview() {
             进入案件中心
           </Button>
         </article>
-      </section>
+      )}/>
     </div>
   );
 }
@@ -401,7 +400,7 @@ function AnomalyEntity({entity}: {entity: AnomalySummary["entity"]}) {
     retry: false,
     queryFn: ({signal}) => getEntity(token, entity.id, signal),
   });
-  const name = profile.data?.canonical_key || (isReference ? `${entity.id.slice(0, 12)}…${entity.id.slice(-6)}` : entity.id);
+  const name = profile.data?.canonical_key || readable(entity.id, "实体名称暂不可用");
   const type = entity.type === "account" ? "账户" : entity.type === "device" ? "主机" : entity.type;
   return <div className="entity-cell">
     <Tooltip title={entity.id}><Link to={`/entities/${encodeURIComponent(entity.id)}`}>{name}</Link></Tooltip>
@@ -411,14 +410,16 @@ function AnomalyEntity({entity}: {entity: AnomalySummary["entity"]}) {
 
 export function Anomalies() {
   const { token } = useAuth();
+  const [hours,setHours] = useState(168);
+  const from = useMemo(()=>new Date(Date.now()-hours*3600_000).toISOString(),[hours]);
   const [draft, setDraft] = useState<AnomalyFilters>({ severity: "", status: "", entity: "" });
   const [filters, setFilters] = useState<AnomalyFilters>(draft);
   const query = useInfiniteQuery({
-    queryKey: ["anomalies", filters],
+    queryKey: ["anomalies", filters, from],
     initialPageParam: "",
     queryFn: ({ pageParam, signal }) =>
       api(
-        `/anomalies${queryString({ limit: 50, cursor: pageParam, ...filters })}`,
+        `/anomalies${queryString({ limit: 50, cursor: pageParam, from, ...filters })}`,
         token,
         undefined,
         anomalyPageSchema,
@@ -499,12 +500,13 @@ export function Anomalies() {
           <Search size={16} />
           <Input
             variant="borderless"
-            placeholder="输入账户、主机或其他实体 ID"
+            placeholder="输入异常记录中的账户或主机标识"
             value={draft.entity}
             onChange={(event) => setDraft((value) => ({ ...value, entity: event.target.value }))}
             onPressEnter={() => setFilters(draft)}
           />
         </div>
+        <Select aria-label="异常查询时间范围" value={hours} onChange={setHours} options={[{value:24,label:'最近 24 小时'},{value:72,label:'最近 3 天'},{value:168,label:'最近 7 天'},{value:720,label:'最近 30 天'}]}/>
         <Select
           value={draft.severity}
           onChange={(severity) => setDraft((value) => ({ ...value, severity }))}
@@ -542,7 +544,7 @@ export function Anomalies() {
       </section>
       <section className="data-panel">
         <div className="data-summary">
-          <span>匹配 {total} 条</span>
+          <span>匹配 {total} 条 · 最近 {hours===24?'24 小时':`${hours/24} 天`}</span>
           {query.isFetching && <span className="fetching"><RefreshCw size={13} /> 更新中</span>}
         </div>
         {query.isLoading ? (
@@ -550,7 +552,7 @@ export function Anomalies() {
         ) : query.error ? (
           <ErrorState message={errorMessage(query.error)} retry={() => void query.refetch()} />
         ) : items.length === 0 ? (
-          <EmptyState title="没有匹配的异常" description="调整风险等级、状态或实体条件后重试。" />
+          <EmptyState title="所选时间范围内没有匹配的异常" description="可扩大时间范围，或调整风险等级、状态和实体条件。" />
         ) : (
           <>
             <Table
@@ -631,7 +633,7 @@ export function AnomalyDetail() {
   });
   const prefill: CasePrefill | undefined = detail.data
     ? {
-        title: `${anomalyTitle(detail.data)} · ${detail.data.entity.id}`,
+        title: `${anomalyTitle(detail.data)} 调查`,
         description: detail.data.summary,
         severity: detail.data.severity,
         anomalyIds: [detail.data.id],
@@ -644,12 +646,12 @@ export function AnomalyDetail() {
   const anomaly = detail.data;
 
   return (
-    <div className="page-stack">
+    <div className="page-stack anomaly-detail-page">
       <BackLink to="/anomalies">返回异常队列</BackLink>
       <PageHeader
-        eyebrow={`${anomaly.rule_id}@${anomaly.rule_version}`}
+        eyebrow="异常调查 / 详情"
         title={anomalyTitle(anomaly)}
-        description={anomaly.summary || "检测规则未提供摘要。"}
+        description={anomaly.summary?.replace(/(\d+) failed logins followed by a successful login within (\d+) minutes/,"$2 分钟内发生 $1 次登录失败，随后出现一次成功登录").replace(/(\d+) failed logins within (\d+) minutes \(threshold (\d+)\)/,"$2 分钟内发生 $1 次登录失败，达到检测阈值 $3 次") || "查看触发原因与事件证据，判断是否需要处置。"}
         actions={
           <Space wrap>
             {can("analysis:feedback") && (
@@ -665,15 +667,15 @@ export function AnomalyDetail() {
       />
 
       <section className="anomaly-hero">
-        <ScoreGauge score={anomaly.score} />
+        <div className="anomaly-score-value"><strong>{anomaly.score.toFixed(1)}</strong><span>检测分值</span><Tooltip title="规则返回的原始分值，不代表风险百分比或威胁概率。"><small>评分说明</small></Tooltip></div>
         <div className="anomaly-identity">
           <Space wrap>
             <SeverityTag value={anomaly.severity} />
             <AnomalyStatusTag value={anomaly.status} />
-            <Tag className="signal-tag">{anomaly.entity.type}</Tag>
+            <Tag className="signal-tag">{readable(anomaly.entity.type)}</Tag>
           </Space>
-          <strong>{anomaly.entity.id}</strong>
-          <code>{anomaly.id}</code>
+          <strong><EntityName id={anomaly.entity.id}/></strong>
+          <Link to={`/entities/${encodeURIComponent(anomaly.entity.id)}`}>查看账户或主机详情 →</Link>
         </div>
         <dl>
           <div>
@@ -682,7 +684,7 @@ export function AnomalyDetail() {
           </div>
           <div>
             <dt>证据事件</dt>
-            <dd>{anomaly.evidence_count}</dd>
+            <dd>{anomaly.evidence_count} 条</dd>
           </div>
           <div>
             <dt>检测版本</dt>
@@ -697,7 +699,7 @@ export function AnomalyDetail() {
             <div>
               <span className="panel-index">01</span>
               <h2>证据时间线</h2>
-              <p>仅展示异常引用的认证事件，重复事件已折叠</p>
+              <p>按返回顺序展示该异常引用的认证事件，点击可查看详细证据</p>
             </div>
             {evidence.data?.truncated && <Tag color="warning">结果已截断</Tag>}
           </header>
@@ -725,11 +727,11 @@ export function AnomalyDetail() {
                 anomaly.reason_codes.map((reason) => (
                   <div key={reason}>
                     <Check size={15} />
-                    <code>{reason}</code>
+                    <ReadableValue value={reason}/>
                   </div>
                 ))
               ) : (
-                <span className="muted">规则未返回原因码</span>
+                <span className="muted">规则尚未提供具体触发原因</span>
               )}
             </div>
           </article>
@@ -737,14 +739,10 @@ export function AnomalyDetail() {
             <header className="panel-head">
               <div>
                 <span className="panel-index">03</span>
-                <h2>调查边界</h2>
+                <h2>如何调查与处理</h2>
               </div>
             </header>
-            <Descriptions column={1} size="small" items={[
-              { key: "tenant", label: "租户", children: "由服务端从授权会话确定" },
-              { key: "namespace", label: "数据域", children: "当前租户隔离命名空间" },
-              { key: "raw", label: "原始数据", children: "浏览器无 Elasticsearch 凭据" },
-            ]} />
+            <ol className="anomaly-next-steps"><li>核对失败与成功登录是否来自本人，检查事件时间和来源地址。</li><li>证据不足时继续调查；确认结果后点击“记录反馈”。</li><li>需要持续跟进或协作处置时，点击“创建案件”。</li></ol>
           </article>
         </aside>
       </section>
@@ -824,7 +822,7 @@ export function Cases() {
       render: (_, value) => (
         <div className="primary-cell">
           <Link to={`/cases/${value.id}`}>{value.title}</Link>
-          <small>{value.description || value.id}</small>
+          <small>{readableDescription(value.description)}</small>
         </div>
       ),
     },
@@ -1105,9 +1103,9 @@ export function CaseDetail() {
     <div className="page-stack">
       <BackLink to="/cases">返回案件中心</BackLink>
       <PageHeader
-        eyebrow={`案件 ${current.id.slice(0, 12)} / 版本 ${current.version}`}
+        eyebrow={`调查案件 / 第 ${current.version} 次更新`}
         title={current.title}
-        description={current.description || "未填写调查背景。"}
+        description={readableDescription(current.description)}
         actions={
           writable ? (
             <Space wrap>
@@ -1192,10 +1190,10 @@ export function CaseDetail() {
             </header>
             {current.anomaly_ids.length ? (
               <div className="linked-list">
-                {current.anomaly_ids.map((anomalyID) => (
+                {current.anomaly_ids.map((anomalyID,index) => (
                   <Link key={anomalyID} to={`/anomalies/${encodeURIComponent(anomalyID)}`}>
                     <FileSearch size={16} />
-                    <span>{anomalyID}</span>
+                    <Tooltip title={`异常标识：${anomalyID}`}><span>关联异常 {index+1} · 查看详情</span></Tooltip>
                     <ChevronRight size={16} />
                   </Link>
                 ))}
@@ -1258,7 +1256,7 @@ export function CaseDetail() {
                 {
                   title: "目标",
                   dataIndex: "target_id",
-                  render: (value: string) => <code>{value}</code>,
+                  render: (value: string) => <ReadableValue value={value}/>,
                 },
                 {
                   title: "关联时间",
@@ -1295,7 +1293,7 @@ export function CaseDetail() {
                 <div key={snapshot.id} style={{ display: "flex", gap: 8, alignItems: "center" }}>
                   <Archive size={15} />
                   <div>
-                    <strong>{snapshot.label || snapshot.id}</strong>
+                    <strong>{snapshot.label || "调查快照"}</strong>
                     <small>
                       {snapshot.created_by ? `${snapshot.created_by} · ` : ""}
                       <TimeValue value={snapshot.created_at} />
@@ -1401,7 +1399,7 @@ export function CaseDetail() {
           }
         >
           <Form.Item name="assignee" label="负责人身份" rules={[{ required: true, max: 128 }]}>
-            <Input autoFocus placeholder="输入 IAM subject" />
+            <Input autoFocus placeholder="输入身份服务提供的用户标识" />
           </Form.Item>
           <Form.Item name="reason" label="分派说明">
             <Input.TextArea rows={3} maxLength={2000} />
@@ -1537,7 +1535,7 @@ export function Access() {
       <PageHeader
         eyebrow="租户控制面"
         title="访问控制"
-        description="成员关系以 PostgreSQL 为权威，身份来自企业 IAM。"
+        description="在当前组织内分配用户角色与访问权限。"
         actions={
           <Button type="primary" icon={<UserPlus size={16} />} onClick={() => setAddOpen(true)}>
             添加成员
@@ -1552,9 +1550,9 @@ export function Access() {
       {capability:'原文',viewer:'—',analyst:'—',admin:'✓',publisher:'—'},
       {capability:'来源、成员与运行管理',viewer:'—',analyst:'—',admin:'✓',publisher:'—'},
       {capability:'发布读取与推进',viewer:'—',analyst:'—',admin:'—',publisher:'✓'}
-      ]} columns={[{title:'能力',dataIndex:'capability'},{title:'审计员',dataIndex:'viewer'},{title:'分析师',dataIndex:'analyst'},{title:'租户管理员',dataIndex:'admin'},{title:'独立发布者',dataIndex:'publisher'}]}/><Alert type="info" title="组合角色按 /me 返回的权限判断" description="实际权限以服务端会话为准；平台管理员与发布者是独立角色。"/></section>}
+      ]} columns={[{title:'能力',dataIndex:'capability'},{title:'审计员',dataIndex:'viewer'},{title:'分析师',dataIndex:'analyst'},{title:'租户管理员',dataIndex:'admin'},{title:'独立发布者',dataIndex:'publisher'}]}/><Alert type="info" title="角色权限说明" description="实际权限以服务端会话为准；平台管理员与发布者是独立角色。"/></section>}
       {tab==='service'&&<section className="panel"><header className="panel-head"><h2>服务身份</h2></header><EmptyState title="独立服务身份目录尚未接入" description="来源凭据和 Agent 身份在各自管理页注册与轮换，管理身份与数据身份分别授权。"/><div className="wb-panel-body"><Link to="/sources">来源凭据管理 →</Link><br/><Link to="/agents">Agent 身份管理 →</Link></div></section>}
-      {tab==='publishers'&&<><PublisherPanel/><Alert type="info" title="独立平台授权" description="发布授权不由租户管理员自动取得；若当前会话无 release:manage，请由获授权的平台操作者管理。"/></>}
+      {tab==='publishers'&&<><PublisherPanel/><Alert type="info" title="独立平台授权" description="发布授权不由租户管理员自动取得；若当前账号没有发布管理权限，请由获授权的平台操作者管理。"/></>}
       <section className="access-layout" hidden={tab!=='members'}>
         <article className="data-panel">
           <div className="data-summary"><span>{groups.length} 位成员</span></div>
@@ -1845,7 +1843,7 @@ export function Audit() {
       title: "动作",
       dataIndex: "action",
       key: "action",
-      render: (value: string) => <code>{value}</code>,
+      render: (value: string) => <ReadableValue value={value}/>,
     },
     {
       title: "资源",
@@ -1978,8 +1976,8 @@ export function Sources() {
       key: "collector",
       render: (_, value) => (
         <div className="primary-cell">
-          <strong>{value.hostname || value.id}</strong>
-          <small>{value.id} · {value.os}/{value.architecture} · Agent {value.installed_version || "未知"}</small>
+          <strong>{value.hostname || "主机名称暂不可用"}</strong>
+          <small>{value.os}/{value.architecture} · 采集客户端 {value.installed_version || "版本未知"}</small>
         </div>
       ),
     },
@@ -2084,7 +2082,7 @@ export function Sources() {
       render: (_, value) => (
         <div className="primary-cell">
           <strong>{value.vendor_product} / {value.vendor_dataset}</strong>
-          <small>{value.id} · epoch {value.source_epoch}</small>
+          <small>接入批次：{value.source_epoch}</small>
         </div>
       ),
     },
@@ -2273,12 +2271,12 @@ function SourceDetailDrawer({
             column={1}
             size="small"
             items={[
-              { key: "id", label: "来源 ID", children: <code>{source.id}</code> },
+              { key: "id", label: "来源 ID", children: <ReadableValue value={source.id} label="查看完整来源标识"/> },
               { key: "vendor", label: "厂商", children: source.vendor_name },
               { key: "epoch", label: "Source epoch", children: source.source_epoch },
               { key: "state", label: "管理状态", children: <StateTag meta={sourceStateMeta} value={source.state} /> },
               { key: "rate", label: "限速", children: `${source.rate_limit} 条/秒` },
-              { key: "release", label: "绑定 Release", children: source.release_id || "未绑定" },
+              { key: "release", label: "关联发布包", children: source.release_id || "未绑定" },
               { key: "ctx", label: "Source context", children: contextId ? <code>{contextId}</code> : "未登记" },
               { key: "created", label: "创建时间", children: <TimeValue value={source.created_at} /> },
               { key: "updated", label: "最近更新", children: <TimeValue value={source.updated_at} /> },
@@ -2450,7 +2448,7 @@ export function Quality() {
       <PageHeader
         eyebrow="数据治理"
         title="数据质量与隔离"
-        description="UIM 质量分布、质量原因、DIP 摄入信号与隔离区内容，全部来自实时 SPL 查询。"
+        description="查看各类事件的完整程度、字段缺失原因和未能正常处理的数据。"
         actions={
           <Select
             value={range}
@@ -2464,8 +2462,8 @@ export function Quality() {
         <header className="panel-head">
           <div>
             <span className="panel-index">01</span>
-            <h2>UIM 质量分布</h2>
-            <p>各域 qualified/partial 事件计数（active generation g1，服务端强制）</p>
+            <h2>事件质量分布</h2>
+            <p>按数据类型统计完整事件与字段不完整事件</p>
           </div>
           {(qualityQueries.some((query) => query.isFetching) || dip.isFetching) && (
             <span className="fetching"><RefreshCw size={13} /> 更新中</span>
@@ -2486,15 +2484,15 @@ export function Quality() {
             pagination={false}
             dataSource={qualityRows}
             columns={[
-              { title: "UIM 域", dataIndex: "domain" },
+              { title: "数据类型", dataIndex: "domain" },
               {
-                title: "qualified",
+                title: "字段完整",
                 dataIndex: "qualified",
                 width: 120,
                 render: (value: number) => value.toLocaleString("zh-CN"),
               },
               {
-                title: "partial",
+                title: "字段不完整",
                 dataIndex: "partial",
                 width: 120,
                 render: (value: number) => value.toLocaleString("zh-CN"),
@@ -2513,7 +2511,7 @@ export function Quality() {
                   row.total === 0 ? (
                     <Tag className="signal-tag status-muted">无数据</Tag>
                   ) : row.partial > 0 ? (
-                    <Tag className="signal-tag status-progress">有 partial</Tag>
+                    <Tag className="signal-tag status-progress">字段不完整</Tag>
                   ) : (
                     <Tag className="signal-tag status-open">全部合格</Tag>
                   ),
@@ -2529,7 +2527,7 @@ export function Quality() {
             <div>
               <span className="panel-index">02</span>
               <h2>质量原因</h2>
-              <p>各域 partial 事件的 ueba.quality.reasons 聚合</p>
+              <p>汇总事件字段不完整的原因</p>
             </div>
           </header>
           {reasonQueries.some((query) => query.isLoading) ? (
@@ -2545,7 +2543,7 @@ export function Quality() {
               pagination={false}
               dataSource={reasonRows}
               columns={[
-                { title: "原因码", dataIndex: "reason", render: (value: string) => <code>{value}</code> },
+                { title: "原因码", dataIndex: "reason", render: (value: string) => <ReadableValue value={value}/> },
                 {
                   title: "事件数",
                   dataIndex: "count",
@@ -2563,8 +2561,8 @@ export function Quality() {
           <header className="panel-head">
             <div>
               <span className="panel-index">03</span>
-              <h2>DIP 摄入信号</h2>
-              <p>原始数据域按 source context 计数，反映解析/规范化链路是否有数据流入</p>
+              <h2>原始数据接入情况</h2>
+              <p>按数据来源统计原始事件，辅助确认是否有数据进入平台</p>
             </div>
           </header>
           {dip.isLoading ? (
@@ -2623,8 +2621,8 @@ export function Quality() {
         <header className="panel-head">
           <div>
             <span className="panel-index">04</span>
-            <h2>隔离区（Quarantine）</h2>
-            <p>按阶段/原因聚合与最近隔离记录；原始载荷不在界面展示</p>
+            <h2>待处理数据</h2>
+            <p>查看未能正常处理的数据及失败原因；此处不展示原始内容</p>
           </div>
           {(quarantineAgg.isFetching || quarantineEvents.isFetching) && (
             <span className="fetching"><RefreshCw size={13} /> 更新中</span>
@@ -2752,7 +2750,7 @@ export function Releases() {
                 key: "release",
                 render: (_, value) => (
                   <div className="primary-cell">
-                    <strong>{value.id}</strong>
+                    <strong><ReadableValue value={value.id}/></strong>
                     <small>版本 {value.version} · sha256 {value.sha256.slice(0, 16)}…</small>
                   </div>
                 ),
@@ -2823,7 +2821,7 @@ export function Releases() {
               column={1}
               size="small"
               items={[
-                { key: "id", label: "Release ID", children: <code>{current.id}</code> },
+                { key: "id", label: "发布包标识", children: <code>{current.id}</code> },
                 { key: "version", label: "版本", children: current.version },
                 { key: "state", label: "状态", children: <StateTag meta={releaseStateMeta} value={current.state} /> },
                 { key: "sha", label: "Canonical sha256", children: <code>{current.sha256}</code> },
@@ -2884,7 +2882,7 @@ export function Releases() {
                   pagination={false}
                   dataSource={audit.data.items}
                   columns={[
-                    { title: "动作", dataIndex: "action", render: (value: string) => <code>{value}</code> },
+                    { title: "动作", dataIndex: "action", render: (value: string) => <ReadableValue value={value}/> },
                     { title: "操作者", dataIndex: "actor_subject", width: 150, render: (value: string) => value || "—" },
                     { title: "时间", dataIndex: "occurred_at", width: 120, render: (value: string) => <TimeValue value={value} /> },
                   ]}
@@ -3724,9 +3722,7 @@ const entityWindowOptions = [
 
 export function Entities() {
   const { token } = useAuth();
-  const navigate = useNavigate();
   const [hours, setHours] = useState(24 * 7);
-  const [lookup, setLookup] = useState("");
   const [directorySearch, setDirectorySearch] = useState("");
   const [directoryType, setDirectoryType] = useState("");
   const [window, setWindow] = useState(() => anomalyWindow(24 * 7));
@@ -3810,7 +3806,7 @@ export function Entities() {
       render: (_, value) => (
         <div className="entity-cell">
           <Link to={`/entities/${encodeURIComponent(value.id)}`}>
-            <strong>{value.id}</strong>
+            <strong><ReadableValue value={value.id}/></strong>
           </Link>
           <small>{value.type}</small>
         </div>
@@ -3858,44 +3854,21 @@ export function Entities() {
     <div className="page-stack">
       <PageHeader
         eyebrow="实体画像"
-        title="Account / Device 实体"
-        description="实体目录、主档、角色关系、特征基线与风险解释的统一入口。"
+        title="账户与主机"
+        description="查看账户与主机的信息、关联关系、行为基线和风险来源。"
       />
-      <section className="panel">
-        <header className="panel-head">
-          <div>
-            <span className="panel-index">01</span>
-            <h2>按实体 ID 直达</h2>
-            <p>已知实体标识（ent:… 或账户/主机名）可直接进入详情</p>
-          </div>
-        </header>
-        <Space.Compact style={{ width: "100%", maxWidth: 560 }}>
-          <Input
-            placeholder="输入实体 ID，如 ent:… 或账户名"
-            value={lookup}
-            onChange={(event) => setLookup(event.target.value)}
-            onPressEnter={() => lookup.trim() && navigate(`/entities/${encodeURIComponent(lookup.trim())}`)}
-          />
-          <Button
-            type="primary"
-            icon={<Search size={16} />}
-            onClick={() => lookup.trim() && navigate(`/entities/${encodeURIComponent(lookup.trim())}`)}
-          >
-            查看详情
-          </Button>
-        </Space.Compact>
-      </section>
+
       <section className="panel">
         <header className="panel-head">
           <div>
             <span className="panel-index">02</span>
             <h2>实体目录</h2>
-            <p>控制面实体注册表（register-on-sight）：支持规范化键子串搜索与类型过滤</p>
+            <p>按账户名、主机名或实体类型查找</p>
           </div>
           <Space>
             <Input.Search
               allowClear
-              placeholder="搜索 canonical_key，如 win-139"
+              placeholder="搜索账户名或主机名，例如 win-139"
               style={{ width: 260 }}
               onSearch={(value) => setDirectorySearch(value.trim())}
             />
@@ -3904,8 +3877,8 @@ export function Entities() {
               onChange={setDirectoryType}
               options={[
                 { value: "", label: "全部类型" },
-                { value: "account", label: "account" },
-                { value: "device", label: "device" },
+                { value: "account", label: "账户" },
+                { value: "device", label: "主机" },
               ]}
               style={{ width: 130 }}
             />
@@ -3917,7 +3890,7 @@ export function Entities() {
         ) : directory.error ? (
           <ErrorState message={errorMessage(directory.error)} retry={() => void directory.refetch()} />
         ) : directoryItems.length === 0 ? (
-          <EmptyState title="目录为空" description="没有匹配的实体；实体由 entity-worker 在事件流中按需注册。" />
+          <EmptyState title="目录为空" description="没有匹配的实体；系统处理事件后会自动登记相关账户和主机。" />
         ) : (
           <>
             <div className="data-summary">
@@ -3996,6 +3969,8 @@ export function Entities() {
 }
 
 export function EntityDetail() {
+  const [attributionSelected,setAttributionSelected] = useState<EntityAttribution>();
+
   const { id = "" } = useParams();
   const entityId = decodeURIComponent(id);
   const { token } = useAuth();
@@ -4069,13 +4044,13 @@ export function EntityDetail() {
       width: 150,
       render: (value: string) => <TimeValue value={value} />,
     },
-    { title: "角色", dataIndex: "role", width: 150, render: (value: string) => <code>{value}</code> },
+    { title: "角色", dataIndex: "role", width: 150, render: (value: string) => <ReadableValue value={value}/> },
     {
       title: "状态",
       dataIndex: "state",
       width: 96,
       render: (value: string) => (
-        <Tag className={`signal-tag ${value === "resolved" ? "status-ok" : "status-warn"}`}>{value}</Tag>
+        <Tag className={`signal-tag ${value === "resolved" ? "status-ok" : "status-warn"}`}>{readable(value)}</Tag>
       ),
     },
     { title: "规则版本", dataIndex: "rule_version", width: 100 },
@@ -4083,12 +4058,12 @@ export function EntityDetail() {
       title: "证据/原因",
       dataIndex: "reason",
       ellipsis: true,
-      render: (value: string, row) => <span title={value}>{value || row.event_id}</span>,
+      render: (_: string, row) => <div className="primary-cell"><span>{row.state === "resolved" ? "事件身份信息已关联到此实体" : row.state === "ambiguous" ? "存在多个匹配对象，无法唯一确定身份" : "尚未找到匹配的实体"}</span><Button type="link" size="small" onClick={()=>setAttributionSelected(row)}>查看关联依据</Button></div>,
     },
   ];
 
   const relationColumns: TableProps<EntityRelation>["columns"] = [
-    { title: "关系", dataIndex: "relation_type", width: 140, render: (value: string) => <code>{value}</code> },
+    { title: "关系", dataIndex: "relation_type", width: 140, render: (value: string) => <ReadableValue value={value}/> },
     {
       title: "对端实体",
       key: "peer",
@@ -4120,7 +4095,7 @@ export function EntityDetail() {
   ];
 
   const featureColumns: TableProps<EntityFeatureSample>["columns"] = [
-    { title: "特征", dataIndex: "feature_id", width: 210, render: (value: string) => <code>{value}</code> },
+    { title: "特征", dataIndex: "feature_id", width: 210, render: (value: string) => <ReadableValue value={value}/> },
     {
       title: "窗口",
       dataIndex: "window_start",
@@ -4164,7 +4139,7 @@ export function EntityDetail() {
       render: (_, value) => (
         <div className="primary-cell">
           <Link to={`/anomalies/${encodeURIComponent(value.id)}`}>{anomalyTitle(value)}</Link>
-          <small>{value.rule_id}@{value.rule_version} · {value.id.slice(0, 22)}</small>
+          <small>检测规则：{readable(value.rule_id)} · 版本：{value.rule_version || "未提供"}</small>
         </div>
       ),
     },
@@ -4208,10 +4183,11 @@ export function EntityDetail() {
 
   return (
     <div className="page-stack">
+      <Drawer open={!!attributionSelected} title="事件身份关联依据" onClose={()=>setAttributionSelected(undefined)} size={600}>{attributionSelected&&<><Descriptions column={1} items={[{key:"time",label:"事件时间",children:<TimeValue value={attributionSelected.event_time}/>},{key:"role",label:"在事件中的角色",children:readable(attributionSelected.role)},{key:"state",label:"关联结果",children:readable(attributionSelected.state)},{key:"version",label:"身份匹配规则版本",children:attributionSelected.rule_version||"未提供"}]}/><h3>判断依据</h3><p>{attributionSelected.reason ? readable(attributionSelected.reason) : "记录未提供文字说明；关联结果以身份匹配规则的输出为准。"}</p>{Array.isArray(attributionSelected.evidence?.adjudication)&&<ul>{attributionSelected.evidence.adjudication.map((reason:unknown,index:number)=><li key={index}>{readable(String(reason))}</li>)}</ul>}<Alert type="info" showIcon title="身份关联不等于安全判定" description="这些记录说明账户或主机如何与事件建立联系，不代表该事件一定异常。是否存在风险请结合关联异常和事件内容判断。"/><details style={{marginTop:16}}><summary>技术追溯信息</summary><p>事件标识：{attributionSelected.event_id}</p><pre className="wb-json">{JSON.stringify(attributionSelected.evidence??{},null,2)}</pre></details></>}</Drawer>
       <BackLink to="/entities">返回实体列表</BackLink>
       <PageHeader
         eyebrow="实体详情"
-        title={entityId}
+        title={profileData?.canonical_key || "实体详情"}
         description="实体主档、角色关系、特征基线、异常与风险解释的统一视图。"
         actions={effectiveEntityType ? <Tag className="signal-tag">{effectiveEntityType}</Tag> : undefined}
       />
@@ -4232,10 +4208,10 @@ export function EntityDetail() {
             <ErrorState message={errorMessage(profile.error ?? new Error("实体不存在"))} retry={() => void profile.refetch()} />
           ) : (
             <Descriptions column={2} size="small" items={[
-              { key: "id", label: "实体标识", children: <code>{profileData.entity_id}</code> },
+              { key: "id", label: "实体标识", children: <ReadableValue value={profileData.entity_id} label="查看完整实体标识"/> },
               { key: "key", label: "规范化键", children: <code>{profileData.canonical_key}</code> },
               { key: "type", label: "实体类型", children: <Tag className="signal-tag">{profileData.entity_type}</Tag> },
-              { key: "strength", label: "标识强度", children: profileData.identity_strength },
+              { key: "strength", label: "标识强度", children: readable(profileData.identity_strength) },
               { key: "space", label: "身份空间 / 来源", children: profileData.authority },
               {
                 key: "valid",
