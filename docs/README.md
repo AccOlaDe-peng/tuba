@@ -20,7 +20,8 @@
 | 文档 | 内容 |
 | --- | --- |
 | [DEVELOPMENT.md](DEVELOPMENT.md) | 本地初始化、运行和开发命令 |
-| [SECURITY-MODEL.md](SECURITY-MODEL.md) | OIDC、租户授权、服务凭据和审计原则 |
+| [SYSTEM-LOGIN.md](SYSTEM-LOGIN.md) | 内置账号、会话、管理员引导、248 登录迁移与验证记录 |
+| [SECURITY-MODEL.md](SECURITY-MODEL.md) | 系统登录、租户授权、服务凭据和审计原则 |
 | [ANALYTICS.md](ANALYTICS.md) | 现有分析 worker 的窗口、水位、checkpoint、反馈和回放 |
 | [FRONTEND.md](FRONTEND.md) | 控制台路由、会话、API 和敏感数据展示约束 |
 | [FRONTEND-WORKBENCH.md](FRONTEND-WORKBENCH.md) | 原型 v2 前端实施、功能边界、验证和 248 静态部署回退 |

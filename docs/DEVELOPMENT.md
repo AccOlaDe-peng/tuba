@@ -9,7 +9,7 @@
 - uv 0.12.17；uv 根据 `.python-version` 获取 CPython 3.14.7。
 - Node.js 24.14.1 和 Corepack；前端固定 pnpm 12.6.0。
 - PyYAML，供 `make contracts` 的 OpenAPI 门禁（`scripts/validate_openapi.py`）解析 YAML 与 `$ref`。零依赖的基线校验器 `scripts/validate_contracts.py` 不需要它；两者分开正是为了让最小环境仍能跑基线。
-- Docker Engine 与 Docker Compose V2，用于 Kafka、PostgreSQL、Elasticsearch 和可选 Keycloak。
+- Docker Engine 与 Docker Compose V2，用于 Kafka、PostgreSQL、Elasticsearch。
 
 不要把本地开发密码用于共享或生产环境。真实凭据只通过未提交的 `.env` 或密钥系统提供。
 
@@ -24,11 +24,7 @@ make check
 make build
 ```
 
-`make dev-up` 启动 Kafka、创建三个开发 topic，并启动 PostgreSQL 与 Elasticsearch。需要本地 Keycloak 时运行：
-
-```bash
-docker compose --profile identity up -d
-```
+`make dev-up` 启动 Kafka、PostgreSQL 与 Elasticsearch，不需要外部身份服务。
 
 Windows 环境可以直接运行：
 
@@ -37,17 +33,9 @@ Windows 环境可以直接运行：
 .\scripts\start_local.ps1
 ```
 
-该脚本会创建 `.env`、启动全部依赖、等待健康检查、应用 PostgreSQL migrations 和 Elasticsearch assets。首次导入的本地 Keycloak 用户如下，密码统一为 `TubaLocal!123`：
+该脚本会创建 `.env`、启动依赖、等待健康检查并应用 migrations 与 ES assets。首次部署使用 `tuba-bootstrap-operator` 建立系统管理员；密码从标准输入提供。后续用户在访问控制页面创建，详见 [系统登录](SYSTEM-LOGIN.md)。
 
-| 用户名 | 角色 |
-| --- | --- |
-| `wang.min` | `tenant_admin` |
-| `analyst.lee` | `analyst` |
-| `auditor.zhao` | `viewer` |
-
-本地 Keycloak 管理控制台为 `http://127.0.0.1:8180/admin/`，默认开发管理员密码是 `.env` 中的 `KEYCLOAK_ADMIN_PASSWORD`。
-
-`start_local.ps1` 将 Go、Python 和 Web 进程以后台隐藏方式启动，PID 和日志位于 `.runtime/`。停止应用进程运行 `.\scripts\stop_local.ps1`，停止容器运行 `make dev-down` 或 `docker compose --profile identity down`。
+`start_local.ps1` 将 Go、Python 和 Web 进程以后台隐藏方式启动，PID 和日志位于 `.runtime/`。停止应用进程运行 `.\scripts\stop_local.ps1`，停止容器运行 `make dev-down` 或 `docker compose down`。
 
 本地辅助脚本入口（尚未构成完整架构验收）：
 
@@ -58,7 +46,7 @@ uv run --project python python scripts\load_test.py --events 1000 --concurrency 
 .\scripts\backup_local.ps1
 ```
 
-已有远程 Elasticsearch 或身份服务时，可以只运行需要的本地依赖，并在 `.env` 中覆盖连接配置。
+已有远程 Elasticsearch 时，可以只运行需要的本地依赖，并在 `.env` 中覆盖连接配置。
 
 需要在共享 Kafka 上做隔离验证时，可为 normalizer 与标准 indexer 设置 `KAFKA_EVENTS_TOPIC_PREFIX`（默认 `tuba.events`）和可选 `KAFKA_CONSUMER_GROUP_SUFFIX`；另用 `KAFKA_RAW_TOPIC`、`KAFKA_QUARANTINE_TOPIC`、`KAFKA_DLQ_TOPIC` 指向专用验证 topic。验证环境应使用单独的 ES namespace/alias，并确保主题 ACL 已配置，避免把测试事件写入正式消费链。标准 indexer 按 `INDEX_BATCH_SIZE`（默认 500）和 `INDEX_BATCH_BYTES`（默认 16 MiB，配置上限 64 MiB）共同限制批量，最多等待 `INDEX_BATCH_WAIT`（默认 1 秒），仅重试失败的临时 bulk 项；永久项进入 DLQ，成功或 DLQ 写入确认后才提交输入 offset。超出当前字节预算的下一条消息留在下一批处理，不会提前提交 offset。
 
@@ -69,7 +57,7 @@ uv run --project python python scripts\load_test.py --events 1000 --concurrency 
 | `make contracts` | 校验 JSON Schema、示例与 UIM 用例（零依赖基线），并解析 OpenAPI：解析整个文档、递归解析全部 `$ref`（含外部 schema 文件并复跑同一套 schema 校验）、检查每个 path 的方法与 responses |
 | `make go-check` | Go 测试和 vet |
 | `make python-check` | Python 分析测试 |
-| `make shell-check` | 安装器/初始化器/领养预检的 shell 测试（用 fake 依赖驱动，不需要真实 Kafka/PG/ES/Keycloak） |
+| `make shell-check` | 安装器/初始化器/领养预检的 shell 测试（用 fake 依赖驱动，不需要真实 Kafka/PG/ES） |
 | `make web-check` | TypeScript 检查和前端测试 |
 | `make check` | 运行全部基础质量门禁 |
 | `make build` | 构建 Go 命令、Python wheel/sdist 和 React 静态资源 |
@@ -105,28 +93,7 @@ go run ./cmd/tuba-source-topic-admin -context ctx_0123456789abcdef0123456789abcd
 
 该工具要求 broker 已启用 ACL authorizer，且 Kafka 用户已由管理员安全创建；不创建 SCRAM 用户，也不发布 Filebeat 配置。248 上当前 broker 通告地址为 `localhost:9192`、无 ACL authorizer，21 无法用此状态直接完成采集闭环。需增加 21 可达的私网 listener、完成现有客户端 ACL 盘点并启用 authorizer，再执行上述 apply；不能直接重启共享 broker 以跳过盘点。
 
-当前 Web 登录页直接向配置的开发 Keycloak realm 提交用户名和密码，realm 需允许 `tuba-web` 的 Direct Access Grants；API 仍校验返回的访问令牌并基于 PostgreSQL 成员关系授权。该简化登录仅用于当前开发验收，不代表生产身份接入已定版。既有 M1–M5 UI/认证记录见历史验收文档，不作为完整目标架构的交付证明。
-
-248 HTTP 开发入口（2026-10-03）：`http://10.6.68.248:8088/tuba/`。
-网关配置源为 `deploy/proxy/tuba-http-dev.conf`，部署至 `/etc/tuba/tuba-http-dev.conf`，
-由 `/opt/adms/webserver/conf/webserver.conf` 的 `http` 块 include。
-运行时 `config.js` 将 issuer 设置为同源 `/tuba-auth/realms/tuba`；只有 token POST 路径代理到
-247 Keycloak，返回的 token issuer 保持原身份服务值，API 授权仍按原配置验证。
-前端/API 路由、SPA fallback、静态资产与无效账号 token 请求已验证；真实成员登录另行验收。
-Keycloak `tuba-web` 的 `webOrigins` 必须包含精确来源 `http://10.6.68.248:8088`；
-代理会保留浏览器 Origin，不能只用没有 Origin 的命令行请求验收。
-2026-10-03 已通过 Admin API 添加并读回该来源，配置模板同步更新；携带浏览器 Origin 的
-真实操作者 token 请求和 `/api/v1/me` 均返回 200。客户端变更前快照保存于本机
-`output/backups/keycloak-http-entry-*/tuba-web.before.json`（Git 忽略目录）。
-部署前配置备份位于 248 `/opt/tuba/backups/http-entry-20261003T064358Z/`。
-网关校验与平滑重载需设置 `LD_LIBRARY_PATH=/opt/adms/webserver/lib`；回滚时恢复备份中的
-`webserver.conf`，校验通过后 reload。该入口仅用于内网开发验收；生产传输要求见 O03。
-
-### 247 开发环境首个租户管理员引导
-
-247 的开发 realm 与本机 local-dev realm 是不同 issuer。首个 247 操作者必须先在 Keycloak 创建用户，再通过 `cmd/tuba-bootstrap-operator` 为实际 Keycloak `sub` 建立首个 `tenant_admin` 成员关系。该一次性工具要求目标 issuer 下尚无有效 tenant administrator；它在同一 PostgreSQL 事务内建立 identity/membership 并写入 `identity.bootstrap_membership` 审计事件，`actor_identity_id` 为空表示这是无现存登录操作者时的显式 bootstrap，`approved_by` 记录外部授权依据。已有管理员时工具会拒绝执行，后续成员变更必须走受保护的 `/api/v1/members` API。不要手工 SQL 修改成员关系。
-
-开发环境 Keycloak 用户可由 `scripts/provision_247_dev_operator.py` 创建。脚本只从环境读取 Keycloak bootstrap admin 凭据，生成随机密码并仅打印一次；密码不落盘。将用户 `sub`、issuer 和组织传给引导工具后，使用生成的用户名/密码登录。当前工作站的 Vite OIDC 参数保存在被 Git 忽略的 `web/.env.local`；访问 248 loopback API 时还需受控 SSH 本地转发 `127.0.0.1:8788 -> 248:127.0.0.1:8788`。
+Web 登录、刷新恢复、退出和改密均通过同源 API，Cookie 会话由服务器验证。248 使用 `https://10.6.68.248:8443/tuba/`；247 不属于登录依赖。当前配置、用户引导与迁移方法见 [系统登录](SYSTEM-LOGIN.md)。
 
 ## CI
 

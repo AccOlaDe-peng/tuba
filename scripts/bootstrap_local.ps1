@@ -7,13 +7,12 @@ if (-not (Test-Path -LiteralPath ".env")) {
     Copy-Item -LiteralPath ".env.example" -Destination ".env"
 }
 
-docker compose --profile identity up -d
+docker compose up -d
 
 $services = @{
     "product-kafka-1" = "healthy"
     "product-postgres-1" = "healthy"
     "product-elasticsearch-1" = "healthy"
-    "product-keycloak-1" = "healthy"
 }
 
 $deadline = (Get-Date).AddMinutes(3)
@@ -89,6 +88,5 @@ foreach ($asset in $assets) {
 Write-Host ""
 Write-Host "Local dependencies are ready."
 Write-Host "Console: http://127.0.0.1:5173/"
-Write-Host "Keycloak admin: http://127.0.0.1:8180/admin/ (admin / admin-local-only)"
 Write-Host "Application users: wang.min, analyst.lee, auditor.zhao"
 Write-Host "Local password: TubaLocal!123"

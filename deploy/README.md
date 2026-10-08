@@ -12,10 +12,10 @@
 | 对象 | 归属 | 由谁处理 |
 | --- | --- | --- |
 | `/opt/tuba/releases/<version>`＋`current`/`previous`、不可登录 `tuba` 账号、`/etc/tuba`、`/var/lib/tuba`、`/var/log/tuba` | **TUBA 自有** | `scripts/install_tuba_linux.sh` 创建、校验、版本切换与回滚 |
-| PostgreSQL / Kafka / Elasticsearch / Keycloak 实例本身 | **被领养** | 由环境提供，TUBA **不安装、不升级、不重新配置** |
+| PostgreSQL / Kafka / Elasticsearch 实例本身 | **被领养** | 由环境提供，TUBA **不安装、不升级、不重新配置** |
 | 迁移、运行角色、Topic、ES 模板、realm discovery 校验 | TUBA 落在已有实例上的对象 | `scripts/initialize_tuba_single_node.sh` 幂等执行 |
 
-这不是洁癖，而是 248 的现实：那里的 PostgreSQL **与另一个产品共用**，Kafka/ES/Keycloak 也都是既有实例。安装器去"拥有"它们，代价是别的产品的可用性。
+这不是洁癖，而是 248 的现实：那里的 PostgreSQL **与另一个产品共用**，Kafka/ES 也都是既有实例。安装器去"拥有"它们，代价是别的产品的可用性。
 
 初始化之前先跑**只读**的领养预检——它**不创建任何对象、不下发任何 DDL**，只回答"现有依赖能不能安全地被使用"，并对三类情况**默认拒绝**：
 
@@ -79,63 +79,13 @@ python scripts/verify_tuba_linux_install.py `
 
 ### 服务监听边界（O03，开发 HTTP）
 
-`tuba-ingest` 与 `tuba-api` 默认只绑定 `127.0.0.1`；`HTTP_LISTEN`/`API_LISTEN` 配置为 wildcard 或非 loopback 地址时，必须显式设置 `TUBA_ALLOW_NON_LOOPBACK_LISTEN=true`，否则启动失败。Helm chart 仅为需要经 Kubernetes Service 访问的 API/ingest 显式启用此选项；单机部署保持默认 loopback，并由受控反向代理转发外部流量。Vite 开发服务器按路径将 `/api/v1/ingest` 转发到 ingest，将其他 `/api` 转发到 API；可运行 `python scripts/verify_dev_http_proxy.py` 验收 loopback 转发。开发 Compose 的 Kafka、PostgreSQL、Elasticsearch 和 Keycloak host ports 均绑定 `127.0.0.1`，Kafka 容器间通信使用独立 Docker 网络 listener。开发按要求使用 HTTP；生产 TLS、安装版代理和真实目标机防火墙仍需单独验收。
+`tuba-ingest` 与 `tuba-api` 默认只绑定 `127.0.0.1`；`HTTP_LISTEN`/`API_LISTEN` 配置为 wildcard 或非 loopback 地址时，必须显式设置 `TUBA_ALLOW_NON_LOOPBACK_LISTEN=true`，否则启动失败。Helm chart 仅为需要经 Kubernetes Service 访问的 API/ingest 显式启用此选项；单机部署保持默认 loopback，并由受控反向代理转发外部流量。Vite 开发服务器按路径将 `/api/v1/ingest` 转发到 ingest，将其他 `/api` 转发到 API；可运行 `python scripts/verify_dev_http_proxy.py` 验收 loopback 转发。开发 Compose 的 Kafka、PostgreSQL、Elasticsearch host ports 均绑定 `127.0.0.1`，Kafka 容器间通信使用独立 Docker 网络 listener。开发按要求使用 HTTP；生产 TLS、安装版代理和真实目标机防火墙仍需单独验收。
 
-Compose 默认的 Keycloak 只用于本机开发：从 `deploy/keycloak/local-dev/` 导入演示 realm，H2 数据目录使用独立 named volume。部署 realm 使用 `deploy/keycloak/tuba-realm.json`，不包含演示用户，关闭 Direct Access Grants，要求 PKCE S256；部署前需要设置实际回调地址和受保护的数据库/管理员凭据。
-
-### Keycloak PostgreSQL profile
-
-开发单节点可在现有 PostgreSQL 实例中为 Keycloak 建独立数据库和登录角色，不与 TUBA 应用库共用 schema。`deploy/keycloak/compose.postgres.yaml` 是 `compose.yaml` 的 overlay；它用 `keycloak-db-init` 创建/校准数据库角色与数据库，Keycloak 使用 `KC_DB=postgres`。数据库角色不具有 SUPERUSER、CREATEDB、CREATEROLE、REPLICATION 或 BYPASSRLS 权限。初始化容器连接 PostgreSQL 管理账号；在受管环境应使用临时、受限的数据库引导身份，完成后撤销该身份，不把它交给 Keycloak。
-
-先复制 `.env.example` 到未纳入版本控制的 `.env`，设置独立、强随机的 Keycloak 数据库密码及管理员密码。PostgreSQL profile 对 `KEYCLOAK_DB_ADMIN_USER/PASSWORD`、`KEYCLOAK_DB_PASSWORD`、`KEYCLOAK_ADMIN` 和 `KEYCLOAK_ADMIN_PASSWORD` fail closed，不提供弱默认值；管理员数据库账号只供一次性角色/数据库引导，部署到受管 PostgreSQL 时使用短期、受限的引导身份。示例中的 `*-local-only` 值仅供隔离开发，不能用于共享/生产环境。
-
-保护包含这些值的 `.env`：Linux 将部署目录限制为 `0700`、环境文件设为 `0600` 并只允许部署账号读取；Windows 移除文件继承 ACL，仅向部署账号和受控运维管理员授予读取权限。不要把 `.env` 复制到安装包、Launcher manifest、容器镜像或提交到版本控制。Compose 会把 DB/Admin 密码传给容器环境，因此有权访问 Docker daemon 的管理员仍能检查容器配置；应相应限制 daemon 和主机管理权限。启动命令：
-
-```bash
-docker compose -f compose.yaml -f deploy/keycloak/compose.postgres.yaml \
-  --profile identity-postgres up -d keycloak
-```
-
-服务端口默认只绑定 `127.0.0.1:8181`；H2 开发 profile 仍使用 `127.0.0.1:8180`。该 profile 首次启动时从 `deploy/keycloak/tuba-realm.json` 创建 realm。`--import-realm` 只用于新 realm 的首次导入；重启时不会把 JSON 当作 realm 升级工具。
-
-realm 变更按显式升级处理：先备份 Keycloak 专用 PostgreSQL 数据库，再用 Admin REST 导出当前 realm/配置作为受保护回滚证据。`scripts/update_keycloak_web_client.py` 是首个版本化升级操作：更新既有 `tuba-web` redirect URI/origin 前，必须提供非空数据库备份；脚本导出并以 Unix `0700/0600` 或 Windows 当前账号 ACL 保存变更前 realm，拒绝 Direct Access Grants 已开启的客户端，完成更新后读回核对目标字段。运行示例：
-
-```bash
-# KEYCLOAK_ADMIN_USERNAME/PASSWORD are loaded from the protected operator environment.
-KEYCLOAK_URL=http://127.0.0.1:8181 python3 scripts/update_keycloak_web_client.py \
-  --redirect-uri 'https://console.example/*' \
-  --database-backup /secure/backups/keycloak-before-realm-change.dump \
-  --snapshot-dir /secure/backups/realm-snapshots
-```
-
-开发环境按要求可用 HTTP redirect；部署环境使用真实控制台 origin。不要在运行中覆盖 realm JSON 后重启来升级既有 realm。涉及数据库 schema 的 Keycloak 版本升级另按对应版本迁移说明执行，不能与 realm 配置升级混为一谈。
-
-可以用独立 Compose project 演练完整流程，避免碰到默认 `product` 项目正在使用的 PostgreSQL、端口或卷：
-
-```bash
-docker compose -p tuba-keycloak-pg-validation \
-  -f compose.yaml \
-  -f deploy/keycloak/compose.postgres.yaml \
-  -f deploy/keycloak/compose.postgres.validation.yaml \
-  --profile identity-postgres up -d keycloak
-```
-
-验证 realm discovery 后重启 Keycloak 并再次查询；重复运行 `keycloak-db-init` 应成功且保留 realm。确认不再需要临时数据后，使用同一组 `-p`/`-f` 参数执行 `down -v`；该命令会删除这个验证项目的数据库卷。不要对 `product` 项目执行 `down -v`。
+系统账号、会话、管理员引导及 248 配置见 [系统登录](../docs/SYSTEM-LOGIN.md)。系统只依赖 Kafka、PostgreSQL 与 Elasticsearch；247 不属于系统身份或初始化依赖。
 
 ### Disposable full-stack initialization profile
 
-`deploy/validation/compose.one-node.yaml` supplies loopback ports for validating a fresh single-node dependency stack without sharing the `product` Compose volumes. Combine it with the base, runtime, and Keycloak PostgreSQL overlays under a unique project name:
-
-```bash
-docker compose -p tuba-one-node-validation \
-  -f compose.yaml \
-  -f deploy/validation/compose.runtime.yaml \
-  -f deploy/keycloak/compose.postgres.yaml \
-  -f deploy/validation/compose.one-node.yaml \
-  --profile identity-postgres up -d kafka postgres elasticsearch keycloak
-```
-
-The profile binds PostgreSQL/Kafka/Elasticsearch/Keycloak to `15432/19094/19200/18181` on loopback. Apply migrations and runtime-role provisioning, reconcile validation Topics, apply ES templates, and verify Keycloak discovery with the same project. Use a unique project name; only remove that validation project and its named volumes after the checks. This disposable stack proves initialization order and repeatability, not production capacity, retention, or target-host installation.
+使用唯一 Compose project，将 `compose.yaml` 与 `deploy/validation/compose.one-node.yaml` 合并，可在 loopback 的 15432/19094/19200 验证 PostgreSQL/Kafka/Elasticsearch。应用迁移后通过原生 bootstrap CLI 建立管理员，不需要外部 realm。
 
 ### O04 依赖恢复验收
 
@@ -173,7 +123,7 @@ TUBA_RUNTIME_DB_PASSWORD='REDACTED' \
 
 `scripts/verify_postgres_migrations.ps1 -Container <一次性PG容器名>` 必须显式指定隔离容器，避免误连产品数据库。已在一次性 PostgreSQL 18.6 环境验证迁移首次/重复、双进程并发、checksum drift 失败关闭、失败 DDL 回滚、runtime 角色幂等校准、新表 DML 成功、DDL 及迁移账本访问拒绝。该证据不代表已批准对 248 现存 schema 执行迁移，也不替代生产升级流程；已有库需要先单独核对并建立显式迁移基线。PostgreSQL 14.23 迁移 preflight 仍单独记录于 [实施 TODO](../docs/IMPLEMENTATION-TODO.md)。
 
-Elasticsearch 当前的 canonical template 由 `scripts/generate_es_templates.py` 从事件 Schema 生成，并提交在 `elasticsearch/generated-v1/`。本机 ES 8.19.22 已通过 API 对 24 个模板/映射资产的重复 PUT 与读回核验；本机 Kafka 4.3.1 的 15 个 validation Topic 已创建、核验并清理。另在一次性隔离 Kafka 4.3.1 KRaft broker 上验收了 authorizer、SCRAM、逐服务 ACL、重复 ACL reconcile、无授权写入拒绝及重启后 default-deny；临时资源已清理，未接触 248。新增 `tuba-kafka-security-admin` 已在一次性 broker 实际 apply/重复 reconcile 六个 SCRAM 服务身份与 61 个 literal ACL，并完成读回核验。realm PostgreSQL 持久化和完整单节点依赖栈已通过一次性隔离初始化/重复执行验收；Ubuntu 裸机、Windows 专用账号与 248 目标部署仍未验收。Keycloak Compose 的 local-dev 首次导入、H2 卷权限与密码 token 流程已通过独立项目验收。以上剩余项以 [实施 TODO](../docs/IMPLEMENTATION-TODO.md) 的 O02 为准。
+Elasticsearch 当前的 canonical template 由 `scripts/generate_es_templates.py` 从事件 Schema 生成，并提交在 `elasticsearch/generated-v1/`。本机 ES 8.19.22 已通过 API 对 24 个模板/映射资产的重复 PUT 与读回核验；本机 Kafka 4.3.1 的 15 个 validation Topic 已创建、核验并清理。另在一次性隔离 Kafka 4.3.1 KRaft broker 上验收了 authorizer、SCRAM、逐服务 ACL、重复 ACL reconcile、无授权写入拒绝及重启后 default-deny；临时资源已清理，未接触 248。新增 `tuba-kafka-security-admin` 已在一次性 broker 实际 apply/重复 reconcile 六个 SCRAM 服务身份与 61 个 literal ACL，并完成读回核验。完整单节点依赖栈已通过历史隔离初始化/重复执行验收；旧外部身份登录资产已于 2026-10-08 移除。以上剩余项以 [实施 TODO](../docs/IMPLEMENTATION-TODO.md) 的 O02 为准。
 
 ### Elasticsearch 服务账号（O03 进行中）
 
@@ -205,19 +155,4 @@ python3 scripts/manage_elasticsearch_api_keys.py create \
 
 验证 Raw、Quarantine、Standard Indexer 和 Analysis Sink 使用各自 ES key 的纵向链路，可运行 `python scripts/verify_indexer_identities_runtime.py`。该脚本构建四个真实索引服务，创建唯一临时 Compose 项目，在回环端口启动 Kafka 4.3.1 与启用 XPack 的 ES 8.19.22，为五类服务生成短期 namespace key，并向四条输入 Topic 投递合同有效记录；检查各服务写入预期索引、写入后 Kafka offset 提交、analysis-sink key 跨 namespace 写入被拒，最后确认四个进程可优雅停止。正常结束时脚本主动撤销 key 并执行 `compose down --volumes`；端口冲突或验收失败时检查脚本输出中的清理告警。该验收不连接现有 `product` Compose 或 248，也不替代 API 查询验收或目标机安装验收。
 
-验证 API 专用 ES key 与用户鉴权闭环，可运行 `python scripts/verify_api_es_identity.py`。该脚本启用同一隔离 Compose 的 `api-identity` profile，在 PostgreSQL 应用 Goose Up migration、用本地开发 Keycloak realm 签发 OIDC token，并为测试 analyst 建立临时 membership；随后启动真实 API，确认有效用户能查询租户事件、无 membership 用户收到 403，API key 不能读取其他 namespace alias，最后通过中断信号停止 API。测试结束后主动撤销 key 并清理临时 Compose volumes。该验证使用仓库的 local-dev realm，不用于生产身份配置。
-
-验证 normalizer、control-worker、source-adapter 的就绪与优雅停止，可运行 `python scripts/verify_remaining_worker_shutdown.py`。脚本只启动隔离项目中的 Kafka/PostgreSQL，应用 Goose Up migrations，为 source adapter 创建一个空的验证 Topic；确认三个服务各自 `/health/ready` 后发送平台正常中断信号，并检查进程退出码。它会回收临时容器、卷和测试目录，不连接现有 `product` 项目或 248。
-
-Topic 初始化 CLI `tuba-topic-admin` 从 `contracts/events/topics.v1.json` 生成物理 Topic 计划，默认仅预览。当前唯一可应用的 profile 是 `zeek_validation_single_node`：
-
-```bash
-/opt/tuba/current/bin/tuba-topic-admin --namespace zeek_validation_20260927_001
-KAFKA_BROKERS=127.0.0.1:9092 \
-KAFKA_SECURITY_PROTOCOL=plaintext \
-  /opt/tuba/current/bin/tuba-topic-admin --namespace zeek_validation_20260927_001 --apply
-```
-
-`--apply` 创建缺失 Topic，并核验 partition、replica、`min.insync.replicas`、retention 与消息上限；不匹配时失败而不修改现有值。Kafka 的批量建 Topic 请求不是事务，若部分创建失败，修复原因后重跑即可核对并补齐。`tuba-kafka-security-admin --namespace <slug>` 默认只输出服务 principal 与 literal ACL 计划；显式 `--apply` 才按合同更新各服务 SCRAM-SHA-512 凭据并添加/读回核对 ACL。Apply 时管理员连接凭据通过 `KAFKA_SASL_*` 环境变量注入，各服务密码从受保护环境文件读取（`TUBA_INGEST_KAFKA_PASSWORD` 等）；不要把管理员环境导出到服务清单。该命令只添加 ACL，不撤销旧 ACL；source-context Topic 仍由 `tuba-source-topic-admin` 在校验数据库来源登记后单独处理。该命令已在一次性 Kafka 4.3.1 authorizer broker 上完成 apply/重复 reconcile 及 ACL 读回验收。`scripts/verify_kafka_acl_default_deny.sh` 是负向安全验收脚本，不承担身份配置。不要用 24 小时 validation profile 表示生产保留承诺；生产配置仍需 A03 定案。
-
-部署、升级、回滚和集群前置条件见 [`helm/tuba/README.md`](helm/tuba/README.md) 与 [`../docs/DEPLOYMENT.md`](../docs/DEPLOYMENT.md)。
+验证 API 专用 ES key 与系统登录闭环，可运行 `python scripts/verify_api_es_identity.py`：隔离环境中通过 bootstrap CLI 建管理员、通过 API 创建分析师，验证原生登录、成员撤销和 ES namespace 边界，结束撤销 key 并清理该验证项目。

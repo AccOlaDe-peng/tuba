@@ -8,7 +8,7 @@ The chart deploys the configured application workloads, Gateway API routing, ser
 - Gateway API CRDs and Envoy Gateway 1.9.x when `gateway.enabled=true`
 - Prometheus Operator CRDs when ServiceMonitor or PrometheusRule is enabled
 - Secrets Store CSI Driver and Vault provider when `vault.enabled=true`
-- External or managed Kafka 4.3.x, PostgreSQL 18.6, Elasticsearch 8.19.x, and Keycloak 26.7.x
+- External or managed Kafka 4.3.x, PostgreSQL 18.6, Elasticsearch 8.19.x
 
 ## Install
 
@@ -16,7 +16,7 @@ Build and optionally push all locked images first:
 
 ```powershell
 .\scripts\build_images.ps1 -Registry registry.example.com/tuba -Tag 1.0.0 `
-  -OIDCIssuer https://identity.example/realms/tuba -Push
+  -Push
 ```
 
 ```bash

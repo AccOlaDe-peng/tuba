@@ -60,8 +60,6 @@ spec:
         - protocol: TCP
           port: {{ $.Values.networkPolicy.elasticsearchPort }}
         - protocol: TCP
-          port: {{ $.Values.networkPolicy.keycloakPort }}
-        - protocol: TCP
           port: {{ $.Values.networkPolicy.otelPort }}
     {{- end }}
 {{- end }}

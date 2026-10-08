@@ -6,8 +6,85 @@ info:
 servers:
   - url: /api/v1
 security:
-  - oidc: []
+  - systemSession: []
+  - systemBearer: []
 paths:
+  /auth/login:
+    post:
+      operationId: systemLogin
+      summary: Sign in using a native TUBA account
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password]
+              properties:
+                username: {type: string, minLength: 3, maxLength: 64}
+                password: {type: string, maxLength: 256}
+      responses:
+        "200": {description: Authenticated principal; sets an opaque HttpOnly session cookie}
+        "400": {description: Invalid input}
+        "401": {description: Invalid username or password}
+        "403": {description: Origin denied}
+        "429": {description: Login rate limit or account lock; Retry-After is set}
+        "503": {description: Login unavailable}
+  /auth/logout:
+    post:
+      operationId: systemLogout
+      summary: Revoke the current server session and expire its cookie
+      security: []
+      responses:
+        "204": {description: Session revoked or already absent}
+        "403": {description: Origin denied}
+        "503": {description: Logout unavailable}
+  /auth/password:
+    post:
+      operationId: changeSystemPassword
+      summary: Change own password and revoke all sessions
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [current_password, password]
+              properties:
+                current_password: {type: string, maxLength: 256}
+                password: {type: string, minLength: 12, maxLength: 256}
+      responses:
+        "204": {description: Password changed; all sessions revoked; sign in again}
+        "400": {description: Invalid password or request}
+        "401": {description: Session or current password invalid}
+        "403": {description: Origin denied or inactive membership}
+        "503": {description: Password change unavailable}
+  /users:
+    post:
+      operationId: createSystemUser
+      summary: Create a native account and initial membership in the caller's organization
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [username, password, role]
+              properties:
+                username: {type: string, minLength: 3, maxLength: 64, pattern: '^[a-zA-Z0-9_.-]+$'}
+                password: {type: string, minLength: 12, maxLength: 256}
+                role: {type: string, enum: [viewer, analyst, tenant_admin]}
+      responses:
+        "201": {description: Created account; returns subject and username, never credentials}
+        "400": {description: Invalid input}
+        "401": {description: Session invalid}
+        "403": {description: Requires user:manage}
+        "409": {description: Username already exists}
+        "503": {description: Account management unavailable}
   /ingest/events:
     post:
       operationId: ingestRawEvent
@@ -1166,9 +1243,16 @@ components:
       type: http
       scheme: bearer
       bearerFormat: TUBA Collector credential
-    oidc:
-      type: openIdConnect
-      openIdConnectUrl: https://identity.example/realms/tuba/.well-known/openid-configuration
+    systemSession:
+      type: apiKey
+      in: cookie
+      name: tuba_session
+      description: HttpOnly, Secure, SameSite=Strict native system session. Unsafe browser requests require a matching Origin.
+    systemBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: Opaque TUBA session
+      description: Non-browser clients can send the opaque cookie value as a bearer credential. External identity tokens are rejected.
   parameters:
     Cursor:
       name: cursor

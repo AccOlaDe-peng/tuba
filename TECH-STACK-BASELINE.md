@@ -30,14 +30,14 @@
 | Elasticsearch Go 接入 | 现阶段沿用仓库内受限 `net/http` 客户端；封装层维持与 Elasticsearch 8 API 兼容 | 目前仓库只有小型 REST 封装。出现复杂 typed API、重试或 bulk 管理需求时改用官方 `go-elasticsearch/v8` 8.19.7；不同时维护两套 ES 客户端。 |
 | 事务元数据 | PostgreSQL 18.6；Go 驱动 `jackc/pgx/v5` 5.11.0 | 用户档案、租户与成员关系、角色授权、数据源配置、规则发布记录、审计元数据、任务状态与幂等/调度元数据。PostgreSQL 是这些事务数据的权威源；ES 不承担账户与授权关系的权威存储。 |
 | SQL 迁移 | `pressly/goose` 3.28.0，SQL migration only | 所有 schema 变更入库、可审阅、可回滚或前滚；避免依赖 Go 代码 migration。 |
-| 用户登录与身份源 | Keycloak 26.7.4，OIDC Authorization Code + PKCE | TUBA 不保存密码；企业已有 IAM 时通过 OIDC/LDAP 联邦接入。Keycloak 提供认证；TUBA 自己的 PostgreSQL RBAC 负责资源授权。 |
-| Go OIDC 校验 | `coreos/go-oidc/v3` 3.20.0 + `golang.org/x/oauth2` 0.33.0 | 基于 discovery/JWKS 校验 issuer、audience、签名和时效。移除自写 JWT/JWKS 密码学验证。 |
+| 用户登录与身份源 | TUBA 内置账号、PostgreSQL 会话与 RBAC | 247 Keycloak 属于外部 Linux 认证/未来日志来源，不是系统登录依赖；密码只保存带独立随机盐的 PBKDF2-SHA256 摘要。 |
+| Go 系统认证 | Go 1.27 标准库 `crypto/pbkdf2`、`crypto/rand`、`crypto/sha256` | PBKDF2-SHA256 600,000 次；256-bit 不透明会话只存 SHA-256 摘要；OIDC/oauth2/go-jose 登录依赖已移除。 |
 | 可观测性 SDK | OpenTelemetry Go traces/metrics API+SDK 1.46.0；日志继续用 Go `log/slog` | 服务统一 trace、关键业务指标和结构化日志，日志/trace 中不写 token、API key 或原始敏感字段。 |
 | 可观测性采集 | OpenTelemetry Collector Contrib 0.161.0 | 收集 OTLP traces/metrics/logs；导出给 Prometheus、Grafana 和集中日志存储。 |
 | 指标与仪表板 | Prometheus 3.13.3 LTS + Grafana OSS 13.2.1 | Prometheus LTS 管平台与服务指标；Grafana 展示 Kafka lag、丢弃/DLQ、ES bulk/query 延迟、检测新鲜度、租户配额等。Prometheus 不存业务日志。 |
 | 生产编排 | Kubernetes 1.36.4；Helm 4.3.0 | 部署 Go 服务、Python worker、React 静态前端和运维组件，支持滚动发布、探针、资源限额、HPA/PDB。先做可移植 OCI 镜像；工作负载不得假设有本机持久盘。 |
 | 入口与 TLS | Kubernetes Gateway API + Envoy Gateway 1.9.1 | 对外 TLS 终止、路由和基础流量治理；应用 API 仍做认证、授权、租户隔离与审计。 |
-| 密钥 | 生产 Vault 1.21.7；开发用环境变量/未提交的本地 `.env` | 密钥运行时注入，轮换 API key、OIDC client secret 和 Kafka 凭据；禁止在镜像、Git、日志和 Compose 默认值里放真实凭据。 |
+| 密钥 | 生产 Vault 1.21.7；开发用环境变量/未提交的本地 `.env` | 密钥运行时注入，轮换 API key、系统登录凭据 和 Kafka 凭据；禁止在镜像、Git、日志和 Compose 默认值里放真实凭据。 |
 | 镜像与本地开发 | OCI 镜像；Docker Compose V2；Kafka 开发镜像 `apache/kafka:4.3.1` | Compose 用单节点 Kafka 做开发和联调。生产镜像用非 root 用户、只读根文件系统、固定 digest 与 SBOM。Go/Python/前端分别构建、分别发布，分析任务单独扩缩容。 |
 | 静态检查 | `golangci-lint` 2.13.2；`go vet`、`gofmt`、`govulncheck` | CI 固定版本并阻止不合格构建。CI Runner 的基础 Go 镜像锁 `golang:1.27.1`。 |
 
@@ -46,7 +46,7 @@
 1. **Kafka**：认证日志主事件主题、标准事件主题、无效事件/DLQ 主题；预过滤只移除合同明确不需要的数据，丢弃数和原因必须可观测。Kafka 是耐久缓冲和回放边界，不是无差别垃圾桶。
 2. **Elasticsearch**：现有日志检索与分析底座；单独压测摄取、查询与聚合，不能用增加 Kafka 容量掩盖 ES mapping、分片或查询问题。
 3. **PostgreSQL**：多租户产品控制面与事务元数据，包括用户映射、授权、数据源/规则管理、审计与任务状态。
-4. **Keycloak/OIDC**：登录、MFA/身份联邦和令牌签发；如果企业 IAM 已提供 OIDC，则接企业身份源，可不单独运行 Keycloak 实例。
+4. **TUBA 系统登录**：内置账号、服务器会话和 PostgreSQL RBAC，不依赖外部身份服务。
 5. **可观测性**：OpenTelemetry Collector、Prometheus、Grafana；生产不能只靠机器日志排障。
 6. **Kubernetes、Gateway、Vault**：正式生产目标环境。单机试点可暂用 Compose/系统服务，但其部署形态属于试点，不改变产品运行架构。
 
@@ -66,8 +66,8 @@ Kafka topic 命名固定 `tuba.<层>.<领域>.v<合同主版本>`；每个领域
 
 ## 账户、租户与权限边界
 
-- Keycloak 的 realm/group/用户身份可以联邦企业目录；TUBA 在 PostgreSQL 保存 `user_profile`、`tenant`、`tenant_membership`、`role`、`permission` 和资源授权映射。保存外部 `sub`/issuer，不复制密码。
-- Go API 从已验证的 OIDC 主体解析用户身份；角色和租户成员关系以 PostgreSQL 当前授权数据为准，不信任任意客户端传入的组织或 namespace。
+- TUBA 在 PostgreSQL 保存 identities、local_accounts、auth_sessions、organizations、memberships 和 roles；仅保存密码摘要和会话摘要。
+- Go API 从已验证的服务器会话解析用户身份；角色和租户成员关系以 PostgreSQL 当前授权数据为准，不信任任意客户端传入的组织或 namespace。
 - 采用租户级 RBAC + 资源级策略，默认拒绝；敏感操作单独授权。索引服务使用有限权限身份；用户不能直接获得共享 Elasticsearch 凭据。
 - 管理员、登录、授权拒绝、导出、规则发布、案件更新和数据源密钥轮换写入追加式审计记录，并关联 request/trace ID。
 
@@ -77,15 +77,17 @@ Kafka topic 命名固定 `tuba.<层>.<领域>.v<合同主版本>`；每个领域
 - Python 分析 worker 消费 normalized topic，支持 consumer group、offset/checkpoint、事件时间水位、迟到数据回补和有界批量；结果通过结果 topic 或 Go 控制的受限写入接口返回。第一期建议结果写入 topic，由 Go sink 统一写 Elasticsearch，避免 Python 与 Go 两套 ES 写入规范。
 - 分析结果必须带 `event/window/model/rule version`、租户、稳定结果 ID、证据引用和运行 ID，按幂等键重复执行不产生重复异常。
 - Python worker 独立镜像、依赖锁、资源配额和扩缩容策略；模型训练/实验环境与线上分析 worker 隔离，禁止 notebook 作为生产任务调度器。
-- 浏览器对 Go API 使用 OIDC 登录；React 前端不直连 Elasticsearch、Kafka 或 PostgreSQL。复杂图表、时间线/关系图优先在前端交互渲染，查询仍由 Go 授权和编译。
+- 浏览器对 Go API 使用 系统账号登录；React 前端不直连 Elasticsearch、Kafka 或 PostgreSQL。复杂图表、时间线/关系图优先在前端交互渲染，查询仍由 Go 授权和编译。
 
 ## 与当前代码的衔接
 
 - `product/go.mod` 锁 Go 1.27.1 工具链及当前 Kafka Go 客户端；Python 3.14.7、uv、Node 24 和前端 lockfile 已接入。
-- Go API 使用标准 OIDC 库验证 token，租户成员与资源权限以 PostgreSQL membership/RBAC 为权威。
+- Go API 校验数据库中当前有效的不透明会话，租户成员与资源权限以 PostgreSQL membership/RBAC 为权威。
 - Compose 用于本地开发；完整 Helm chart、Gateway、Vault、NetworkPolicy、HPA/PDB、监控告警和备份制品已交付。目标生产集群仍需完成 HA 中间件部署、容量、故障切换和 RPO/RTO 签字。
 - Elasticsearch 版本选择与现有 8.x 资产保持兼容，先核对当前服务器具体 patch，再按 Elastic 8.19 升级路径维护；官方 Elasticsearch 8 Go 客户端在实际切换时锁到同一 `8.19.x` 最新补丁。
 
 ## 版本更新规则
 
-每季度检查 Go/Go module、中间件的安全公告与受支持分支；高危安全修复可提前更新。Go 和 module 更新需通过单元、集成、Golden Scenario、租户越权、故障恢复及代表性吞吐回归。Kafka、PostgreSQL、Elasticsearch、Keycloak 的大版本升级必须做数据备份恢复演练和可回滚升级验证。任何 patch 更新都同步修改 `go.mod`、Compose/部署 values 和本表，确保文档与可执行配置一致。
+每季度检查 Go/Go module、中间件的安全公告与受支持分支；高危安全修复可提前更新。Go 和 module 更新需通过单元、集成、Golden Scenario、租户越权、故障恢复及代表性吞吐回归。Kafka、PostgreSQL、Elasticsearch的大版本升级必须做数据备份恢复演练和可回滚升级验证。任何 patch 更新都同步修改 `go.mod`、Compose/部署 values 和本表，确保文档与可执行配置一致。
+
+2026-10-08 系统登录修正：移除 coreos/go-oidc、oauth2、go-jose；密码摘要使用 Go 标准库，无新增第三方认证依赖。go mod tidy 仅补齐校验和并将既有 uuid 1.6.0、x/sys 0.47.0、sqlite 1.59.0 归入直接依赖，未升级版本。

@@ -156,15 +156,13 @@ try {
     $webPort = Get-FreeLoopbackPort
     $apiPort = Get-FreeLoopbackPort
     $ingestPort = Get-FreeLoopbackPort
-    $webEnvironmentNames = @('WEB_LISTEN', 'WEB_ROOT', 'OIDC_ISSUER', 'OIDC_CLIENT_ID', 'API_UPSTREAM', 'INGEST_UPSTREAM')
+    $webEnvironmentNames = @('WEB_LISTEN', 'WEB_ROOT', 'API_UPSTREAM', 'INGEST_UPSTREAM')
     $oldWebEnvironment = @{}
     foreach ($name in $webEnvironmentNames) { $oldWebEnvironment[$name] = [Environment]::GetEnvironmentVariable($name, 'Process') }
     $webProcess = $null
     try {
         $env:WEB_LISTEN = "127.0.0.1:$webPort"
         $env:WEB_ROOT = Join-Path $packageRoot 'web'
-        $env:OIDC_ISSUER = 'http://127.0.0.1:8180/realms/tuba'
-        $env:OIDC_CLIENT_ID = 'tuba-package-smoke'
         $env:API_UPSTREAM = "http://127.0.0.1:$apiPort"
         $env:INGEST_UPSTREAM = "http://127.0.0.1:$ingestPort"
         $webProcess = Start-Process -FilePath (Join-Path $packageRoot 'bin\tuba-web.exe') -WorkingDirectory $packageRoot -PassThru -WindowStyle Hidden
@@ -181,8 +179,8 @@ try {
         if ($spa.StatusCode -ne 200 -or $spa.Body -notmatch 'id="root"') { throw 'Packaged tuba-web SPA fallback failed.' }
         $runtime = Invoke-LocalWebRequest "$baseUrl/config.js"
         if ($runtime.StatusCode -ne 200 -or $runtime.CacheControl -ne 'no-store' -or
-            $runtime.Body -notmatch 'http://127\.0\.0\.1:8180/realms/tuba' -or $runtime.Body -notmatch 'tuba-package-smoke') {
-            throw 'Packaged tuba-web runtime OIDC configuration was not served as expected.'
+            $runtime.Body -notmatch '"basePath":"/"' -or $runtime.Body -match 'oidc' ) {
+            throw 'Packaged tuba-web runtime configuration was not served as expected.'
         }
         $internal = Invoke-LocalWebRequest "$baseUrl/api/v1/internal/ingest/beat-events" 'POST'
         if ($internal.StatusCode -ne 404) { throw "Packaged tuba-web exposed internal ingest route (status=$($internal.StatusCode))." }

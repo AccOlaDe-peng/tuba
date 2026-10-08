@@ -2,7 +2,7 @@
 # Preflight for existing, externally-installed dependencies.
 #
 # TUBA installs exactly one thing: its own versioned product tree. PostgreSQL,
-# Kafka, Elasticsearch and Keycloak are *adopted* — they already exist, they are
+# Kafka, Elasticsearch are *adopted* — they already exist, they are
 # larger than TUBA (248's PostgreSQL is shared with another product), and the
 # platform is a guest on them. So this script never installs, upgrades or
 # reconfigures any of them. It answers one question per dependency: does what is
@@ -37,7 +37,7 @@ usage() {
 Usage: check_tuba_prerequisites.sh [--json]
 
 Adopts, does not install. Verifies the pre-existing PostgreSQL, Kafka,
-Elasticsearch and Keycloak instances against what TUBA requires, and refuses the
+Elasticsearch instances against what TUBA requires, and refuses the
 combinations that are unsafe to initialize against. Read-only: it never creates
 a topic, applies a migration or changes a cluster setting.
 
@@ -45,7 +45,6 @@ Required environment (the same variables the initializer consumes):
   DATABASE_MIGRATION_URL   DDL identity
   KAFKA_BROKERS            broker list, for example 10.6.68.248:29292
   ES_URL                   Elasticsearch base URL
-  KEYCLOAK_URL             Keycloak base URL
 Optional:
   ES_API_KEY                 used only for the health/watermark queries
   KEYCLOAK_REALM             realm to verify discovery for (default: tuba)
@@ -228,7 +227,7 @@ check_elasticsearch() {
   local auth=()
   [[ -n ${ES_API_KEY:-} ]] && auth=(-H "Authorization: ApiKey ${ES_API_KEY}")
   local health
-  if ! health=$(curl --fail --silent --show-error --max-time 10 "${auth[@]}" "${url%/}/_cluster/health"); then
+  if ! health=$(curl --fail --silent --show-error --max-time 10 ${auth[@]+"${auth[@]}"} "${url%/}/_cluster/health"); then
     record FAIL elasticsearch "cluster health is not reachable"
     return
   fi
@@ -246,7 +245,7 @@ check_elasticsearch() {
   # to allocate rather than as a disk problem.
   if [[ ${data_nodes:-0} == 1 ]]; then
     local settings low high
-    settings=$(curl --fail --silent --show-error --max-time 10 "${auth[@]}" "${url%/}/_cluster/settings?include_defaults=true" 2>/dev/null || true)
+    settings=$(curl --fail --silent --show-error --max-time 10 ${auth[@]+"${auth[@]}"} "${url%/}/_cluster/settings?include_defaults=true" 2>/dev/null || true)
     if [[ -z $settings ]]; then
       record WARN elasticsearch "could not read cluster settings to check the disk watermarks"
       return
@@ -261,28 +260,6 @@ check_elasticsearch() {
   fi
 }
 
-check_keycloak() {
-  local url=${KEYCLOAK_URL:-}
-  if [[ -z $url ]]; then
-    record FAIL keycloak "KEYCLOAK_URL is not set"
-    return
-  fi
-  local realm=${KEYCLOAK_REALM:-tuba}
-  local issuer=${url%/}/realms/${realm}
-  local discovery
-  if ! discovery=$(curl --fail --silent --show-error --max-time 10 "${issuer}/.well-known/openid-configuration"); then
-    record FAIL keycloak "realm ${realm} discovery is not reachable at ${issuer}"
-    return
-  fi
-  if printf '%s' "$discovery" | python3 -c 'import json,sys; raise SystemExit(0 if json.load(sys.stdin).get("issuer") == sys.argv[1] else 1)' "$issuer"; then
-    record PASS keycloak "realm ${realm} discovery matches the issuer"
-  else
-    record FAIL keycloak "realm ${realm} discovery issuer does not match ${issuer}"
-  fi
-  # Identity is adopted, not installed: TUBA never provisions users here, so a
-  # realm with no members is a legitimate state, not a failure.
-  record PASS keycloak "identity is adopted; TUBA does not manage users in this realm"
-}
 
 check_host() {
   local min_free=${TUBA_PREREQ_MIN_FREE_PCT:-30}
@@ -310,7 +287,6 @@ check_host() {
 check_postgres
 check_kafka
 check_elasticsearch
-check_keycloak
 check_host
 
 if [[ $json -eq 1 ]]; then

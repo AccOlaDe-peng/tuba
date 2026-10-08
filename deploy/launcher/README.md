@@ -1,6 +1,6 @@
 # TUBA Launcher 单节点安装
 
-本目录提供跨 Windows/Linux 的同一 JSON 服务清单和 `tuba-launcher` CLI。Launcher 负责启动、停止、重启、状态、日志尾读和进程退出后的指数退避重启；它不注册 systemd 或 Windows Service。Linux 向子进程组发送 SIGTERM；Windows 子进程运行在隐藏的独立控制台进程组，Launcher 通过 Ctrl-Break 通知 Go 服务优雅退出，10 秒仍未退出时才强制终止。Kafka、PostgreSQL、Elasticsearch 和 Keycloak 的安装/初始化属于 O02。
+本目录提供跨 Windows/Linux 的同一 JSON 服务清单和 `tuba-launcher` CLI。Launcher 负责启动、停止、重启、状态、日志尾读和进程退出后的指数退避重启；它不注册 systemd 或 Windows Service。Linux 向子进程组发送 SIGTERM；Windows 子进程运行在隐藏的独立控制台进程组，Launcher 通过 Ctrl-Break 通知 Go 服务优雅退出，10 秒仍未退出时才强制终止。Kafka、PostgreSQL、Elasticsearch  的安装/初始化属于 O02。
 
 ## 构建发布包
 

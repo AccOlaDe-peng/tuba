@@ -26,13 +26,8 @@ func main() {
 	if err := config.ValidateListenerAddress("WEB_LISTEN", listen, os.Getenv("TUBA_ALLOW_NON_LOOPBACK_LISTEN")); err != nil {
 		log.Fatalf("WEB_LISTEN: %v", err)
 	}
-	issuer := os.Getenv("OIDC_ISSUER")
-	if issuer == "" {
-		log.Fatal("OIDC_ISSUER is required")
-	}
 	app, err := webserver.New(webserver.Config{
-		Root: envOr("WEB_ROOT", webserver.DefaultRoot()), Issuer: issuer,
-		ClientID:  envOr("OIDC_CLIENT_ID", "tuba-web"),
+		Root:      envOr("WEB_ROOT", webserver.DefaultRoot()),
 		APIURL:    envOr("API_UPSTREAM", "http://127.0.0.1:8788"),
 		IngestURL: envOr("INGEST_UPSTREAM", "http://127.0.0.1:8080"),
 	})

@@ -1,6 +1,8 @@
 # 前端工作台 v2 实施记录
 
-2026-10-03：依据 `prototype-v2/` 实现 React 工作台，使用现有 API、OIDC 和服务端权限。原型演示数据未进入生产页面。
+> 2026-10-08 身份边界修正：TUBA 使用内置系统账号与服务器会话；247 Keycloak 仅属于外部 Linux 认证/未来日志来源。历史 OIDC 登录记录已被 [系统登录](SYSTEM-LOGIN.md) 替代。
+
+历史记录（其中 OIDC 已于 2026-10-08 移除）：2026-10-03 依据 `prototype-v2/` 实现 React 工作台，使用现有 API、OIDC 和服务端权限。原型演示数据未进入生产页面。
 
 ## 页面和交互
 
@@ -29,27 +31,10 @@
 - `vite build --base=/tuba/` 通过；运行时配置路径随部署前缀解析。构建仍提示部分依赖块超过 500 kB。
 - 248 线上登录页浏览器冒烟通过，无脚本异常；深层路由、运行时配置和 HTML 引用的资源均为 HTTP 200，API readiness 为 ready。线上业务写操作未用真实租户执行；上述交互验证使用隔离夹具。
 
-## 开发入口与回退
+## 当前开发与部署入口（2026-10-08）
 
-本地前端需要连接共享开发环境时，在 PowerShell 执行（不用读取或修改 `.env`）：
+本机使用 Vite 的 `/api` 代理连接本地 Go API，配置 API 的 public_origin 为 Vite 的精确来源，并仅在本机 HTTP 开发设置 cookie_secure=false。`TUBA_DEV_GATEWAY` 仍可覆盖 API 代理目标，但不会生成身份配置或代理 `/tuba-auth`；248 的生产 Origin 校验不能直接用于不同来源的 Vite 登录。配置见 [系统登录](SYSTEM-LOGIN.md)。
 
-```powershell
-$env:TUBA_DEV_GATEWAY='http://10.6.68.248:8088'
-Set-Location C:\code\tuba\web
-node node_modules/vite/bin/vite.js --host 127.0.0.1 --port 5175 --strictPort
-```
+当前线上入口：[248 工作台](https://10.6.68.248:8443/tuba/)。8088 跳转 HTTPS。旧标签页使用 Ctrl+F5 刷新。
 
-此模式的 `/config.js` 指定同源登录入口，`/api` 和 `/tuba-auth` 代理到共享网关，业务操作会作用于真实 248 环境。未设置 `TUBA_DEV_GATEWAY` 时维持原本本地后端代理。已启动进程若改变该变量，需要重启 Vite。
-
-入口：http://10.6.68.248:8088/tuba/ 。已有标签页可使用 Ctrl+F5 刷新。
-
-当前 `/opt/tuba/web/dist` 指向 `/opt/tuba/web/dist-workbench-20261003-v2`，旧版 `/opt/tuba/web/dist-w03-20261003` 保留。新目录也保留旧哈希资源，供已有标签页加载。仅更新静态前端，无后端重启。
-
-回退时在 248 执行：
-
-```sh
-ln -s /opt/tuba/web/dist-w03-20261003 /opt/tuba/web/.dist-workbench-rollback
-mv -Tf /opt/tuba/web/.dist-workbench-rollback /opt/tuba/web/dist
-```
-
-部署前指向记录位于 `/opt/tuba/backups/frontend-workbench-20261003-v2/previous-dist.txt`。
+`/opt/tuba/web/dist` 已切换到 `/opt/tuba/web/dist-native-login-20261008`，本次同时更新并重启 API。旧前端与 API、配置和数据库备份保存在 `/opt/tuba/native-login-20261008/backup/`。登录协议已变更，回退不能只切换静态前端；迁移和回退边界以 [系统登录部署记录](SYSTEM-LOGIN.md#248-部署记录2026-10-08) 为准。

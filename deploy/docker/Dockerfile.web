@@ -1,8 +1,4 @@
 FROM public.ecr.aws/docker/library/node:24.14.1-alpine3.22 AS build
-ARG VITE_OIDC_ISSUER
-ARG VITE_OIDC_CLIENT_ID=tuba-web
-ENV VITE_OIDC_ISSUER=${VITE_OIDC_ISSUER} \
-    VITE_OIDC_CLIENT_ID=${VITE_OIDC_CLIENT_ID}
 WORKDIR /src
 RUN corepack enable
 COPY web/package.json web/pnpm-lock.yaml ./

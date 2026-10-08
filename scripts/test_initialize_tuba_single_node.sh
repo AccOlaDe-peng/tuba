@@ -32,15 +32,6 @@ printf '%s\n' dependency-check >>"$TUBA_INIT_TEST_LOG"
 exit 0
 EOF
 chmod 0755 "$test_root/scripts/check_tuba_prerequisites.sh"
-cat >"$test_root/bin/curl" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-cat <<JSON
-{"issuer":"http://keycloak.test/realms/tuba","authorization_endpoint":"http://keycloak.test/realms/tuba/protocol/openid-connect/auth","token_endpoint":"http://keycloak.test/realms/tuba/protocol/openid-connect/token","jwks_uri":"http://keycloak.test/realms/tuba/protocol/openid-connect/certs"}
-JSON
-EOF
-chmod 0755 "$test_root/bin/curl"
-
 export PATH="$test_root/bin:$PATH"
 export TUBA_INIT_TEST_LOG="$test_root/order.log"
 export DATABASE_MIGRATION_URL=postgres://migration.invalid/tuba
@@ -48,7 +39,6 @@ export TUBA_RUNTIME_DB_PASSWORD=not-logged
 export KAFKA_BROKERS=kafka.invalid:9092
 export ES_URL=http://elasticsearch.invalid:9200
 export ES_API_KEY=not-logged
-export KEYCLOAK_URL=http://keycloak.test
 export TUBA_TOPIC_NAMESPACE=single_node_validation
 export TUBA_TOPIC_ADMIN="$test_root/bin/tuba-topic-admin"
 
@@ -89,4 +79,4 @@ if TUBA_TOPIC_NAMESPACE='Invalid Namespace' bash "$test_root/scripts/initialize_
   exit 1
 fi
 
-echo "Single-node initializer orchestration test passed: fixed order, discovery validation, and A03 profile gate."
+echo "Single-node initializer orchestration test passed: fixed order, native-login independence, and A03 profile gate."

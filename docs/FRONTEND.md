@@ -12,12 +12,12 @@
 | `/operations` | 系统运行、分析 run 和 checkpoint | `operations:read` |
 | `/access` | 用户与权限 | `user:manage` |
 
-前端路由守卫只用于改善交互。Go API 每次请求仍执行 OIDC 验证、数据库 membership 复核和权限检查。
+前端路由守卫只用于改善交互。Go API 每次请求仍执行 系统会话验证、数据库 membership 复核和权限检查。
 
 ## 身份会话
 
-- 使用 OIDC Authorization Code + PKCE，state 和 code verifier 保存在 `sessionStorage`，回调完成后立即删除事务数据。
-- access token 只保存在 `sessionStorage`，不写入 URL、localStorage、日志或应用状态持久化文件。
+- 通过同源 `/api/v1/auth/login` 使用系统账号登录；不连接外部身份服务。
+- 会话由 HttpOnly、Secure、SameSite=Strict Cookie 承载，浏览器不保存 access token。退出与改密在服务器撤销会话。
 - `401` 会触发全局会话清理；`403` 保留会话但阻止页面或动作。
 - 用户组织、namespace、角色和权限以 `/api/v1/me` 的响应为准。
 

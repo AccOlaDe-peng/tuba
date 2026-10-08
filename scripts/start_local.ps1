@@ -40,7 +40,7 @@ $processes = @(
     @{name = "analysis-sink"; file = "go"; args = @("run", "./cmd/tuba-analysis-sink"); env = @{ANALYSIS_SINK_METRICS_LISTEN = "127.0.0.1:19094"}; probePort = 19094},
     @{name = "api"; file = "go"; args = @("run", "./cmd/tuba-api"); env = @{API_LISTEN = "127.0.0.1:8788"}; probePort = 8788},
     @{name = "analysis-worker"; file = "uv"; args = @("run", "--project", "python", "tuba-analysis-worker"); env = @{METRICS_LISTEN = "127.0.0.1:9093"}; probePort = 9093},
-    @{name = "web"; file = "corepack"; args = @("pnpm@12.6.0", "--dir", "web", "dev", "--host", "127.0.0.1"); env = @{VITE_OIDC_ISSUER = $env:OIDC_ISSUER; VITE_OIDC_CLIENT_ID = "tuba-web"}; probePort = 5173}
+    @{name = "web"; file = "corepack"; args = @("pnpm@12.6.0", "--dir", "web", "dev", "--host", "127.0.0.1"); env = @{}; probePort = 5173}
 )
 
 $started = @()

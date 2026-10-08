@@ -90,14 +90,11 @@ def main() -> None:
     ingest_thread.start()
 
     port = free_port()
-    issuer = "http://127.0.0.1:8180/realms/tuba"
     environment = os.environ.copy()
     environment.update(
         {
             "WEB_LISTEN": f"127.0.0.1:{port}",
             "WEB_ROOT": str(web_root),
-            "OIDC_ISSUER": issuer,
-            "OIDC_CLIENT_ID": "tuba-package-proxy-smoke",
             "API_UPSTREAM": f"http://127.0.0.1:{api_server.server_port}",
             "INGEST_UPSTREAM": f"http://127.0.0.1:{ingest_server.server_port}",
         }
@@ -128,9 +125,9 @@ def main() -> None:
         require(
             runtime[0] == 200
             and runtime[1].get("Cache-Control") == "no-store"
-            and issuer.encode() in runtime[2]
-            and b"tuba-package-proxy-smoke" in runtime[2],
-            "packaged runtime OIDC configuration failed",
+            and b'"basePath":"/"' in runtime[2]
+            and b"oidc" not in runtime[2],
+            "packaged runtime configuration failed",
         )
 
         api = request(

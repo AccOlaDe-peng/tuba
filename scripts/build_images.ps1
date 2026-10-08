@@ -1,7 +1,6 @@
 param(
     [string]$Registry = "registry.example.com/tuba",
     [string]$Tag = "1.0.0",
-    [string]$OIDCIssuer = "https://identity.example/realms/tuba",
     [switch]$Push
 )
 
@@ -40,8 +39,6 @@ if ($LASTEXITCODE -ne 0) {
 $webImage = "$Registry/tuba-web:${Tag}"
 docker build `
     -f deploy/docker/Dockerfile.web `
-    --build-arg "VITE_OIDC_ISSUER=$OIDCIssuer" `
-    --build-arg "VITE_OIDC_CLIENT_ID=tuba-web" `
     -t $webImage .
 if ($LASTEXITCODE -ne 0) {
     throw "failed to build $webImage"

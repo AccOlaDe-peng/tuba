@@ -14,12 +14,12 @@ Collector 远程注册、心跳、配置版本、升级目标与当前实现边�
 
 交付一套可在单机运行的 TUBA：采集 Windows Security、Zeek 等来源，完成可信接入、DIP 解析、UIM 标准化、证据保存、事件检索、账号/设备实体解析、窗口特征、基线、检测、异常、风险、案件、反馈与运营管理。每项功能一个运行实例；同一实例可以处理多个租户和多个 Kafka 分区。
 
-单节点表示部署数量，不限制模块边界。首期允许全部组件部署于 248；采集组件运行于来源或汇聚主机。若沿用 247 的身份服务，通过配置连接，不依赖该主机才能完成标准安装。单机停机会整体中断服务，故障通过持久状态、缓冲及备份恢复，不承诺 HA。
+单节点表示部署数量，不限制模块边界。首期允许全部组件部署于 248；采集组件运行于来源或汇聚主机。系统登录由 TUBA 内置账号与 PostgreSQL 会话完成；247 的 Linux 认证独立运行，相关日志接入暂不实施。单机停机会整体中断服务，故障通过持久状态、缓冲及备份恢复，不承诺 HA。
 
 | 决策 | 定版约定 |
 | --- | --- |
 | 技术分工 | Go：接入、标准化、实体解析、索引、API、任务控制；Python：特征、基线、检测及风险计算；React/TypeScript：控制台 |
-| 基础设施 | 首期单 KRaft broker（RF=1）、单 PostgreSQL、单 Elasticsearch、单 OIDC 身份服务；反向代理统一入口。Kafka 集群只在可用性/容量目标要求时升级 |
+| 基础设施 | 首期单 KRaft broker（RF=1）、单 PostgreSQL、单 Elasticsearch；系统身份与会话存 PostgreSQL；反向代理统一入口。Kafka 集群只在可用性/容量目标要求时升级 |
 | 执行方式 | TUBA 平台服务与来源主机 Management Agent 由统一 Launcher/CLI 管理；目录包包含锁定版本的 Filebeat/Winlogbeat，Linux/Windows 不注册 systemd/Windows Service |
 | DIP/UIM | 逻辑独立、首期同一个 normalizer 进程；标准化在 Kafka 标准事件发布之前完成 |
 | 消息语义 | 系统整体至少一次；目标上 Kafka 内部转换使用事务（当前单节点 profile 尚未交付，见 6.2）；跨 PostgreSQL/Kafka 使用 inbox/outbox；跨 ES 使用稳定键与版本约束 |
@@ -60,7 +60,7 @@ flowchart TB
   Web[React Web] --> API[tuba-api：权限 / SPL 子集 / 案件 / 控制面]
   API --> ES
   API --> PG[(PostgreSQL)]
-  API --> OIDC[OIDC / Keycloak]
+  API --> LOGIN[内置账号与服务器会话 / PostgreSQL]
   Control[tuba-control-worker：任务 / 发布 / outbox] --> PG
   Entity --> PG
   Analysis --> PG
@@ -81,9 +81,9 @@ flowchart TB
 | tuba-entity-worker（新增） | 1 | 标准事件→Account/Device、归因、关系、分析输入；持久化 inbox、状态及 outbox |
 | tuba-analysis-worker | 1 | 归因事件与任务→特征、基线、检测、异常、风险；内部模块分离，在线与批量队列隔离 |
 | tuba-analysis-sink | 1 | 派生结果合同验证→ES 结果/投影；处理 revision 顺序和删除/撤回事件 |
-| tuba-api | 1 | OIDC/RBAC、受控查询、实体/异常/风险/案件、来源及发布管理、任务创建、审计 |
+| tuba-api | 1 | 系统会话/RBAC、受控查询、实体/异常/风险/案件、来源及发布管理、任务创建、审计 |
 | tuba-control-worker（新增） | 1 | 任务领取、租约、重试、取消、发布状态、outbox 投递、到期清理和巡检 |
-| Kafka / PostgreSQL / Elasticsearch / Keycloak | 各 1 | 分别保存消息、事务与状态、检索对象、身份；独立数据目录和服务账号 |
+| Kafka / PostgreSQL / Elasticsearch | 各 1 | 分别保存消息、事务与状态、检索对象；账号与会话归 PostgreSQL；独立数据目录和服务账号 |
 | Prometheus / Grafana | 各 1 | 本地指标与告警；首期告警渠道通过运维配置，非业务发送接口 |
 
 control-worker 可执行各模块 outbox 的通用发布器，但 payload 及业务状态由所属模块生成。发布器只能更改投递状态。Go 认证检测 CLI 保留为诊断工具，正式调度统一走 analysis-worker，禁止两个实现同时生产同一规则结果。
@@ -249,7 +249,7 @@ M2 的实体主键由 tenant＋entity_type＋authority＋canonical_key 确定，
 
 | 表组 | 约束与用途 |
 | --- | --- |
-| organizations / identities / memberships / roles / permissions | 当前授权权威；tenant 外键与组合唯一约束 |
+| organizations / identities / local_accounts / auth_sessions / memberships / roles / permissions | 当前授权权威；tenant 外键与组合唯一约束 |
 | sources / credential_metadata / namespace_bindings | 来源凭证、来源实例、DIP/身份空间/配额绑定 |
 | assets / asset_versions / release_bundles / release_bindings | 不可变资产、依赖、哈希、灰度与激活指针 |
 | entity_registry / identity_bindings / attributions / relations | 身份与时态解析权威；强标识租户内作用域唯一 |
@@ -269,7 +269,7 @@ M2 的实体主键由 tenant＋entity_type＋authority＋canonical_key 确定，
 
 ### 9.3 SPL 与数据模型
 
-查询链：用户请求→OIDC/RBAC→Data Model/Dataset 绑定→服务端注入 tenant、namespace、generation、质量条件→逻辑计划→ES 适配器→结果脱敏与审计。
+查询链：用户请求→系统会话/RBAC→Data Model/Dataset 绑定→服务端注入 tenant、namespace、generation、质量条件→逻辑计划→ES 适配器→结果脱敏与审计。
 
 首期 SPL 子集限定字段筛选、布尔条件、时间范围、排序、分页、计数/分组聚合；必须列出支持语法和错误，不承诺完整兼容。禁止透传任意 DSL、脚本或物理索引。普通查询有时间/行数/桶数/超时限制；导出为异步任务，下载重新授权并设置有效期。
 
@@ -296,7 +296,7 @@ M2 的实体主键由 tenant＋entity_type＋authority＋canonical_key 确定，
 
 公网/用户侧仅开放反向代理 HTTPS；ingest 可同域独立路径或专用内网入口。Kafka、PG、ES、指标端口只绑定 loopback 或受控内网，不直接面向用户。来源跨主机与身份回调使用 TLS；单机 loopback 可在隔离配置中使用本地连接。各服务单独账号、Kafka ACL、ES API key、PG 最小角色。
 
-密钥首期由受限权限的配置/环境注入，平台服务以专用非 root 账号运行；Management Agent 凭据和各来源 Beat 写入凭据分离并分别保护。Launcher 负责将配置传给受管进程，禁止凭据进入命令行参数、一般日志和通用组件包。后续可接 Vault。Keycloak 使用独立数据库/角色。备份包含凭据恢复流程，但禁止明文密钥进入一般日志和制品。
+密钥首期由受限权限的配置/环境注入，平台服务以专用非 root 账号运行；Management Agent 凭据和各来源 Beat 写入凭据分离并分别保护。Launcher 负责将配置传给受管进程，禁止凭据进入命令行参数、一般日志和通用组件包。后续可接 Vault。247 Keycloak 为独立的外部 Linux 认证/未来日志来源；不属于 TUBA 系统登录。备份包含凭据恢复流程，但禁止明文密钥进入一般日志和制品。
 
 ### 11.2 启动、探针和背压
 
@@ -333,7 +333,7 @@ Kafka 首期单机单 broker、关键 Topic 单副本（RF=1），用于开发�
 | 身份服务不可用 | 不能新登录；已有 token 仅在本地有效签名缓存及 PG 授权正常时按过期策略使用 |
 | 主机宕机/磁盘损坏 | 进程恢复或从异机备份恢复；本机副本无法提供保护 |
 
-PG 定期基础备份＋WAL 归档，ES 使用 snapshot，Keycloak 数据/配置与发布包同样备份到异机或独立备份介质。本地另一个目录不算灾备。恢复顺序为配置/身份→PG→ES→Kafka/Topic/ACL→来源映射→消费者→接入；根据 PG checkpoint、Kafka 最早 offset 和 ES snapshot 建立差异区间，缺失事件从可信 Raw 或来源受控补采。
+PG 定期基础备份＋WAL 归档，ES 使用 snapshot，系统账号摘要、会话与发布包同样备份到异机或独立备份介质。本地另一个目录不算灾备。恢复顺序为配置/身份→PG→ES→Kafka/Topic/ACL→来源映射→消费者→接入；根据 PG checkpoint、Kafka 最早 offset 和 ES snapshot 建立差异区间，缺失事件从可信 Raw 或来源受控补采。
 
 checkpoint 超出 Kafka 保留范围时必须暂停并生成缺口任务，禁止自动跳到 latest。跨库备份不是原子快照，恢复清单记录每个系统的时间点及水位。目标 RPO/RTO 由实际备份频率和演练确认；无异机备份时明确只能承诺进程重启恢复。
 
@@ -362,7 +362,7 @@ TUBA Management Agent 运行于来源或汇聚主机，统一 CLI 监督 Beat/�
 | Kafka | endpoint 配置化、复制参数独立 | 多 broker/控制器、ISR 策略、机架/故障域 |
 | ES | 模板、alias、代次与查询目录 | 副本、节点角色、分片预算和冷热资源 |
 | PG | 事务、唯一键、outbox 可恢复 | 主备、连接入口、故障切换及备份演练 |
-| 身份/Web | 标准 OIDC、静态资源 | 身份服务 HA、反向代理冗余 |
+| 身份/Web | 内置账号、服务器会话、静态资源 | 账号与会话随 PG HA、反向代理冗余 |
 
 首期不为可能的扩容拆出大量微服务；扩容不能改变事件、实体、结果的业务 ID 规则。
 
@@ -374,7 +374,7 @@ TUBA Management Agent 运行于来源或汇聚主机，统一 CLI 监督 Beat/�
 | cmd/tuba-*-indexer、internal/sink | raw、标准、隔离索引由独立消费者负责；需多对象路由、确定性时间索引、冲突处理 |
 | python/tuba_analysis | 已有认证规则、水位、checkpoint 基础；需事务状态/outbox、实体归因、特征/基线/风险模块 |
 | cmd/tuba-analysis-sink | 已有异常结果基础；需多对象、revision、撤回及代次支持 |
-| internal/control、internal/api、web | 已有 OIDC、RBAC、案件、调查基础；需来源、资产、实体、质量、查询和运营管理 |
+| internal/control、internal/api、web | 已有系统会话、RBAC、案件、调查基础；需来源、资产、实体、质量、查询和运营管理 |
 | 根目录及 implementation 设计 | 可复用术语、Windows/Zeek 规则和实体定义；迁移到 product 合同后才成为生产能力 |
 | deploy/Helm 与历史 M0–M5 记录 | 保留为原认证纵切证据；不能作为本目标已完成的证明 |
 

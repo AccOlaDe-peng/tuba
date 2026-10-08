@@ -95,36 +95,8 @@ services:
     volumes:
       - elasticsearch-backups:/backups
 
-  keycloak-data-init:
-    image: busybox:1.37.0
-    command: ["/bin/sh", "-ec", "mkdir -p /data && chown -R 1000:0 /data"]
-    volumes:
-      - keycloak-data:/data
-    restart: "no"
-
-  keycloak:
-    image: quay.io/keycloak/keycloak:26.7.4
-    profiles: ["identity"]
-    depends_on:
-      keycloak-data-init:
-        condition: service_completed_successfully
-    command: ["start-dev", "--http-port=8080", "--import-realm"]
-    environment:
-      KC_BOOTSTRAP_ADMIN_USERNAME: ${KEYCLOAK_ADMIN:-admin}
-      KC_BOOTSTRAP_ADMIN_PASSWORD: ${KEYCLOAK_ADMIN_PASSWORD:-admin-local-only}
-    ports:
-      - "127.0.0.1:8180:8080"
-    volumes:
-      - ./deploy/keycloak/local-dev:/opt/keycloak/data/import:ro
-      - keycloak-data:/opt/keycloak/data/h2
-    healthcheck:
-      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/8080"]
-      interval: 15s
-      timeout: 5s
-      retries: 20
 volumes:
   kafka-data:
   postgres-data:
   elasticsearch-data:
   elasticsearch-backups:
-  keycloak-data:

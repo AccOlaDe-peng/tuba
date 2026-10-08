@@ -46,7 +46,7 @@ build:
 	corepack pnpm@12.6.0 --dir web build
 
 dev-up:
-	docker compose --profile identity up -d
+	docker compose up -d
 
 dev-down:
 	docker compose down

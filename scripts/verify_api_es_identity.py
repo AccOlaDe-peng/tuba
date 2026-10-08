@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate the real API OIDC, membership, and namespace-scoped ES read path."""
+"""Validate the real API native login, membership, and namespace-scoped ES read path."""
 
 from __future__ import annotations
 
@@ -22,11 +22,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 COMPOSE_FILE = ROOT / "deploy" / "validation" / "compose.analysis-sink-security.yaml"
-REALM_FILE = ROOT / "deploy" / "keycloak" / "local-dev" / "tuba-realm.json"
 ES_URL = "http://127.0.0.1:19201"
-KC_URL = "http://127.0.0.1:18182"
 API_URL = "http://127.0.0.1:18788"
-ISSUER = KC_URL + "/realms/tuba"
 
 
 def run(command: list[str], env: dict[str, str], input_text: str | None = None) -> str:
@@ -65,16 +62,14 @@ def wait_http(url: str, acceptable: set[int], timeout: int = 120) -> None:
     raise RuntimeError(f"endpoint did not become available: {url}")
 
 
-def token(username: str, password: str) -> str:
-    body = urllib.parse.urlencode({
-        "grant_type": "password", "client_id": "tuba-web",
-        "username": username, "password": password,
-    }).encode()
-    status, response = request(ISSUER + "/protocol/openid-connect/token", "POST",
-                              body=body, content_type="application/x-www-form-urlencoded")
-    if status != 200:
-        raise RuntimeError(f"isolated Keycloak password grant failed (HTTP {status})")
-    return json.loads(response)["access_token"]
+def token(username: str,password: str)->str:
+    from http.cookies import SimpleCookie
+    req=urllib.request.Request(API_URL+"/api/v1/auth/login",
+        data=json.dumps({"username":username,"password":password}).encode(),headers={"Content-Type":"application/json"})
+    with urllib.request.urlopen(req,timeout=15) as response:
+        cookies=SimpleCookie()
+        for header in response.headers.get_all("Set-Cookie",[]):cookies.load(header)
+        return cookies["tuba_session"].value
 
 
 def quote_sql(value: str) -> str:
@@ -107,10 +102,8 @@ def main() -> int:
     project = "tuba-api-check-" + uuid.uuid4().hex[:10]
     password = secrets.token_urlsafe(28)
     pg_password = secrets.token_urlsafe(28)
-    kc_admin_password = secrets.token_urlsafe(28)
     env = os.environ.copy()
-    env.update({"ES_VALIDATION_PASSWORD": password, "DB_VALIDATION_PASSWORD": pg_password,
-                "KEYCLOAK_VALIDATION_PASSWORD": kc_admin_password})
+    env.update({"ES_VALIDATION_PASSWORD": password, "DB_VALIDATION_PASSWORD": pg_password})
     key_env = env.copy()
     key_env.update({"ES_ADMIN_USERNAME": "elastic", "ES_ADMIN_PASSWORD": password})
     admin_auth = "Basic " + base64.b64encode(f"elastic:{password}".encode()).decode()
@@ -124,40 +117,25 @@ def main() -> int:
     started = False
     revoked = False
     try:
-        realm = json.loads(REALM_FILE.read_text(encoding="utf-8"))
-        user = next(item for item in realm["users"] if item["username"] == "analyst.lee")
-        username = user["username"]
-        user_password = next(item["value"] for item in user["credentials"] if item["type"] == "password")
+        user_password=secrets.token_urlsafe(28)
+        bootstrap=workdir/("tuba-bootstrap-operator.exe" if os.name=="nt" else "tuba-bootstrap-operator")
+        run(["go","build","-o",str(bootstrap),"./cmd/tuba-bootstrap-operator"],env)
         run(["go", "build", "-o", str(binary), "./cmd/tuba-api"], env)
         started = True
         run(compose + ["--profile", "api-identity", "up", "--detach", "--wait"], env)
         status, _ = request(ES_URL + "/_cluster/health", auth=admin_auth)
         if status != 200:
             raise RuntimeError(f"secured Elasticsearch is unavailable (HTTP {status})")
-        wait_http(ISSUER + "/.well-known/openid-configuration", {200})
 
         # Apply every checked-in migration to the disposable database, then bind
-        # the Keycloak subject to the seeded tenant analyst role.
+        # bootstrap the native administrator through the audited CLI.
         pg_id = run(compose + ["ps", "--all", "--quiet", "postgres"], env).splitlines()[0]
         for migration in sorted((ROOT / "migrations").glob("*.sql")):
             run(["docker", "exec", "-i", pg_id, "psql", "--username", "tuba", "--dbname", "tuba",
                  "--set", "ON_ERROR_STOP=1"], env, migration_up(migration))
 
-        access_token = token(username, user_password)
-        claims = json.loads(base64.urlsafe_b64decode(access_token.split(".")[1] + "=="))
-        subject = claims["sub"]
-        issuer_sql, subject_sql = quote_sql(ISSUER), quote_sql(subject)
-        identity_sql = (
-            "INSERT INTO identities (issuer,subject,email,display_name) VALUES ("
-            + issuer_sql + "," + subject_sql + "," + quote_sql(user.get("email", "")) + "," + quote_sql(username)
-            + ") ON CONFLICT (issuer,subject) DO UPDATE SET disabled_at=NULL;\n"
-            "INSERT INTO memberships (organization_id,identity_id,role_id) "
-            "SELECT o.id,i.id,r.id FROM organizations o JOIN roles r ON r.organization_id=o.id "
-            "JOIN identities i ON i.issuer=" + issuer_sql + " AND i.subject=" + subject_sql + " "
-            "WHERE o.slug='tenant_a' AND r.name='analyst' ON CONFLICT DO NOTHING;"
-        )
-        run(["docker", "exec", "-i", pg_id, "psql", "--username", "tuba", "--dbname", "tuba",
-             "--set", "ON_ERROR_STOP=1"], env, identity_sql)
+        native_env=dict(env,DATABASE_URL=f"postgres://tuba:{pg_password}@127.0.0.1:15433/tuba?sslmode=disable")
+        run([str(bootstrap),"--username","admin","--organization","tenant_a","--approved-by","isolated-api-native-login-test"],native_env,user_password)
 
         namespace, organization = "tenant_a", "tenant_a"
         run([sys.executable, str(ROOT / "scripts" / "manage_elasticsearch_api_keys.py"),
@@ -201,8 +179,7 @@ def main() -> int:
 
         api_env = os.environ.copy()
         api_env.update({
-            "OIDC_ISSUER": ISSUER, "OIDC_AUDIENCE": "tuba-api",
-            "OIDC_JWKS_URL": ISSUER + "/protocol/openid-connect/certs",
+            "TUBA_AUTH_COOKIE_SECURE":"false", "TUBA_AUTH_CONFIG":str(workdir/"no-auth-file.json"),
             "DATABASE_URL": f"postgres://tuba:{pg_password}@127.0.0.1:15433/tuba?sslmode=disable",
             "ES_URL": ES_URL, "ES_API_KEY": api_key, "API_LISTEN": "127.0.0.1:18788",
         })
@@ -215,6 +192,13 @@ def main() -> int:
             options["start_new_session"] = True
         api = subprocess.Popen([str(binary)], **options)  # type: ignore[arg-type]
         wait_http(API_URL + "/health/ready", {200})
+        admin_token=token("admin",user_password)
+        for username,role in [("analyst.lee","analyst"),("auditor.zhao","viewer")]:
+            status,body=request(API_URL+"/api/v1/users","POST",auth="Bearer "+admin_token,body=json.dumps({"username":username,"password":user_password,"role":role}).encode())
+            if status!=201:raise RuntimeError(f"native user creation failed (HTTP {status})")
+            if username=="auditor.zhao":inactive_subject=json.loads(body)["subject"]
+        access_token=token("analyst.lee",user_password)
+
 
         from_time = (now - timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
         to_time = (now + timedelta(minutes=5)).isoformat().replace("+00:00", "Z")
@@ -229,6 +213,8 @@ def main() -> int:
             raise RuntimeError(f"API response omitted seeded event; total={response.get('total')} returned_ids={returned_ids}")
 
         inactive_token = token("auditor.zhao", user_password)
+        status,_=request(API_URL+f"/api/v1/members/{inactive_subject}/roles/viewer","DELETE",auth="Bearer "+admin_token)
+        if status!=204:raise RuntimeError("failed to revoke isolated membership")
         status, _ = request(API_URL + "/api/v1/events?" + query, auth="Bearer " + inactive_token)
         if status != 403:
             raise RuntimeError(f"identity without active membership should be denied (HTTP {status})")
@@ -245,7 +231,7 @@ def main() -> int:
         run([sys.executable, str(ROOT / "scripts" / "manage_elasticsearch_api_keys.py"),
              "revoke", "--es-url", ES_URL, "--keyring", str(keyring)], key_env)
         revoked = True
-        print("PASS: real tuba-api authenticated a Keycloak analyst, authorized active PostgreSQL membership, returned the tenant event with its own ES key, denied inactive membership and cross-namespace ES reads, and stopped gracefully.")
+        print("PASS: real tuba-api authenticated a native system analyst, authorized active PostgreSQL membership, returned the tenant event with its own ES key, denied inactive membership and cross-namespace ES reads, and stopped gracefully.")
         return 0
     finally:
         if api is not None:
@@ -267,6 +253,7 @@ def main() -> int:
                 print(f"WARNING: isolated Compose cleanup needs attention: {exc}", file=sys.stderr)
         keyring.unlink(missing_ok=True)
         binary.unlink(missing_ok=True)
+        bootstrap.unlink(missing_ok=True)
         log_path.unlink(missing_ok=True)
         workdir.rmdir()
 

@@ -9,7 +9,7 @@
 | PostgreSQL 控制面 | 每日全量 + WAL/PITR | 15 分钟 | 2 小时 |
 | Elasticsearch | 每日 snapshot + 定期恢复演练 | 24 小时 | 4 小时 |
 | Kafka | 单 broker 24h 保留，不作为备份；用 checkpoint、Raw/ES snapshot 重建 | 不单独承诺 | 不单独承诺 |
-| Keycloak | 专用 PostgreSQL 每日全量 + WAL/PITR | 15 分钟 | 2 小时 |
+| 系统账号与会话 | 随 TUBA PostgreSQL 备份，包含 local_accounts、auth_sessions 与身份/RBAC | 同 PostgreSQL | 同 PostgreSQL |
 | 发布包/配置/审计清单 | 每日复制到异故障域、对象版本不可覆盖 | 24 小时 | 4 小时 |
 
 这些是生产设计目标。当前未指定异机接收端，因此运行状态必须报告 `backup_not_configured`，不能对磁盘或整机损失承诺 RPO/RTO。
@@ -57,5 +57,5 @@
 - 每日自动备份并记录成功/失败指标。
 - 每月在隔离环境恢复 PostgreSQL 最新备份。
 - 每季度恢复 Elasticsearch snapshot 并重放一个 Kafka 时间窗口。
-- 每半年执行整机丢失恢复、Keycloak 不可用和版本升级/回滚演练；当前单节点版本不宣称主备或区域切换能力。
+- 每半年执行整机丢失恢复、系统登录数据库不可用/会话撤销和版本升级/回滚演练；当前单节点版本不宣称主备或区域切换能力。
 - 演练报告必须包含实际 RPO、实际 RTO、缺失数据范围、修复项和责任人。

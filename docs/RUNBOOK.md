@@ -1,5 +1,7 @@
 # TUBA 运维手册
 
+> 2026-10-08 身份边界修正：TUBA 使用内置系统账号与服务器会话；247 Keycloak 仅属于外部 Linux 认证/未来日志来源。历史 OIDC 登录记录已被 [系统登录](SYSTEM-LOGIN.md) 替代。
+
 > 当前产品是单节点、单实例、由产品 Launcher/CLI 管理的部署。下列步骤不得使用历史 Helm/Kubernetes 操作替代。
 > 命令的确切安装路径以部署 manifest 为准；设计及恢复边界见 [产品详细设计基线](DESIGN-BASELINE.md)。
 
@@ -65,13 +67,13 @@
 4. 使用最近备份验证恢复点，并在隔离实例执行恢复演练。
 5. 完成切换后检查 membership、案件版本和分析 checkpoint。
 
-## Keycloak/OIDC 故障
+## 系统登录故障
 
-1. 已有短期 access token 可能在有效期内继续使用。
-2. 停止登录会阻止新会话，但不应绕过 membership 授权。
-3. 检查 discovery、JWKS、issuer、audience、时间和证书。
-4. 不可用时不要临时关闭 token 验证或放宽 audience。
-5. 恢复后执行管理员、分析师、viewer 的权限回归。
+1. 使用 HTTPS 入口，检查 API readiness、PostgreSQL 连接及 migration 00022 是否已应用。
+2. 核对 `/etc/tuba/auth.json` 的 public_origin 与访问来源完全一致，以及 Secure Cookie、网关路径和系统时间；浏览器写请求必须携带匹配的 Origin。
+3. 检查账号是否停用、membership 是否有效、会话是否过期。连续 5 次错密锁定 15 分钟，应等待锁定到期；不要通过 SQL 绕过授权。
+4. 退出撤销当前会话，改密撤销全部会话；恢复后验证登录、刷新、退出、改密及管理员/分析师权限。
+5. 247 不属于登录依赖；管理员引导、账号迁移和审计见 [系统登录](SYSTEM-LOGIN.md)。
 
 ## DLQ 重放
 
@@ -233,7 +235,7 @@ tuba-launcher logs    --manifest /etc/tuba/tuba-monitoring.json --service promet
 备份由 `scripts/backup_tuba_to_offsite.sh` 每日 02:37 执行。四部分内容分两处落在 `10.6.69.21`：
 
 - **Elasticsearch 快照**直接写进 21 上的仓库 `/opt/tuba-backup/esrepo-248`，该目录 NFS 导出后挂载在 248 的 `/var/lib/elasticsearch/backups`（`path.repo` 路径未变，ES 无需重启）。
-- **PostgreSQL 转储、Keycloak realm 导出、发布包**经 rsync 推到 `21:/opt/tuba-backup/248/<stamp>/`。免密通道是 248 上一把限定来源地址的密钥。
+- **PostgreSQL 转储（含系统账号摘要和会话）、发布包**经 rsync 推到 `21:/opt/tuba-backup/248/<stamp>/`。免密通道是 248 上一把限定来源地址的密钥。
 
 **RPO 为一次运行间隔。** 没有 WAL 归档：本机 PostgreSQL 与另一产品共用，不得为 TUBA 改动其服务配置。两次运行之间丢失本节点即丢失该窗口的接入数据。
 
@@ -297,7 +299,7 @@ AllocationDeciders: Can not allocate [...]. [DiskThresholdDecider]: NO()
 2. **轮换前先枚举该 SCRAM 用户的全部使用方**：同一身份可能被多个服务、多个命名空间共享。2026-09-30 实测 `zeek-standard-indexer` 与 `tenant-a-standard-indexer` 共用 `tuba-zeek-standard-indexer`，只更新一侧的 env 变量导致另一侧全线 `SASL Authentication failed` 退避；`secrets.json` 与 `/etc/tuba/tuba.env` 中所有持有该口令的字段必须同批更新。变更前备份两份文件，回滚即还原并重启。
 3. 来源 API Key 只在创建时返回一次；丢失只能重建来源（会得到新的 source context 与新的 Kafka 身份），因此密钥必须落到受保护存储，不得只依赖终端输出。
 4. 来源 Kafka 写权限的撤销通过禁用来源实现；撤销后需确认适配器与 indexer 不再收到该来源数据。
-5. Keycloak 管理员凭据不得写入仓库或聊天记录。本仓库的 `claude.md` 曾把多台主机凭据提交到公开仓库——这类文件必须加入 `.gitignore`，且其中凭据在轮转前一律视为已泄露。
+5. 系统登录密码和来源管理员凭据不得写入仓库或聊天记录。本仓库的 `claude.md` 曾把多台主机凭据提交到公开仓库——这类文件必须加入 `.gitignore`，且其中凭据在轮转前一律视为已泄露。
 
 ## Topic 删除重建
 

@@ -48,7 +48,7 @@ func TestHandlerRoutesAPIAndIngestAndServesRuntimeConfig(t *testing.T) {
 	defer api.Close()
 	ingest := upstream(ingestRequests)
 	defer ingest.Close()
-	app, err := New(Config{Root: webRoot(t), Issuer: "http://127.0.0.1:8180/realms/tuba", ClientID: "tuba-web", APIURL: api.URL, IngestURL: ingest.URL})
+	app, err := New(Config{Root: webRoot(t), APIURL: api.URL, IngestURL: ingest.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -82,8 +82,8 @@ func TestHandlerRoutesAPIAndIngestAndServesRuntimeConfig(t *testing.T) {
 	if configResponse.Code != http.StatusOK || configResponse.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("runtime config response status=%d headers=%v", configResponse.Code, configResponse.Header())
 	}
-	if !strings.Contains(configResponse.Body.String(), `"oidcIssuer":"http://127.0.0.1:8180/realms/tuba"`) || !strings.Contains(configResponse.Body.String(), `"oidcClientId":"tuba-web"`) {
-		t.Fatalf("runtime config missing values: %s", configResponse.Body.String())
+	if !strings.Contains(configResponse.Body.String(), `"basePath":"/"`) || strings.Contains(configResponse.Body.String(), "oidc") {
+		t.Fatalf("unexpected runtime config: %s", configResponse.Body.String())
 	}
 
 	ready := httptest.NewRecorder()
@@ -98,7 +98,7 @@ func TestHandlerBlocksInternalIngestAndServesSPAFallback(t *testing.T) {
 		w.WriteHeader(http.StatusOK)
 	}))
 	defer upstream.Close()
-	app, err := New(Config{Root: webRoot(t), Issuer: "https://identity.example/realms/tuba", ClientID: "tuba-web", APIURL: upstream.URL, IngestURL: upstream.URL})
+	app, err := New(Config{Root: webRoot(t), APIURL: upstream.URL, IngestURL: upstream.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,8 +125,8 @@ func TestHandlerBlocksInternalIngestAndServesSPAFallback(t *testing.T) {
 	if missingAsset.Code != http.StatusNotFound {
 		t.Fatalf("missing asset status=%d", missingAsset.Code)
 	}
-	if got := spa.Header().Get("Content-Security-Policy"); !strings.Contains(got, "connect-src 'self' https://identity.example") {
-		t.Fatalf("CSP does not allow the configured identity origin: %s", got)
+	if got := spa.Header().Get("Content-Security-Policy"); !strings.Contains(got, "connect-src 'self';") {
+		t.Fatalf("CSP must restrict authentication to this origin: %s", got)
 	}
 }
 
@@ -141,7 +141,7 @@ func TestReadinessFailsWhenEitherUpstreamIsUnavailable(t *testing.T) {
 	defer api.Close()
 	ingest := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
 	defer ingest.Close()
-	app, err := New(Config{Root: webRoot(t), Issuer: "https://identity.example/realms/tuba", ClientID: "tuba-web", APIURL: api.URL, IngestURL: ingest.URL})
+	app, err := New(Config{Root: webRoot(t), APIURL: api.URL, IngestURL: ingest.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestReadinessFailsWhenEitherUpstreamIsUnavailable(t *testing.T) {
 func TestRuntimeConfigIsJSONSafe(t *testing.T) {
 	upstream := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 	defer upstream.Close()
-	app, err := New(Config{Root: webRoot(t), Issuer: "https://id.example/realms/tuba", ClientID: `client"</script>`, APIURL: upstream.URL, IngestURL: upstream.URL})
+	app, err := New(Config{Root: webRoot(t), APIURL: upstream.URL, IngestURL: upstream.URL})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,7 +170,7 @@ func TestRuntimeConfigIsJSONSafe(t *testing.T) {
 	if err := json.Unmarshal([]byte(encoded), &config); err != nil {
 		t.Fatalf("runtime configuration is not JSON: %v", err)
 	}
-	if config["oidcClientId"] != `client"</script>` {
-		t.Fatalf("runtime config client id=%q", config["oidcClientId"])
+	if config["basePath"] != "/" {
+		t.Fatalf("runtime config client id=%q", config["basePath"])
 	}
 }

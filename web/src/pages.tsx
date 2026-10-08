@@ -1399,7 +1399,7 @@ export function CaseDetail() {
           }
         >
           <Form.Item name="assignee" label="负责人身份" rules={[{ required: true, max: 128 }]}>
-            <Input autoFocus placeholder="输入身份服务提供的用户标识" />
+            <Input autoFocus placeholder="输入系统用户标识" />
           </Form.Item>
           <Form.Item name="reason" label="分派说明">
             <Input.TextArea rows={3} maxLength={2000} />
@@ -1460,6 +1460,10 @@ export function Access() {
   const query = useQuery({
     queryKey: ["members"],
     queryFn: ({ signal }) => api("/members", token, undefined, membersSchema, signal),
+  });
+  const createUser = useMutation({
+    mutationFn: (values: {username: string;password: string;role: Member["role"]}) => api("/users", token, {method: "POST", body: JSON.stringify(values)}),
+    onSuccess: () => {setAddOpen(false);void queryClient.invalidateQueries({queryKey:["members"]});},
   });
   const changeRole = useMutation({
     mutationFn: ({ subject, role, grant }: { subject: string; role: string; grant: boolean }) =>
@@ -1590,15 +1594,14 @@ export function Access() {
         </article>
       </section>
 
-      <Modal title="添加成员" open={addOpen} footer={null} onCancel={() => setAddOpen(false)}>
-        <Form
-          layout="vertical"
-          onFinish={(values: { subject: string; role: Member["role"] }) => {
-            changeRole.mutate({ ...values, grant: true }, { onSuccess: () => setAddOpen(false) });
-          }}
-        >
-          <Form.Item name="subject" label="IAM Subject" rules={[{ required: true, max: 256 }]}>
-            <Input autoFocus placeholder="例如 wang.min" />
+      <Modal title="添加系统用户" open={addOpen} footer={null} destroyOnHidden onCancel={() => setAddOpen(false)}>
+        {createUser.error && <Alert type="error" title={createUser.error.message}/>}
+        <Form preserve={false} layout="vertical" onFinish={(values: {username: string;password: string;role: Member["role"]}) => createUser.mutate(values)}>
+          <Form.Item name="username" label="用户名" rules={[{required:true,min:3,max:64,pattern:/^[a-zA-Z0-9_.-]+$/}]}>
+            <Input autoFocus autoComplete="off" placeholder="例如 wang.min"/>
+          </Form.Item>
+          <Form.Item name="password" label="初始密码" rules={[{required:true,min:12,max:256}]}>
+            <Input.Password autoComplete="new-password"/>
           </Form.Item>
           <Form.Item name="role" label="初始角色" rules={[{ required: true }]}>
             <Select
@@ -1607,7 +1610,7 @@ export function Access() {
           </Form.Item>
           <div className="modal-actions">
             <Button onClick={() => setAddOpen(false)}>取消</Button>
-            <Button type="primary" htmlType="submit" loading={changeRole.isPending}>添加</Button>
+            <Button type="primary" htmlType="submit" loading={createUser.isPending}>添加</Button>
           </div>
         </Form>
       </Modal>

@@ -1,5 +1,7 @@
 # TUBA 完整架构实施 TODO
 
+> 2026-10-08 身份边界修正：TUBA 使用内置系统账号与服务器会话；247 Keycloak 仅属于外部 Linux 认证/未来日志来源。历史 OIDC 登录记录已被 [系统登录](SYSTEM-LOGIN.md) 替代。
+
 日期：2026-09-25｜采集方案修订：2026-09-27 v2｜基线：[TARGET-ARCHITECTURE.md](TARGET-ARCHITECTURE.md)
 
 本清单覆盖完整单节点产品目标。未勾选项仍未按本基线验收；旧 M0–M5 完成记录不能直接关闭新任务。仓库和 248 开发环境包含多阶段代码切片并完成过部分隔离/登录验收，但不代表所有切片都已部署或整阶段通过；只有达到任务完成条件的条目才勾选。
@@ -77,7 +79,7 @@
   - **2026-09-30 复核：阻塞项未变，但有一处需要确认的不一致。** O01 的交付描述是 Unix 使用 `/opt/tuba/releases/<version>`＋`current`、创建不可登录 `tuba` 账号并由 Launcher 以该账号运行；而 248 上的实际布局是本会话早前实测到的**扁平布局**——组件运行于 `/opt/tuba/bin/` 与 `/opt/tuba/collector-live/pipeline/bin/`，`/opt/tuba/releases` 仅 52 KB（版本化安装树会是百 MB 量级）。也就是说**安装器只在一次性容器里验收过，目标主机上是另一套手工部署**，两者并未对齐。这条的方向已由下一条确认：安装器对齐现实，不重装 248。**（本段写于 248 直连一度不通时——判断来自经 21 的间接读数。2026-09-30 晚已恢复 248 直连并完成 2b 切换，扁平布局经直连实测确认，见下方 248 实测条目。）**
   - **方向已定（2026-09-30）：安装器对齐现实，不重装 248。** 依据是 `TARGET-ARCHITECTURE.md` 11.1 已写明的「现有 248 路径可通过配置接入，升级不搬迁数据库目录」——设计要求本就是安装器适配既有环境。据此把安装器的**职责边界**显式化并落到代码：
     - **TUBA 自有**（安装器创建/版本化/回滚）：`/opt/tuba/releases/<version>`＋`current`/`previous`、不可登录 `tuba` 账号、`/etc/tuba`、`/var/lib/tuba`、`/var/log/tuba`。
-    - **领养而非安装**（只验证、不改动）：PostgreSQL/Kafka/Elasticsearch/Keycloak 实例本身。
+    - **领养而非安装**（只验证、不改动）：PostgreSQL/Kafka/Elasticsearch 实例本身。247 Keycloak 不属于当前安装依赖（2026-10-08 修正）。
     - 新增只读预检 `scripts/check_tuba_prerequisites.sh`：**不下发任何 DDL/DML、不创建 Topic、不改集群设置**；三类情况 fail-closed——`public` 含非 TUBA 表（共用库）、运行角色即 schema owner（248 现状）、单数据节点 ES 仍用默认 85%/90% 水位（后者只告警）。前两类可按名确认（`TUBA_ADOPT_SHARED_DATABASE` / `TUBA_ALLOW_RUNTIME_OWNER`）。
     - `scripts/provision_postgres_runtime_role.sh` 原本会对**共用库**执行 `REVOKE CONNECT ON DATABASE ... FROM PUBLIC`、`REVOKE CREATE ON SCHEMA public FROM PUBLIC`——在 248 这种库上等于让另一个产品掉线。现改为默认拒绝，需显式确认；判定逻辑抽到 `scripts/lib/tuba_pg_adoption.sh`，与预检**共用同一份**，避免"预检放行、供给拒绝"的自相矛盾。
     - 接入：`initialize_tuba_single_node.sh` 把预检作为第 1/6 步（新增 `--check-dependencies-only`），并有编配测试断言**预检失败时后续步骤一个都不跑**；`make shell-check` 纳入 `check`。
@@ -1140,3 +1142,5 @@ T 可在 D1 后半段开始；Q/W 在对应 API 合同稳定后逐步交付。�
 **积压排空事件记录（2026-10-03 ⑦）：sink 排空在毒消息区边缘卡死 70 分钟，根因是 ES 新日分区主分片未分配，非 sink 缺陷。** 时间线：批量化 sink 11:39 上线后 683k → 210k 高速排空；12:29 起 committed 停在 473466 长达 70 分钟、DLQ 停增 165,350——批处理在"358/500 条目可重试失败"循环（每尝试 5 次后整批不提交，offset 安全）。原日志只报失败条目数，无法定位；给批量重试加失败样本日志（bce5a17：object_id+rev+错误原文，每尝试最多 3 条）后真相立现——**历史索引 bulk POST 20s 客户端超时**：`tuba-v1-analysis-feature-tenant_a-g1-2026.10.03`（当日新日分区）主分片 UNASSIGNED（INDEX_CREATED 卡死，与 10-02 晚 flood-stage 事件同型），ES 集群 red（69/70 shard）。处置：`_cluster/reroute?retry_failed=true` 立即分配、恢复 green（10:03 04:14Z 创建卡住 → 05:55Z 恢复）；sink 无需重启即恢复排空，实测 ~250 msg/s（205k→187k/90s）。**设计行为复核正确**：分片不可写期间整批不提交 offset、不丢不重（at-least-once），恢复后自动续排——故障语义符合预期，但**暴露观测缺口**：sink 批次失败没有及早暴露 ES red 根因（现有告警需补"ES 非 green 即告警"或 sink 侧把 item 错误样本纳入日志——后者已落地 bce5a17）。**另需注意**：capacity guard 对"INDEX_CREATED 卡分配"无能为力，此类卡分片目前只能靠每日观察或 Prometheus ES 指标告警发现。DLQ 毒消息出清量截至 13:47 为 114,394 条（51k→165k）。
 
 **积压排空终态（2026-10-03 ⑧）：683k 积压全部排空。** 14:17 复查：`tuba-analysis-sink-tenant_a` lag=0、zeek sink lag=0；ES green（unassigned=0）；两 sink restarts 稳定 10/10（tenant-a pid 455483 为 13:53 样本日志版部署后的进程）；磁盘 78%（34G/44G，稳定未恶化）。毒消息出清终量：tenant_a DLQ 51k → **209,996**（+159k，全部属修复前同 rev 异内容 feature 重发，预期内不可回收；其中 12:29–13:47 卡死期间零增长，恢复后出清 165k→210k）。遗留：DLQ 存量 21 万的物理清理/重放评估仍待做（retention 12h 会自然滚动过期）；ES"INDEX_CREATED 卡分配"类故障目前依赖人工观察发现，告警补强项已记录在 ⑦。
+
+**2026-10-08 系统登录边界修正与 248 部署**：根据用户明确要求，移除将 247 Keycloak 作为系统登录服务的流程。原生账号/带盐密码摘要/可撤销 Cookie 会话已集成 Go API、React 前端及现有 PG RBAC；旧管理员经受审计 bootstrap 迁移为 admin，原身份/租户/发布权限保留。删除旧 OIDC 登录依赖、realm 资产和用户配置脚本，初始化/部署/验证改走系统账号；8088 改跳转 HTTPS。现场登录、改密全会话撤销、退出与旧令牌拒绝等检查通过；详细备份、验证及全量门禁限制见 [系统登录](SYSTEM-LOGIN.md)。247 的 Linux 认证/日志来源未操作，暂不接入。

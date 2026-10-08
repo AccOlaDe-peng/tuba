@@ -27,14 +27,15 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	verifier, err := auth.NewVerifier(os.Getenv("OIDC_ISSUER"), os.Getenv("OIDC_AUDIENCE"), os.Getenv("OIDC_JWKS_URL"))
+	store, err := control.Open(context.Background(), os.Getenv("DATABASE_URL"), auth.LocalIssuer)
 	if err != nil {
 		log.Fatal(err)
 	}
-	store, err := control.Open(context.Background(), os.Getenv("DATABASE_URL"), verifier.Issuer)
+	loginConfig, lifetime, err := config.SystemLoginSettings()
 	if err != nil {
 		log.Fatal(err)
 	}
+	verifier := &control.LocalLogin{Store: store, Lifetime: lifetime}
 	defer store.Close()
 	revoker, err := kafkaWriteRevoker()
 	if err != nil {
@@ -45,7 +46,7 @@ func main() {
 	if err != nil {
 		log.Fatal(err)
 	}
-	server := &http.Server{Addr: listen, Handler: api.Server{Verifier: verifier, Authorizer: store, ES: client, Control: store, StartedAt: time.Now().UTC(), Entities: entity.NewQueries(store.Pool), OrgIDs: api.NewOrgResolver(store.Pool), RequestTimeout: requestTimeout, Metrics: telemetry.New(), KafkaConfigured: os.Getenv("KAFKA_BROKERS") != "", ReleaseRoot: os.Getenv("TUBA_RELEASE_ROOT"), AutoCaseEnabled: os.Getenv("TUBA_AUTO_CASE_ENABLED") == "true", ExportDir: os.Getenv("TUBA_EXPORT_DIR")}.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: requestTimeout, WriteTimeout: requestTimeout + 5*time.Second, IdleTimeout: 60 * time.Second}
+	server := &http.Server{Addr: listen, Handler: api.Server{Verifier: verifier, Login: verifier, LoginLimiter: &api.LoginLimiter{}, PublicOrigin: loginConfig.PublicOrigin, InsecureSessionCookie: !loginConfig.CookieSecure, Authorizer: store, ES: client, Control: store, StartedAt: time.Now().UTC(), Entities: entity.NewQueries(store.Pool), OrgIDs: api.NewOrgResolver(store.Pool), RequestTimeout: requestTimeout, Metrics: telemetry.New(), KafkaConfigured: os.Getenv("KAFKA_BROKERS") != "", ReleaseRoot: os.Getenv("TUBA_RELEASE_ROOT"), AutoCaseEnabled: os.Getenv("TUBA_AUTO_CASE_ENABLED") == "true", ExportDir: os.Getenv("TUBA_EXPORT_DIR")}.Handler(), ReadHeaderTimeout: 5 * time.Second, ReadTimeout: requestTimeout, WriteTimeout: requestTimeout + 5*time.Second, IdleTimeout: 60 * time.Second}
 	ctx, stop := lifecycle.NotifyContext(context.Background())
 	defer stop()
 	log.Printf("TUBA API listening on %s", listen)

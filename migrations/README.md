@@ -27,6 +27,8 @@ M4 analysis runtime schema starts at `00005_analysis_runtime.sql` and adds worke
 
 `00013_release_publishing.sql` adds a global platform-publisher grant table and publisher-scoped idempotency records. These grants are separate from tenant memberships; release API permissions are resolved from this table after validating the caller's tenant membership. Release transition APIs write state and audit records in one transaction.
 
+`00022_local_system_login.sql` adds native login accounts with salted password digests and persisted lockout state, plus hashed, expiring server sessions. Existing identity IDs and authorization references are preserved when an administrator is adopted through `tuba-bootstrap-operator --existing-subject`; no external identity server is required. See [system login](../docs/SYSTEM-LOGIN.md).
+
 Migrations use goose annotations. Shared and production environments must run them with a dedicated DDL identity. Application credentials receive DML permissions only. Applied migrations are immutable; corrections require a new numbered file.
 
 For a local database with `psql` installed:

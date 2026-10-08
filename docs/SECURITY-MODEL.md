@@ -2,7 +2,7 @@
 
 ## 信任边界
 
-Keycloak或企业 IAM 证明“用户是谁”；TUBA PostgreSQL 证明“用户当前属于哪些租户、拥有哪些产品权限”；Go API 对每次请求执行最终授权。浏览器中的路由守卫只改善体验，不构成安全控制。
+TUBA 内置账号与服务器会话证明“用户是谁”；TUBA PostgreSQL 证明“用户当前属于哪些租户、拥有哪些产品权限”；Go API 对每次请求执行最终授权。浏览器中的路由守卫只改善体验，不构成安全控制。
 
 数据源使用独立 service identity/API credential。接入服务根据该身份绑定 tenant、namespace、允许的日志类型和配额，忽略 payload 中试图覆盖这些边界的字段。
 
@@ -23,7 +23,7 @@ Keycloak或企业 IAM 证明“用户是谁”；TUBA PostgreSQL 证明“用户
 
 首版至少包含 tenant、user_profile、identity、membership、role、permission、role_permission、membership_role、service_identity、api_credential_metadata、audit_event 和 idempotency_record。所有租户数据表显式包含 `tenant_id` 并建立相应唯一键/外键；代码查询必须从授权上下文注入 tenant ID。
 
-Keycloak token 必须校验签名、issuer、audience、有效期和允许算法。token 中的 group/role 可用于身份同步提示，但数据访问以 PostgreSQL 当前 membership 为准。注销、禁用或撤销成员后，不等待长 token 自然过期才停止授权。
+账号密码使用带独立随机盐的 PBKDF2-SHA256 摘要；服务器只保存随机会话令牌的 SHA-256 摘要。每次请求验证会话有效期、身份启用状态及 PostgreSQL 当前 membership/RBAC；退出撤销当前会话，改密撤销全部会话，成员撤销立即影响后续授权。Cookie 使用 HttpOnly、Secure、SameSite=Strict，写操作校验精确 Origin。247 Keycloak 属于外部 Linux 认证及未来日志来源，与系统登录无关。配置、锁定、引导及迁移见 [系统登录](SYSTEM-LOGIN.md)。
 
 ## 服务与数据权限
 

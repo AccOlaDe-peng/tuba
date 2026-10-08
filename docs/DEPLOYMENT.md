@@ -9,7 +9,7 @@
 - Kafka 4.3.x：至少 3 broker，RF=3，`min.insync.replicas=2`，TLS/SASL
 - PostgreSQL 18.6：受管实例或主备拓扑，生产连接启用 TLS
 - Elasticsearch 8.19.x：至少 3 个数据节点，索引副本满足故障域要求
-- Keycloak 26.7.x 或企业 OIDC
+- TUBA 内置账号与 PostgreSQL 会话；部署时应用 migration 00022 并引导首个管理员，见 [系统登录](SYSTEM-LOGIN.md)
 - Vault 1.21.x 和 Secrets Store CSI Driver
 - Prometheus、Alertmanager、Grafana 和可选 Kafka Exporter
 
@@ -36,8 +36,7 @@
 先构建并推送锁定镜像：
 
 ```powershell
-.\scripts\build_images.ps1 -Registry registry.example.com/tuba -Tag 1.0.0 `
-  -OIDCIssuer https://identity.example/realms/tuba -Push
+.\scripts\build_images.ps1 -Registry registry.example.com/tuba -Tag 1.0.0 -Push
 ```
 
 ```bash
@@ -91,6 +90,6 @@ chart 默认创建 NetworkPolicy，限制：
 
 - Gateway 只能访问 `api` 和 `web`。
 - 同 release Pod 可以访问 metrics 端口。
-- 服务只能向 DNS、Kafka、PostgreSQL、Elasticsearch、Keycloak 和 OTel Collector 发起必要连接。
+- 服务只能向 DNS、Kafka、PostgreSQL、Elasticsearch 和 OTel Collector 发起必要连接。
 
 `0.0.0.0/0` 是兼容不同集群拓扑的初始值。生产应替换为中间件 CIDR、namespace selector 或明确 egress gateway。

@@ -23,26 +23,26 @@ TUBA 是面向 Windows Security 与 Zeek 等来源的 UEBA（用户与实体行�
 | 层 | 选型 |
 | --- | --- |
 | Go（主流程） | Go 1.27.1（`go.mod` 模块名 `tuba/product`，语言基线 1.27.0）；标准库 `net/http`（无 Web 框架） |
-| Go 依赖 | `segmentio/kafka-go` 0.4.51、`jackc/pgx/v5` 5.11.0、`coreos/go-oidc/v3` + `golang.org/x/oauth2` |
+| Go 依赖 | `segmentio/kafka-go` 0.4.51、`jackc/pgx/v5` 5.11.0；系统认证使用 Go 标准库 crypto |
 | Python（分析） | CPython 3.14.* + uv；`confluent-kafka` 2.15.1、NumPy、pandas、SciPy、scikit-learn、psycopg（见 `python/pyproject.toml`） |
 | 前端 | React 19.3 + TypeScript 6.0.3 + Vite 8.3；Ant Design 6、ECharts 6、React Router 7、TanStack Query 5、Zod 4、lucide-react；Node 24.14.1 + pnpm 12.6.0（仅构建工具链，经 corepack 调用） |
-| 中间件 | Kafka 4.3.1（KRaft）、Elasticsearch 8.19.22、PostgreSQL 18.6、Keycloak 26.7.4（OIDC Auth Code + PKCE） |
+| 中间件 | Kafka 4.3.1（KRaft）、Elasticsearch 8.19.22、PostgreSQL 18.6；系统登录不依赖 Keycloak |
 | SQL 迁移 | `pressly/goose`，仅 SQL migration，位于 `migrations/`（序号前缀，当前到 `00022_*.sql`） |
 | 部署 | Kubernetes + Helm chart（`deploy/helm/tuba`）；Docker Compose V2 仅用于本地开发 |
 | 可观测性 | OpenTelemetry、Prometheus、Grafana；日志用 Go `log/slog` |
 
-语言边界：Go 负责高吞吐接入、Kafka 主链路、在线 API、RBAC、CLI；Python 只用于批量/窗口分析与统计/机器学习；浏览器不直连 ES/Kafka/PostgreSQL，只通过 Go API（OIDC 登录）。**明确暂不引入**：Redis、Flink/Spark/Kafka Streams、Schema Registry、Kafka Connect/Logstash、服务网格、独立图数据库（条件与理由见技术栈基线）。
+语言边界：Go 负责高吞吐接入、Kafka 主链路、在线 API、RBAC、CLI；Python 只用于批量/窗口分析与统计/机器学习；浏览器不直连 ES/Kafka/PostgreSQL，只通过 Go API（内置系统账号与服务器会话）。**明确暂不引入**：Redis、Flink/Spark/Kafka Streams、Schema Registry、Kafka Connect/Logstash、服务网格、独立图数据库（条件与理由见技术栈基线）。
 
 ## 目录结构
 
 - `cmd/tuba-*` — 22 个 Go 命令入口：`tuba-ingest`（Raw 接入）、`tuba-raw-indexer` / `tuba-standard-indexer` / `tuba-quarantine-indexer`、`tuba-normalizer`、`tuba-source-adapter`、`tuba-api`、`tuba-web`、`tuba-agent`、`tuba-collector`、`tuba-launcher`、`tuba-control-worker`、`tuba-entity-worker`、`tuba-detect-auth`、`tuba-analysis-sink` / `tuba-analysis-catchup`、`tuba-bootstrap-operator`（首个租户管理员引导）、`tuba-source-topic-admin` / `tuba-topic-admin` / `tuba-kafka-security-admin`、`tuba-component`、`tuba-bootstrap-release-publisher`。
 - `internal/` — 按领域划分的 Go 包，与 cmd 一一对应或提供共享能力：`ingest`、`rawindexer`、`standardindexer`、`quarantineindexer`、`normalizer`、`uim`（八领域统一信息模型）、`sourceadapter`、`api`、`auth`、`control` / `controlworker`、`agent`、`collector`、`launcher`、`entity` / `entityworker`、`detection`、`analysis` / `analysisworker`、`sink`、`es`（受限 `net/http` ES 封装）、`event` / `rawevent`、`kafkaadmin` / `kafkautil` / `kafkarevoke`、`pgutil`、`config`、`spl`、`telemetry`、`webserver`、`worker`、`lifecycle`、`deadletter`、`catalog`、`component`、`indexing`。
 - `python/tuba_analysis/` — Python 分析包，入口脚本 `tuba-analysis-worker` / `tuba-analysis-replay` / `tuba-analysis-evaluate`；测试在 `python/tests/`，评估场景在 `python/scenarios/`。
-- `web/src/` — React SPA（`@tuba/web`）：`api.ts`、`auth.tsx`、`pages.tsx`、`components.tsx` 等；`web/.env.local`（Git 忽略）保存 Vite OIDC 参数。
+- `web/src/` — React SPA（`@tuba/web`）：`api.ts`、`auth.tsx`、`pages.tsx`、`components.tsx` 等；`web/.env.local`（Git 忽略）仅用于本机开发参数，系统登录不使用 Vite OIDC 配置。
 - `contracts/` — **机器可读合同（单一事实来源）**：`api/openapi.yaml`（OpenAPI 3.1）、`events/<域>/<主版本>/schema.json`（版本化 JSON Schema）、`events/topics.v1.json`（Topic 目录）、`uim/`（领域目录与 Normalizer 验证用例）、`releases/1/manifest.schema.json`（语义发布包）、`examples/`（Go/Python/CI 共用的 Golden examples）、`ids.md`（稳定 ID 规则）。
 - `migrations/` — goose SQL 迁移（22 个），全部 schema 变更入库、可审阅。
 - `elasticsearch/` — ES index/component template 与 ILM JSON 资产（由 `scripts/generate_es_templates.py` 生成/校验）。
-- `deploy/` — `helm/tuba` chart、`keycloak/local-dev` realm、`collector`、`components`（如 `source-adapter.example.json`）、`launcher`、`observability`、`profiles`、`docker`、`validation`。
+- `deploy/` — `helm/tuba` chart、`collector`、`components`（如 `source-adapter.example.json`）、`launcher`、`observability`、`profiles`、`docker`、`validation`。
 - `releases/windows-security-1.0.0/` — 语义发布包（DIP/UIM/分析/路由/ES 资产 + manifest）。
 - `scripts/` — 大量 ps1/sh/py 运维与验证脚本（安装、备份/恢复、验证 verify_*、打包 package_*）；`scripts/lib/` 为公共库。
 - `dist/` — 各验证批次的构建产物与验收记录，不是源代码。
@@ -64,11 +64,11 @@ TUBA 是面向 Windows Security 与 Zeek 等来源的 UEBA（用户与实体行�
 | `make web-check` | `tsc -b` 类型检查 + `vitest run --passWithNoTests` |
 | `make check` / `make test` | 全部质量门禁（contracts + helm-check + go-check + python-check + shell-check + web-check） |
 | `make build` | `go build ./cmd/...` + `uv build --project python` + `corepack pnpm@12.6.0 --dir web build` |
-| `make dev-up` / `make dev-down` | 启动/停止 Compose 依赖（Kafka、PostgreSQL、Elasticsearch；`--profile identity` 含 Keycloak） |
+| `make dev-up` / `make dev-down` | 启动/停止 Compose 依赖（Kafka、PostgreSQL、Elasticsearch） |
 | `make topics` | 幂等创建开发 Topic（`docker compose run --rm kafka-init`） |
 | `make clean` | 删除 `web/dist` 与 `python/dist` |
 
-首次初始化（Windows）：`copy .env.example .env`，然后 `.\scripts\bootstrap_local.ps1` 与 `.\scripts\start_local.ps1`（脚本会启动依赖、等待健康检查、应用 PG migrations 与 ES assets；进程 PID/日志在 `.runtime/`，停止用 `.\scripts\stop_local.ps1`）。本地 Keycloak 在 `http://127.0.0.1:8180/admin/`，示例用户（`wang.min`/`analyst.lee`/`auditor.zhao`，密码见 `docs/DEVELOPMENT.md`）仅限本机使用。
+首次初始化（Windows）：`copy .env.example .env`，然后 `.\scripts\bootstrap_local.ps1` 与 `.\scripts\start_local.ps1`（脚本会启动依赖、等待健康检查、应用 PG migrations 与 ES assets；进程 PID/日志在 `.runtime/`，停止用 `.\scripts\stop_local.ps1`）。系统管理员用 `tuba-bootstrap-operator` 引导，后续用户在访问控制页面创建；详见 `docs/SYSTEM-LOGIN.md`。
 
 按需单独运行服务：`go run ./cmd/tuba-ingest` 等（完整列表见 `docs/DEVELOPMENT.md`）；前端开发 `corepack pnpm@12.6.0 --dir web dev`；Python worker `uv run --project python tuba-analysis-worker`。
 
@@ -96,7 +96,7 @@ TUBA 是面向 Windows Security 与 Zeek 等来源的 UEBA（用户与实体行�
 
 - 真实凭据只通过未提交的 `.env`（已 gitignore）或密钥系统提供；**禁止在镜像、Git、日志和 Compose 默认值里放真实凭据**；本地开发密码不得复用到共享/生产环境。不要读取或外泄 `.env`。
 - 日志/trace 中不写 token、API key 或原始敏感字段。
-- 认证由 Keycloak（OIDC）完成，TUBA 不保存密码；授权以 PostgreSQL 中 `tenant_membership`/RBAC 为权威，默认拒绝，不信任客户端传入的租户/namespace。不要手工 SQL 修改成员关系——首个管理员用 `cmd/tuba-bootstrap-operator`，之后走受保护的 `/api/v1/members` API。
+- 认证由 TUBA 内置账号与服务器会话完成，TUBA 只保存带盐密码摘要；247 Keycloak 不属于系统登录依赖；授权以 PostgreSQL 中 `memberships`/RBAC 为权威，默认拒绝，不信任客户端传入的租户/namespace。不要手工 SQL 修改成员关系——首个管理员用 `cmd/tuba-bootstrap-operator`，之后走受保护的 `/api/v1/members` API。
 - `SOURCE_ADAPTER_TOKEN` 是至少 32 字符的内部共享令牌；source-adapter 仅在本地判定消息无效时先写 DLQ 再提交 offset，其他失败保留 offset 退避重试。
 - `tuba-source-topic-admin` 等管理工具默认只输出计划，显式 `-apply` 才修改 Kafka；不创建 SCRAM 用户。
 - 敏感操作（登录、授权拒绝、导出、规则发布、密钥轮换等）写追加式审计记录并关联 request/trace ID。

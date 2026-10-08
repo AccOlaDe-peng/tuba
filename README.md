@@ -52,3 +52,5 @@ TUBA 是面向 Windows Security 与 Zeek 等来源的 UEBA 平台。本仓库正
 ```
 
 首期目标是各平台功能单实例运行。TUBA Management Agent 和 Filebeat/Winlogbeat 采用跨 Linux/Windows 的统一目录包与 CLI，不注册 systemd 或 Windows Service；平台服务统一由产品 Launcher/CLI 控制。Kafka、PostgreSQL、Elasticsearch 与身份服务的当前开发部署细节和未完成运维工作见目标架构及 TODO。
+
+系统登录已集成到 TUBA：同源用户名/密码登录、服务器会话及数据库 RBAC；247 Keycloak 不属于系统登录依赖。配置和账号迁移见 [系统登录](docs/SYSTEM-LOGIN.md)。

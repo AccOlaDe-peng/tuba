@@ -20,7 +20,6 @@ import urllib.request
 REPO_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ENV_LOCAL = REPO_ROOT / ".env.local"
 API = os.environ.get("TUBA_API_BASE", "https://10.6.68.248:8443") + "/api/v1"
-ISSUER = os.environ.get("TUBA_OIDC_ISSUER", "http://10.6.68.247:8180/realms/tuba")
 SSH_TARGET = None  # filled from .env.local; empty means run Kafka/PG checks locally
 
 PASS = 0
@@ -109,14 +108,14 @@ def main():
         SSH_TARGET = f"{env['TUBA_SSH_USER']}@{env['TUBA_SSH_HOST']}"
     op = opener()
 
-    form = urllib.parse.urlencode({
-        "grant_type": "password", "client_id": "tuba-web",
-        "username": env["TUBA_OPERATOR_USERNAME"], "password": env["TUBA_OPERATOR_PASSWORD"],
-    }).encode()
-    with op.open(urllib.request.Request(ISSUER + "/protocol/openid-connect/token", data=form,
-                                        headers={"Content-Type": "application/x-www-form-urlencoded"}), timeout=15) as resp:
-        token = json.loads(resp.read())["access_token"]
-    print("operator token acquired")
+    form = json.dumps({"username":env["TUBA_OPERATOR_USERNAME"],"password":env["TUBA_OPERATOR_PASSWORD"]}).encode()
+    with op.open(urllib.request.Request(API + "/auth/login",data=form,
+        headers={"Content-Type":"application/json"}),timeout=15) as resp:
+        from http.cookies import SimpleCookie
+        cookies=SimpleCookie()
+        for header in resp.headers.get_all("Set-Cookie",[]):cookies.load(header)
+        token=cookies["tuba_session"].value
+    print("operator system session acquired")
 
     # 1. throwaway collector
     _, body = call(op, "/collectors/enrollments", token, {"expires_in_minutes": 30}, expect=201)

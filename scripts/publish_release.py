@@ -37,7 +37,6 @@ from validate_release_bundle import canonical_manifest_bytes  # noqa: E402
 ENV_LOCAL = REPO_ROOT / ".env.local"
 
 DEFAULT_API = "https://10.6.68.248:8443"
-DEFAULT_ISSUER = "http://10.6.68.247:8180/realms/tuba"
 DEFAULT_CLIENT = "tuba-web"
 DEFAULT_BUNDLE = REPO_ROOT / "releases" / "windows-security-1.0.0"
 
@@ -92,15 +91,6 @@ def call(opener, url, token="", payload=None, extra_headers=None, method=None):
         return 0, {}
 
 
-def decode_claims(access_token: str) -> dict:
-    try:
-        payload = access_token.split(".")[1]
-        padded = payload + "=" * (-len(payload) % 4)
-        return json.loads(base64.urlsafe_b64decode(padded))
-    except (IndexError, ValueError):
-        return {}
-
-
 def fail(step: str, response: dict) -> int:
     print(f"{step} failed: {json.dumps(response, ensure_ascii=False)}", file=sys.stderr)
     return 1
@@ -110,18 +100,16 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--bundle", default=str(DEFAULT_BUNDLE), help="release bundle directory")
     parser.add_argument("--api", default=None, help=f"API base URL (default {DEFAULT_API})")
-    parser.add_argument("--issuer", default=None, help=f"OIDC issuer (default {DEFAULT_ISSUER})")
     parser.add_argument("--skip-local-validation", action="store_true",
                         help="skip the local bundle hash check before contacting the API")
     args = parser.parse_args()
 
     file_values = load_env_local()
     api = args.api or setting("TUBA_API_BASE", file_values, DEFAULT_API)
-    issuer = args.issuer or setting("TUBA_OIDC_ISSUER", file_values, DEFAULT_ISSUER)
     username = setting("TUBA_OPERATOR_USERNAME", file_values)
     password = setting("TUBA_OPERATOR_PASSWORD", file_values)
     if not username or not password:
-        print(f"operator credential is missing; run scripts/reset_247_dev_operator_password.py "
+        print(f"operator credential is missing; bootstrap a native system administrator "
               f"or set TUBA_OPERATOR_USERNAME/PASSWORD in {ENV_LOCAL}", file=sys.stderr)
         return 2
 
@@ -148,26 +136,20 @@ def main() -> int:
 
     opener = make_opener()
 
-    form = urllib.parse.urlencode({
-        "grant_type": "password", "client_id": DEFAULT_CLIENT,
-        "username": username, "password": password,
-    }).encode()
-    req = urllib.request.Request(
-        f"{issuer}/protocol/openid-connect/token", data=form,
-        headers={"Content-Type": "application/x-www-form-urlencoded"})
+    req = urllib.request.Request(f"{api}/api/v1/auth/login",
+        data=json.dumps({"username":username,"password":password}).encode(),
+        headers={"Content-Type":"application/json"})
     try:
-        with opener.open(req, timeout=15) as response:
-            token_response = json.loads(response.read())
-    except urllib.error.HTTPError as exc:
-        print(f"password grant failed (HTTP {exc.code}): {exc.read().decode('utf-8', 'replace')[:300]}",
-              file=sys.stderr)
+        with opener.open(req,timeout=15) as response:
+            principal=json.loads(response.read())
+            from http.cookies import SimpleCookie
+            cookies=SimpleCookie()
+            for header in response.headers.get_all("Set-Cookie",[]):cookies.load(header)
+            token=cookies["tuba_session"].value
+    except (urllib.error.HTTPError,urllib.error.URLError,KeyError) as exc:
+        print(f"system login failed: {type(exc).__name__}",file=sys.stderr)
         return 1
-    except urllib.error.URLError as exc:
-        print(f"could not reach issuer {issuer}: {exc.reason}", file=sys.stderr)
-        return 1
-    token = token_response["access_token"]
-    claims = decode_claims(token)
-    print(f"authenticated as sub={claims.get('sub', '?')}")
+    print(f"authenticated as sub={principal['subject']}")
 
     base = f"{api}/api/v1/releases"
 

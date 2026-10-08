@@ -17,8 +17,6 @@ import (
 
 type Config struct {
 	Root       string
-	Issuer     string
-	ClientID   string
 	APIURL     string
 	IngestURL  string
 	ProbeLimit time.Duration
@@ -26,9 +24,6 @@ type Config struct {
 
 type Server struct {
 	root       string
-	issuer     string
-	clientID   string
-	issuerURL  *url.URL
 	apiURL     *url.URL
 	ingestURL  *url.URL
 	apiProxy   *httputil.ReverseProxy
@@ -46,13 +41,6 @@ func New(c Config) (*Server, error) {
 	if err != nil || !info.Mode().IsRegular() {
 		return nil, errors.New("web root must contain a regular index.html")
 	}
-	issuer, err := parseURL(c.Issuer, "OIDC_ISSUER", true, true)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(c.ClientID) == "" || strings.ContainsAny(c.ClientID, "\r\n\x00") {
-		return nil, errors.New("OIDC_CLIENT_ID is required and must be a single-line value")
-	}
 	apiURL, err := parseURL(c.APIURL, "API_UPSTREAM", true, false)
 	if err != nil {
 		return nil, err
@@ -66,8 +54,8 @@ func New(c Config) (*Server, error) {
 		probeLimit = 2 * time.Second
 	}
 	return &Server{
-		root: root, issuer: strings.TrimRight(issuer.String(), "/"), clientID: c.ClientID,
-		issuerURL: issuer, apiURL: apiURL, ingestURL: ingestURL,
+		root:   root,
+		apiURL: apiURL, ingestURL: ingestURL,
 		apiProxy: httputil.NewSingleHostReverseProxy(apiURL),
 		ingest:   httputil.NewSingleHostReverseProxy(ingestURL),
 		probe:    &http.Client{Timeout: probeLimit}, probeLimit: probeLimit,
@@ -110,11 +98,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/v1/ingest/", s.proxyIngest)
 	mux.HandleFunc("/api/", s.proxyAPI)
 	mux.HandleFunc("/", s.static)
-	return securityHeaders(mux, s.issuerURL)
+	return securityHeaders(mux)
 }
 
 func (s *Server) runtimeConfig(w http.ResponseWriter, _ *http.Request) {
-	values, err := json.Marshal(map[string]string{"oidcIssuer": s.issuer, "oidcClientId": s.clientID})
+	values, err := json.Marshal(map[string]string{"basePath": "/"})
 	if err != nil {
 		http.Error(w, "runtime configuration unavailable", http.StatusInternalServerError)
 		return
@@ -181,14 +169,13 @@ func (s *Server) ready(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write([]byte("ready\n"))
 }
 
-func securityHeaders(next http.Handler, issuer *url.URL) http.Handler {
-	connectOrigin := issuer.Scheme + "://" + issuer.Host
+func securityHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Content-Type-Options", "nosniff")
 		w.Header().Set("X-Frame-Options", "DENY")
 		w.Header().Set("Referrer-Policy", "same-origin")
 		w.Header().Set("Permissions-Policy", "camera=(), microphone=(), geolocation=()")
-		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self' "+connectOrigin+"; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
+		w.Header().Set("Content-Security-Policy", "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
 		next.ServeHTTP(w, r)
 	})
 }

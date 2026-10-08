@@ -54,8 +54,6 @@ if (( port < 1024 || port > 40000 )); then
 fi
 WEB_LISTEN="127.0.0.1:${port}" \
 WEB_ROOT="${temp_root}/web" \
-OIDC_ISSUER='http://127.0.0.1:8180/realms/tuba' \
-OIDC_CLIENT_ID='tuba-linux-package-smoke' \
 API_UPSTREAM="http://127.0.0.1:${api_port}" \
 INGEST_UPSTREAM="http://127.0.0.1:${ingest_port}" \
   "${temp_root}/bin/tuba-web" >"${temp_root}/web.log" 2>&1 &
@@ -96,8 +94,8 @@ ready=$(http_get /health/ready)
 if [[ $home != *'200 OK'* || $home != *'id="root"'* ]]; then echo "Packaged home page failed." >&2; exit 1; fi
 if [[ $spa != *'200 OK'* || $spa != *'id="root"'* ]]; then echo "Packaged SPA fallback failed." >&2; exit 1; fi
 if [[ $runtime != *'200 OK'* || $runtime != *'Cache-Control: no-store'* ||
-      $runtime != *'http://127.0.0.1:8180/realms/tuba'* || $runtime != *'tuba-linux-package-smoke'* ]]; then
-  echo "Packaged runtime OIDC configuration failed." >&2
+      $runtime != *'"basePath":"/"'* || $runtime == *'oidc'* ]]; then
+  echo "Packaged runtime configuration failed." >&2
   exit 1
 fi
 if [[ $ready != *'503 Service Unavailable'* ]]; then echo "Readiness must fail while upstreams are unavailable." >&2; exit 1; fi
@@ -107,4 +105,4 @@ printf 'POST /api/v1/internal/ingest/beat-events HTTP/1.1\r\nHost: 127.0.0.1\r\n
 internal=$(cat <&3)
 if [[ $internal != *'404 Not Found'* ]]; then echo "Packaged internal ingest route was not denied." >&2; exit 1; fi
 
-echo "Linux package web smoke passed: hash verified, live, static home, SPA fallback, runtime OIDC config, internal route denied, and upstream readiness fails closed."
+echo "Linux package web smoke passed: hash verified, live, static home, SPA fallback, runtime config, internal route denied, and upstream readiness fails closed."

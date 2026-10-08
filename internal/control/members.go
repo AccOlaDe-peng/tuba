@@ -20,7 +20,7 @@ func (s *Store) ListMembers(ctx context.Context, p auth.Principal) ([]Member, er
 	if e != nil {
 		return nil, e
 	}
-	rows, e := s.Pool.Query(ctx, `SELECT i.subject,coalesce(i.email,''),coalesce(i.display_name,''),r.name,m.revoked_at FROM memberships m JOIN identities i ON i.id=m.identity_id JOIN roles r ON r.id=m.role_id WHERE m.organization_id=$1 ORDER BY i.subject,r.name`, org)
+	rows, e := s.Pool.Query(ctx, `SELECT i.subject,coalesce(i.email,''),coalesce(i.display_name,''),r.name,m.revoked_at FROM memberships m JOIN identities i ON i.id=m.identity_id JOIN roles r ON r.id=m.role_id WHERE m.organization_id=$1 AND i.issuer='tuba:local' ORDER BY i.subject,r.name`, org)
 	if e != nil {
 		return nil, e
 	}
@@ -49,7 +49,7 @@ func (s *Store) SetMember(ctx context.Context, p auth.Principal, subject, role s
 	}
 	defer tx.Rollback(ctx)
 	var identity, roleID string
-	e = tx.QueryRow(ctx, `INSERT INTO identities(issuer,subject) VALUES($1,$2) ON CONFLICT(issuer,subject) DO UPDATE SET subject=excluded.subject RETURNING id`, s.Issuer, subject).Scan(&identity)
+	e = tx.QueryRow(ctx, `SELECT i.id FROM identities i JOIN local_accounts a ON a.identity_id=i.id WHERE i.issuer=$1 AND i.subject=$2 AND a.organization_id=$3 AND i.disabled_at IS NULL`, s.Issuer, subject, org).Scan(&identity)
 	if e != nil {
 		return e
 	}

@@ -1,5 +1,7 @@
 # TUBA 产品详细设计基线
 
+> 2026-10-08 身份边界修正：TUBA 使用内置系统账号与服务器会话；247 Keycloak 仅属于外部 Linux 认证/未来日志来源。历史 OIDC 登录记录已被 [系统登录](SYSTEM-LOGIN.md) 替代。
+
 版本：1.0｜日期：2026-09-29｜状态：设计定版，待实现与验收
 
 本文补齐完整单节点产品范围内尚未明确的详细设计。总体边界以
@@ -58,7 +60,7 @@ adapter/Raw 水位对账后才能回收。文件轮转以 device/inode/offset �
 
 Syslog 网关首选 TCP+TLS，按设备绑定 tenant/source，落入持久文件后由 Filebeat 发送；UDP 只提供尽力交付并显式标记
 `evidence.delivery=best_effort`。JumpServer 先使用审计文件或 Syslog，API 仅补足无法从日志取得的资产引用；录像和文件只保存受控引用。
-Keycloak 同时启用用户事件和管理员事件，服务运行日志不作为完整审计来源。
+系统登录成功/失败、锁定、退出、改密和创建账号由 Go API 写追加式审计；服务运行日志不作为完整审计来源。247 Linux 认证日志接入另行实施，当前不属于系统登录。
 
 专用连接器统一采用：分页游标持久化、可配置重叠窗口、供应商限流退避、Webhook 签名验证后持久确认、数据库按稳定复合键增量。
 连接器必须先在一个真实来源通过重启、重复页、限流和游标损坏验收，才能复制到其他来源。
@@ -176,7 +178,7 @@ Management Agent 使用短期注册 token 换取独立身份，后续采用双�
 通过 readiness 观察 5 分钟；失败则回切上一版本。registry/data 目录不随二进制回滚。一个主机一个 Agent 单实例锁，每组件独立 data/registry。
 
 外部备份目标必须是不同故障域的 S3 兼容对象存储或受控备份主机，不允许把同盘目录称为备份。PG 使用每日 base backup + 连续 WAL，
-设计目标 RPO 15 分钟/RTO 2 小时；ES 每日 snapshot，RPO 24 小时/RTO 4 小时；Keycloak 数据随专用 PG 备份；发布包、配置和审计清单每日备份。
+设计目标 RPO 15 分钟/RTO 2 小时；ES 每日 snapshot，RPO 24 小时/RTO 4 小时；系统账号摘要和会话随 TUBA PostgreSQL 备份；发布包、配置和审计清单每日备份。
 Kafka RF=1 不作为备份，恢复依赖 PG checkpoint、Raw/ES snapshot 和仍在 retention 内的 Topic。未配置异机目标前，系统必须显示
 `backup_not_configured`，不得承诺磁盘或整机损失 RPO/RTO。
 

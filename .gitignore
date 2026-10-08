@@ -40,3 +40,5 @@ CLAUDE.md
 component-signing-key*
 
 web/.env.development.local
+
+/output/native-login-20261008/

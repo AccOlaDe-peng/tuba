@@ -124,9 +124,6 @@
       "command": "/opt/tuba/current/bin/tuba-api",
       "working_dir": "/opt/tuba/current",
       "environment": {
-        "OIDC_ISSUER": "${OIDC_ISSUER}",
-        "OIDC_AUDIENCE": "${OIDC_AUDIENCE}",
-        "OIDC_JWKS_URL": "${OIDC_JWKS_URL}",
         "DATABASE_URL": "${DATABASE_URL}",
         "TUBA_RELEASE_ROOT": "${TUBA_RELEASE_ROOT}",
         "TUBA_AUTO_CASE_ENABLED": "${TUBA_AUTO_CASE_ENABLED}",
@@ -135,7 +132,10 @@
         "ES_URL": "${ES_URL}",
         "ES_API_KEY": "${TUBA_API_ES_API_KEY}",
         "HTTP_REQUEST_TIMEOUT": "${HTTP_REQUEST_TIMEOUT}",
-        "API_LISTEN": "127.0.0.1:8788"
+        "API_LISTEN": "127.0.0.1:8788",
+        "TUBA_PUBLIC_ORIGIN": "${TUBA_PUBLIC_ORIGIN}",
+        "TUBA_AUTH_COOKIE_SECURE": "${TUBA_AUTH_COOKIE_SECURE}",
+        "TUBA_AUTH_SESSION_TTL": "${TUBA_AUTH_SESSION_TTL}"
       }
     },
     {
@@ -143,8 +143,6 @@
       "command": "/opt/tuba/current/bin/tuba-web",
       "working_dir": "/opt/tuba/current",
       "environment": {
-        "OIDC_ISSUER": "${OIDC_ISSUER}",
-        "OIDC_CLIENT_ID": "${OIDC_CLIENT_ID}",
         "WEB_LISTEN": "127.0.0.1:8088"
       }
     },

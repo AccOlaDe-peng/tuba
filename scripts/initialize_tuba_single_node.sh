@@ -3,7 +3,7 @@ set -euo pipefail
 script_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd -P)
 
 # Scope: TUBA installs only its own product tree, and even that is done by
-# install_tuba_linux.sh. PostgreSQL, Kafka, Elasticsearch and Keycloak are
+# install_tuba_linux.sh. PostgreSQL, Kafka, Elasticsearch are
 # adopted — they are pre-existing, they are larger than TUBA, and the platform is
 # a guest on them (248's PostgreSQL is shared with another product). So this
 # entry point coordinates the already-idempotent component initializers against
@@ -38,7 +38,6 @@ fi
 : "${KAFKA_BROKERS:?KAFKA_BROKERS is required}"
 : "${ES_URL:?ES_URL is required}"
 : "${ES_API_KEY:?ES_API_KEY is required}"
-: "${KEYCLOAK_URL:?KEYCLOAK_URL is required}"
 : "${TUBA_TOPIC_NAMESPACE:?TUBA_TOPIC_NAMESPACE is required}"
 
 profile=${TUBA_TOPIC_PROFILE:-zeek_validation_single_node}
@@ -48,11 +47,6 @@ if [[ $profile != zeek_validation_single_node ]]; then
 fi
 if [[ ! $TUBA_TOPIC_NAMESPACE =~ ^[a-z0-9][a-z0-9._-]{0,62}$ ]]; then
   echo "TUBA_TOPIC_NAMESPACE must be a lowercase deployment slug" >&2
-  exit 1
-fi
-realm=${KEYCLOAK_REALM:-tuba}
-if [[ ! $realm =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,62}$ ]]; then
-  echo "KEYCLOAK_REALM is invalid" >&2
   exit 1
 fi
 
@@ -75,45 +69,23 @@ fi
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }
 command -v python3 >/dev/null || { echo "python3 is required" >&2; exit 1; }
 
-echo "[1/6] Checking that the existing dependencies are adoptable"
+echo "[1/5] Checking that the existing dependencies are adoptable"
 "$script_dir/check_tuba_prerequisites.sh"
 if [[ $dependencies_only -eq 1 ]]; then
   echo "Dependency check complete; nothing else was touched."
   exit 0
 fi
 
-echo "[2/6] Applying PostgreSQL migrations"
+echo "[2/5] Applying PostgreSQL migrations"
 "$root/scripts/apply_postgres_migrations.sh"
-echo "[3/6] Provisioning PostgreSQL runtime role"
+echo "[3/5] Provisioning PostgreSQL runtime role"
 "$root/scripts/provision_postgres_runtime_role.sh"
-echo "[4/6] Reconciling bounded Kafka topics"
+echo "[4/5] Reconciling bounded Kafka topics"
 "$topic_admin" \
   --contract "$root/contracts/events/topics.v1.json" \
   --profile "$profile" \
   --namespace "$TUBA_TOPIC_NAMESPACE" \
   --apply
-echo "[5/6] Applying Elasticsearch templates"
+echo "[5/5] Applying Elasticsearch templates"
 "$root/scripts/apply_elasticsearch_assets.sh"
-echo "[6/6] Verifying Keycloak realm discovery"
-
-discovery=$(mktemp)
-trap 'rm -f -- "$discovery"' EXIT
-issuer=${KEYCLOAK_URL%/}/realms/${realm}
-curl --fail --silent --show-error --max-time 10 \
-  "${issuer}/.well-known/openid-configuration" >"$discovery"
-python3 - "$discovery" "$issuer" <<'PY'
-import json
-import sys
-
-path, expected_issuer = sys.argv[1:]
-with open(path, encoding="utf-8") as handle:
-    document = json.load(handle)
-if document.get("issuer") != expected_issuer:
-    raise SystemExit("Keycloak discovery issuer does not match the requested realm")
-for field in ("authorization_endpoint", "token_endpoint", "jwks_uri"):
-    value = document.get(field)
-    if not isinstance(value, str) or not value.startswith(expected_issuer + "/"):
-        raise SystemExit(f"Keycloak discovery field is missing or outside the realm: {field}")
-PY
-
-echo "TUBA single-node bounded initialization completed and Keycloak discovery was verified."
+echo "TUBA single-node initialization completed. Use tuba-bootstrap-operator for the first system administrator."

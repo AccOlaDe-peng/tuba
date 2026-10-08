@@ -90,7 +90,6 @@ networkPolicy:
   kafkaPort: 9092
   postgresPort: 5432
   elasticsearchPort: 9200
-  keycloakPort: 8443
   otelPort: 4317
   gatewayNamespaceSelector:
     kubernetes.io/metadata.name: envoy-gateway-system
@@ -236,8 +235,9 @@ services:
     env:
       API_LISTEN: ":8788"
       TUBA_ALLOW_NON_LOOPBACK_LISTEN: "true"
-      OIDC_ISSUER: https://identity.example/realms/tuba
-      OIDC_AUDIENCE: tuba-api
+      TUBA_PUBLIC_ORIGIN: https://tuba.example
+      TUBA_AUTH_COOKIE_SECURE: "true"
+      TUBA_AUTH_SESSION_TTL: 8h
     resources:
       requests: {cpu: 200m, memory: 128Mi}
       limits: {cpu: "1", memory: 512Mi}

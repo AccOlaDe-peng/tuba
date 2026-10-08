@@ -4,7 +4,7 @@ This is the release control-plane contract for DIP/UIM, routing, Elasticsearch t
 
 ## Authorization boundary
 
-Release permissions are global because a semantic release is shared by tenants. Tenant roles (including `tenant_admin`) do not grant release access. Only an active row in `platform_release_publishers`, looked up by the API's verified OIDC issuer and subject, yields `release:read` and `release:manage`. Token role claims cannot create this grant. A current publisher can grant or revoke another publisher through the platform endpoint; those changes are audited. Self-revocation is rejected so an operator cannot accidentally remove their own access.
+Release permissions are global because a semantic release is shared by tenants. Tenant roles (including `tenant_admin`) do not grant release access. Only an active row in `platform_release_publishers`, looked up by the API's verified local account issuer (`tuba:local`) and subject, yields `release:read` and `release:manage`. Client-supplied roles cannot create this grant. A current publisher can grant or revoke another publisher through the platform endpoint; those changes are audited. Self-revocation is rejected so an operator cannot accidentally remove their own access.
 
 The first publisher is bootstrapped once by an operator after migration 00013, using `cmd/tuba-bootstrap-release-publisher`. It refuses to run once any publisher row exists. `--approved-by` is mandatory and recorded in the global audit trail; because there is no prior publisher to act as the first publisher, this one-time bootstrap has a null actor and explicit approval metadata. Thereafter all grants use the API and identify the acting publisher.
 
@@ -31,12 +31,11 @@ All state updates and their audit rows commit in one PostgreSQL transaction and 
 After applying migrations through `00013_release_publishing.sql` and setting the API's `TUBA_RELEASE_ROOT`, run once with the runtime DML database identity:
 
 ```powershell
-$env:OIDC_ISSUER = 'https://<configured-issuer>/realms/tuba'
 $env:DATABASE_URL = '<protected runtime DSN>'
-go run ./cmd/tuba-bootstrap-release-publisher --subject '<exact OIDC sub>' --approved-by '<change or explicit authorization reference>'
+go run ./cmd/tuba-bootstrap-release-publisher --subject '<existing local account subject>' --approved-by '<change or explicit authorization reference>'
 ```
 
-Never put the DSN or access token in release manifests or command arguments. The command does not create or change Keycloak users; it grants only the exact supplied OIDC subject a TUBA platform publishing role.
+Never put the DSN or access token in release manifests or command arguments. The command does not create login accounts; first bootstrap or create a local system account, then grant its exact subject a TUBA platform publishing role. See [system login](SYSTEM-LOGIN.md).
 
 ## API summary
 

@@ -27,15 +27,19 @@ type Authorizer interface {
 }
 
 type Server struct {
-	Verifier        *auth.Verifier
-	Authorizer      Authorizer
-	ES              *es.Client
-	Control         *control.Store
-	StartedAt       time.Time
-	RequestTimeout  time.Duration
-	Metrics         *telemetry.Registry
-	KafkaConfigured bool
-	ReleaseRoot     string
+	Verifier              auth.Verifier
+	Login                 LoginService
+	LoginLimiter          *LoginLimiter
+	PublicOrigin          string
+	InsecureSessionCookie bool
+	Authorizer            Authorizer
+	ES                    *es.Client
+	Control               *control.Store
+	StartedAt             time.Time
+	RequestTimeout        time.Duration
+	Metrics               *telemetry.Registry
+	KafkaConfigured       bool
+	ReleaseRoot           string
 	// AutoCaseEnabled gates the auto case creation path (default-off per the
 	// design baseline); it is set from TUBA_AUTO_CASE_ENABLED at startup.
 	AutoCaseEnabled bool
@@ -76,6 +80,9 @@ func (s Server) Handler() http.Handler {
 	if s.Metrics != nil {
 		mux.Handle("GET /metrics", s.Metrics.Handler())
 	}
+	mux.HandleFunc("POST /api/v1/auth/login", s.login)
+	mux.HandleFunc("POST /api/v1/auth/logout", s.logout)
+	mux.HandleFunc("POST /api/v1/auth/password", s.protected("", s.changePassword))
 	mux.HandleFunc("GET /api/v1/me", s.protected("", s.me))
 	mux.HandleFunc("GET /api/v1/events", s.protected("event:read", s.events))
 	mux.HandleFunc("POST /api/v1/query", s.protected("event:read", s.query))
@@ -134,6 +141,7 @@ func (s Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/v1/collector/heartbeat", s.collectorHeartbeat)
 	mux.HandleFunc("GET /api/v1/collector/config", s.collectorConfig)
 	mux.HandleFunc("GET /api/v1/audit", s.protected("user:manage", s.listAudit))
+	mux.HandleFunc("POST /api/v1/users", s.protected("user:manage", s.createLocalAccount))
 	mux.HandleFunc("GET /api/v1/members", s.protected("user:manage", s.listMembers))
 	mux.HandleFunc("PUT /api/v1/members/{subject}/roles/{role}", s.protected("user:manage", s.grantMember))
 	mux.HandleFunc("DELETE /api/v1/members/{subject}/roles/{role}", s.protected("user:manage", s.revokeMember))
@@ -142,25 +150,37 @@ func (s Server) Handler() http.Handler {
 
 func (s Server) protected(permission string, next func(http.ResponseWriter, *http.Request, auth.Principal)) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		token, err := auth.Bearer(r)
+		token, cookie, err := sessionToken(r)
 		if err != nil {
-			http.Error(w, "bearer token required", 401)
+			http.Error(w, "session required", 401)
+			return
+		}
+		if cookie && r.Method != http.MethodGet && r.Method != http.MethodHead && !s.allowedOrigin(r, true) {
+			http.Error(w, "origin denied", 403)
+			return
+		}
+		if s.Verifier == nil {
+			http.Error(w, "authentication unavailable", 503)
 			return
 		}
 		principal, err := s.Verifier.Verify(r.Context(), token)
 		if err != nil {
-			http.Error(w, "invalid access token", 401)
+			if !errors.Is(err, auth.ErrCredentials) {
+				http.Error(w, "authentication unavailable", 503)
+				return
+			}
+			http.Error(w, "invalid session", 401)
 			return
 		}
 		if s.Authorizer != nil {
 			principal, err = s.Authorizer.Authorize(r.Context(), principal)
 			if err != nil {
-				http.Error(w, "membership inactive", 403)
+				s.authDenied(w, r, principal, "membership inactive")
 				return
 			}
 		}
 		if permission != "" && !principal.Can(permission) {
-			http.Error(w, "permission denied", 403)
+			s.authDenied(w, r, principal, "permission denied")
 			return
 		}
 		next(w, r, principal)

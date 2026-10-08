@@ -27,13 +27,13 @@
 | 实体与归因 `tuba-entity-worker` | 当前无 `cmd/tuba-entity-worker`，无 `internal/entity*` | 新增 | 新建 Account/Device 身份空间、强弱标识解析、多角色 attribution、时态关系、inbox/state/checkpoint/outbox、PG 权威状态和 ES 投影。对应 E01–E05、C03、C06。 |
 | 特征、基线、检测、风险 `tuba-analysis-worker` | `python/tuba_analysis`、`internal/analysisworker`、`internal/detection`、`cmd/tuba-detect-auth` | 改造 | 已有认证检测和 worker 基础；拆分在线 feature/baseline/detection/risk 模块，增加有界窗口、水位/迟到处理、去重、不可变版本及统一正式调度。`tuba-detect-auth` 保留诊断用途，不与正式 worker 并行产出。对应 F01–F08、R01–R02。 |
 | 分析结果写入 `tuba-analysis-sink` | `cmd/tuba-analysis-sink`、`internal/sink/analysis.go`、`internal/analysis` | 改造 | 已有异常结果写入；扩展为多对象、revision/retracted、generation、稳定日期键、乱序保护及永久错误 DLQ。对应 C04、F06–F07。 |
-| API 与授权 `tuba-api` | `cmd/tuba-api`、`internal/api`、`internal/auth`、`internal/control` | 改造 | OIDC/RBAC、案件、来源、Collector 管理、受限事件查询和总览已有落点；补齐发布/任务/实体/风险/Data Model API、SPL 受限计划、导出审计和权限边界验收。对应 C08、Q01–Q03、W04。 |
+| API 与授权 `tuba-api` | `cmd/tuba-api`、`internal/api`、`internal/auth`、`internal/control` | 改造 | 系统会话/RBAC、案件、来源、Collector 管理、受限事件查询和总览已有落点；补齐发布/任务/实体/风险/Data Model API、SPL 受限计划、导出审计和权限边界验收。对应 C08、Q01–Q03、W04。 |
 | 控制面任务与 outbox `tuba-control-worker` | `cmd/tuba-control-worker`、`internal/controlworker`、`internal/worker` | 改造 | 已有 outbox 发布器、租约/fencing、队列和重试框架；尚无完整业务 handler、任务/API 生命周期、发布流程、审计、清理及恢复验收。对应 T01–T05。 |
 | Web 控制台 | `web/src`、`web/package.json` | 改造 | 登录、总览、异常、案件、部分 Collector/API 状态页面已存在；补齐来源/DIP/UIM/隔离/发布/任务/回放、实体风险调查、审计与备份状态，并逐项对齐 API 权限和空/错误状态。对应 W01–W05。 |
 | PostgreSQL 事务与状态 | `migrations/00001_control_plane.sql` 至 `00011_collector_management.sql`、`internal/control` | 改造 | 已有组织/身份/案件/反馈、接入 receipt、worker lease、source credentials 与 Collector 管理表；复核逐表租户约束，补齐实体时态数据、发布包、质量状态及 retention。对应 C06、E03、T02、T05。 |
 | Kafka 合同与客户端 | `contracts/events/topics.v1.json`、`internal/kafkautil` | 改造 | Topic 清单和基础 producer/consumer 已有；补齐 key/分区/ACL/事务参数合同、read_committed/fencing 证据及隔离环境运行验收。对应 C05、N01、T02–T03。 |
 | Elasticsearch 索引/模板 | `elasticsearch/`、`internal/es`、`internal/sink`、各 indexer | 改造 | 已有索引客户端、八领域写入和部分模板；补齐公共/领域 schema 交叉检查、generation 清单、统一保留策略和迁移冲突处理。对应 C07、N06–N08。 |
-| 身份服务 | `deploy/keycloak/tuba-realm.json`、`deploy/keycloak/tuba-realm-247-dev.json` | 复用 / 配置 | 使用现有 Keycloak；247 为开发 realm，用户名/密码授权只用于开发，生产使用标准 OIDC 流程。LDAP/AD 联邦和生产身份依赖另按部署要求配置。 |
+| 系统登录 | `internal/auth`、`internal/control/local_login.go`、`web/src/auth.tsx` | 替换 | 内置系统账号、密码摘要与数据库会话，复用既有 RBAC/审计。删除旧 Keycloak 登录依赖；247 是外部 Linux 认证/未来日志来源。见 SYSTEM-LOGIN.md。 |
 | 单节点安装、升级、恢复 | `deploy/docker`、`deploy/helm`、旧 `deploy/collector`、`deploy/components`、`scripts` | 新增 / 改造 | 容器/Helm 与旧自研 Collector 脚本现存；新增 Beat 组件打包原型，但无管理 Agent、统一 Launcher、幂等初始化、版本切换、回滚和恢复手册。所有 TUBA 进程由产品 Launcher/CLI 管理，不注册 systemd 或 Windows Service。对应 O01–O03、COL-02/08/09、B03–B06。 |
 | 观测与容量保护 | `internal/telemetry`、`deploy/helm/tuba/templates/observability.yaml`、`docs/OBSERVABILITY.md` | 改造 | 已有指标和 Helm 观测资源；单节点自管运行形态需补齐日志轮转、磁盘/保留保护、队列水位告警和可操作 Runbook。对应 O04–O05、I06、B06。 |
 

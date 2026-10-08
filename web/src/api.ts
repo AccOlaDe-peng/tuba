@@ -23,7 +23,7 @@ export async function api<T>(
   }
   if (token) headers.set("Authorization", `Bearer ${token}`);
 
-  const response = await fetch(`/api/v1${path}`, { ...init, signal, headers });
+  const response = await fetch(`/api/v1${path}`, { ...init, credentials: "same-origin", signal, headers });
   if (response.status === 401) {
     window.dispatchEvent(new Event("tuba:unauthorized"));
   }

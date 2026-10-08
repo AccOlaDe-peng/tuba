@@ -2,9 +2,7 @@ package auth
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"github.com/coreos/go-oidc/v3/oidc"
 	"net/http"
 	"sort"
 	"strings"
@@ -52,54 +50,15 @@ func (p Principal) Permissions() []string {
 	return o
 }
 
-type Verifier struct {
-	Issuer, Audience, JWKSURL string
-	oidc                      *oidc.IDTokenVerifier
+// LocalIssuer identifies accounts owned by this TUBA installation. External
+// identity tokens are never accepted by the system login endpoints.
+const LocalIssuer = "tuba:local"
+const SessionCookie = "tuba_session"
+
+type Verifier interface {
+	Verify(context.Context, string) (Principal, error)
 }
 
-func NewVerifier(issuer, audience, jwksURL string) (*Verifier, error) {
-	if issuer == "" || audience == "" {
-		return nil, errors.New("OIDC_ISSUER and OIDC_AUDIENCE are required")
-	}
-	issuer = strings.TrimRight(issuer, "/")
-	if jwksURL == "" {
-		jwksURL = issuer + "/protocol/openid-connect/certs"
-	}
-	if !strings.HasPrefix(jwksURL, "https://") && !strings.HasPrefix(jwksURL, "http://") {
-		return nil, errors.New("invalid OIDC_JWKS_URL")
-	}
-	keys := oidc.NewRemoteKeySet(context.Background(), jwksURL)
-	return &Verifier{issuer, audience, jwksURL, oidc.NewVerifier(issuer, keys, &oidc.Config{ClientID: audience, SupportedSigningAlgs: []string{oidc.RS256}})}, nil
-}
-func (v *Verifier) Verify(ctx context.Context, raw string) (Principal, error) {
-	var empty Principal
-	if len(raw) > 16*1024 {
-		return empty, errors.New("invalid access token")
-	}
-	token, err := v.oidc.Verify(ctx, raw)
-	if err != nil {
-		return empty, err
-	}
-	var c struct {
-		Subject      string   `json:"sub"`
-		Organization string   `json:"organization_id"`
-		Namespace    string   `json:"namespace"`
-		Roles        []string `json:"tuba_roles"`
-	}
-	if err := token.Claims(&c); err != nil {
-		return empty, err
-	}
-	if c.Subject == "" || !safeID(c.Organization) || !safeID(c.Namespace) {
-		return empty, errors.New("invalid tenant claims")
-	}
-	roles := make([]string, 0, len(c.Roles))
-	for _, r := range c.Roles {
-		if _, ok := permissions[r]; ok {
-			roles = append(roles, r)
-		}
-	}
-	return Principal{c.Subject, c.Organization, c.Namespace, roles}, nil
-}
 func safeID(s string) bool {
 	if len(s) < 1 || len(s) > 64 {
 		return false

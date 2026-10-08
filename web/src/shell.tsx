@@ -36,6 +36,11 @@ export function AppShell() {
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [passwordOpen, setPasswordOpen] = useState(false);
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [newPassword, setNewPassword] = useState("");
+  const [passwordError, setPasswordError] = useState("");
+  const [changingPassword, setChangingPassword] = useState(false);
 
   async function submitLogin(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -107,7 +112,7 @@ export function AppShell() {
           </form>
           <div className="login-foot">
             <span className="live-dot" />
-            用户名与密码由身份服务验证
+            使用 TUBA 系统账号登录
           </div>
         </section>
         <aside className="login-signal" aria-hidden="true">
@@ -137,6 +142,15 @@ export function AppShell() {
 
   return (
     <Layout className="app-shell">
+      <Modal title="修改密码" open={passwordOpen} confirmLoading={changingPassword} onCancel={() => {setPasswordOpen(false);setCurrentPassword("");setNewPassword("");setPasswordError("");}} onOk={() => {
+        if (new TextEncoder().encode(newPassword).length < 12 || new TextEncoder().encode(newPassword).length > 256) {setPasswordError("新密码须为 12 至 256 字节");return;}
+        setChangingPassword(true);setPasswordError("");
+        void auth.changePassword(currentPassword,newPassword).then(() => {setPasswordOpen(false);setCurrentPassword("");setNewPassword("");}).catch((reason: Error) => setPasswordError(reason.message)).finally(() => setChangingPassword(false));
+      }}>
+        {passwordError && <Alert type="error" title={passwordError}/>}
+        <label htmlFor="current-password">当前密码</label><Input.Password id="current-password" autoComplete="current-password" value={currentPassword} onChange={e=>setCurrentPassword(e.target.value)}/>
+        <label htmlFor="new-password">新密码</label><Input.Password id="new-password" autoComplete="new-password" value={newPassword} onChange={e=>setNewPassword(e.target.value)}/>
+      </Modal>
       <Layout.Sider
         className="command-nav"
         width={228}
@@ -176,12 +190,13 @@ export function AppShell() {
               <small><ReadableValue value={auth.principal.subject} label="当前用户"/></small>
             </div>
             <Avatar className="identity-avatar">{initials}</Avatar>
+            <Button type="text" onClick={() => setPasswordOpen(true)}>修改密码</Button>
             <Tooltip title="退出登录">
               <Button
                 type="text"
                 aria-label="退出登录"
                 icon={<LogOut size={17} />}
-                onClick={auth.logout}
+                onClick={() => void auth.logout()}
               />
             </Tooltip>
           </div>

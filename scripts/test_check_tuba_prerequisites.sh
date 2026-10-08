@@ -4,7 +4,7 @@
 # The fake psql doubles as the read-only proof: it fails the run if it is ever
 # handed DDL or a write, so "this preflight installs nothing" is checked rather
 # than asserted in a comment. The fake curl answers health, settings and
-# discovery from a scenario file so each risk can be staged independently.
+# settings from a scenario file so each risk can be staged independently.
 set -euo pipefail
 
 source_root=$(cd "$(dirname "$0")/.." && pwd -P)
@@ -77,12 +77,6 @@ case $url in
     [[ -n $body ]] || body='{"defaults":{"cluster":{"routing":{"allocation":{"disk":{"watermark":{"low":"75%","high":"78%"}}}}}}}'
     printf '%s' "$body"
     ;;
-  */.well-known/openid-configuration)
-    [[ ${FAKE_KC:-ok} == down ]] && exit 7
-    body=${FAKE_KC_BODY-}
-    [[ -n $body ]] || body='{"issuer":"http://keycloak.test/realms/tuba"}'
-    printf '%s' "$body"
-    ;;
   *) exit 7 ;;
 esac
 FAKE
@@ -96,7 +90,6 @@ export TUBA_PREREQ_MIN_FREE_PCT=0
 export DATABASE_MIGRATION_URL=postgres://migration.invalid/tuba
 export KAFKA_BROKERS=broker.test:9092
 export ES_URL=http://es.test:9200
-export KEYCLOAK_URL=http://keycloak.test
 
 # Kafka reachability uses /dev/tcp, which no fake can intercept, so point it at a
 # listener this test controls: a refused connection is then a real scenario.
@@ -210,10 +203,15 @@ expect_contains "$out" "dangerous attributes" "privileged role detected"
 unset FAKE_PG_ATTRS
 
 # --- 5. established database is reported as established -------------------
-export FAKE_PG_PRESENT=31 FAKE_PG_ATTRS="f,f,f,f,f"
+expected_tables=$(python3 - "$source_root/migrations" <<'PYCOUNT'
+import pathlib,re,sys
+print(len(set(name.lower() for p in pathlib.Path(sys.argv[1]).glob('[0-9]*.sql') for name in re.findall(r'CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(?:public\.)?([a-zA-Z_][a-zA-Z0-9_]*)',p.read_text(),re.I))))
+PYCOUNT
+)
+export FAKE_PG_PRESENT=$expected_tables FAKE_PG_ATTRS="f,f,f,f,f"
 out=$test_root/established.txt
 [[ $(run_check "$out") == 0 ]] || fail "an established database must pass" "$out"
-expect_contains "$out" "all 31 TUBA tables are present" "existing migrations recognised"
+expect_contains "$out" "all $expected_tables TUBA tables are present" "existing migrations recognised"
 unset FAKE_PG_PRESENT FAKE_PG_ATTRS
 
 # --- 6. single data node on default watermarks warns ----------------------
@@ -224,18 +222,19 @@ out=$test_root/watermark.txt
 expect_contains "$out" "default 85%/90% watermarks" "the single-node trap is flagged"
 unset FAKE_ES_HEALTH_BODY FAKE_ES_SETTINGS
 
-# --- 7. red cluster and bad issuer are refused ----------------------------
+# --- 7. red cluster refused; external identity is independent ----------------------------
 export FAKE_ES_HEALTH_BODY='{"status":"red","number_of_data_nodes":3}'
 out=$test_root/red.txt
 [[ $(run_check "$out") == 1 ]] || fail "a red cluster must be refused" "$out"
 expect_contains "$out" "status is red" "red cluster detected"
 unset FAKE_ES_HEALTH_BODY
 
-export FAKE_KC_BODY='{"issuer":"http://other/realms/tuba"}'
-out=$test_root/issuer.txt
-[[ $(run_check "$out") == 1 ]] || fail "an issuer mismatch must be refused" "$out"
-expect_contains "$out" "does not match" "issuer mismatch detected"
-unset FAKE_KC_BODY
+# External identity configuration must not be contacted or required.
+export KEYCLOAK_URL=http://127.0.0.1:1
+out=$test_root/native-login.txt
+[[ $(run_check "$out") == 0 ]] || fail "external identity must not block native-login initialization" "$out"
+expect_not_contains "$out" "keycloak" "external identity removed from prerequisites"
+unset KEYCLOAK_URL
 
 # --- 8. unreachable dependencies are refused ------------------------------
 unset KAFKA_BROKERS

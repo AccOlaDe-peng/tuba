@@ -11,19 +11,20 @@ import (
 	"os"
 	"strings"
 	"time"
+	"tuba/product/internal/auth"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 func main() {
 	var subject, issuer, approvedBy string
-	flag.StringVar(&subject, "subject", "", "exact OIDC subject to grant")
-	flag.StringVar(&issuer, "issuer", os.Getenv("OIDC_ISSUER"), "exact OIDC issuer")
+	flag.StringVar(&subject, "subject", "", "exact local account subject to grant")
+	flag.StringVar(&issuer, "issuer", auth.LocalIssuer, "local account issuer")
 	flag.StringVar(&approvedBy, "approved-by", "", "change/ticket or explicit operator authorization reference")
 	flag.Parse()
 	dsn := os.Getenv("DATABASE_URL")
 	if dsn == "" || subject == "" || issuer == "" || approvedBy == "" || len(subject) > 256 || len(approvedBy) > 256 || strings.ContainsAny(subject, "\r\n") || strings.ContainsAny(approvedBy, "\r\n") {
-		log.Fatal("DATABASE_URL, --subject, OIDC_ISSUER and --approved-by are required")
+		log.Fatal("DATABASE_URL, --subject, local issuer and --approved-by are required")
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

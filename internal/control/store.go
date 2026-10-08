@@ -10,6 +10,8 @@ import (
 	"tuba/product/internal/pgutil"
 )
 
+var ErrMembership = errors.New("active membership not found")
+
 type Store struct {
 	Pool   *pgxpool.Pool
 	Issuer string
@@ -63,7 +65,7 @@ func (s *Store) Authorize(ctx context.Context, p auth.Principal) (auth.Principal
 		return p, err
 	}
 	if len(roles) == 0 {
-		return p, errors.New("active membership not found")
+		return p, ErrMembership
 	}
 	// Platform release permissions come from a separate, audited global grant,
 	// never from tenant membership or token-supplied role claims.

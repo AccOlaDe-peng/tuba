@@ -235,22 +235,8 @@ while read -r stale; do
     say "  WARNING: could not expire ${stale}; it still counts against the target's space" >&2
 done < "$WORK/es-stale.txt"
 
-# 3. Identity realm, exported through the admin API. The realm is the authority
-#    for who may reach the data, so it belongs in the same backup as the data.
-if [[ -n "${KC_BOOTSTRAP_ADMIN_USERNAME:-}" && -n "${KC_BOOTSTRAP_ADMIN_PASSWORD:-}" ]]; then
-  say "keycloak: exporting realm"
-  KC_BASE="${KC_BASE:-http://10.6.68.247:8180}"
-  TOKEN="$(curl -fsS -m 20 -X POST "${KC_BASE}/realms/master/protocol/openid-connect/token" \
-      -d grant_type=password -d client_id=admin-cli \
-      --data-urlencode "username=${KC_BOOTSTRAP_ADMIN_USERNAME}" \
-      --data-urlencode "password=${KC_BOOTSTRAP_ADMIN_PASSWORD}" \
-      | "${PYTHON:-python3}" -c 'import json,sys; print(json.load(sys.stdin)["access_token"])')"
-  curl -fsS -m 60 -X POST "${KC_BASE}/admin/realms/${KC_REALM:-tuba}/partial-export?exportClients=true&exportGroupsAndRoles=true" \
-      -H "Authorization: Bearer ${TOKEN}" -o "$WORK/keycloak-realm-${KC_REALM:-tuba}.json"
-  say "  realm exported: $(wc -c < "$WORK/keycloak-realm-${KC_REALM:-tuba}.json") bytes"
-else
-  say "keycloak: SKIPPED (no admin credential in the environment); the realm is not in this backup"
-fi
+# 3. Native accounts and password digests are included in the PostgreSQL dump.
+# External Linux authentication systems are not TUBA login dependencies.
 
 # 4. Release bundles, which the published release rows point at.
 if [[ -d "$RELEASES_DIR" ]]; then
