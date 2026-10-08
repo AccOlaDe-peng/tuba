@@ -59,3 +59,9 @@ API SHA-256：`35525f5ac05488d9bf7124decbd9c7e08ea25a41e741089cc85d1236bae72050`
 现场另见数据面部分服务处于重试/退避，根盘约 82–84% 已用；这些是独立运行问题，本次未重启或更改它们。数据库备份含真实数据，应按既有受限备份策略保管。
 
 本机没有 Helm 和 Docker Compose V2，因此 helm-check 与 Compose 配置渲染未执行成功；该次 248 实装使用现有 Launcher 与网关，不使用 Helm/Compose。
+
+## 8443 旧 DDR 入口移除（2026-10-08）
+
+按用户要求，248 网关根路径 `/` 改为 302 跳转 `/tuba/`，不再加载 `/opt/adms/act/gui`。8443 上旧 `/sso`、`/adms`、`/adms/`、`/adms/api/`、`/monitor-api/` 及其他非 TUBA 页面返回 410。TUBA 前端、`/api/v1/` 与健康检查保留；共享数据库、旧程序文件和其他端口服务未删除。
+
+配置备份：`/opt/tuba/native-login-20261008/backup/webserver-before-ddr-removal.conf`（0600）。网关配置检查与 reload 成功；实测根路径 302、TUBA 页面 200、未登录 API 401、readiness 200、旧页面及接口 410。
